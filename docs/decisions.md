@@ -184,7 +184,7 @@ Format: `D<number> · <title>`, with the build step and the PRD sections involve
 ## D022 · What `anonymize` masks, and how
 
 - **Step:** 7. **PRD:** 19.3.
-- **Decision.** Masks are applied in this order, each replaced by a placeholder: emails (`<email>`), IBANs (`<iban>`), card numbers (`<card>`), phone numbers (`<phone>`), amounts with a currency (`<amount>`), then client names (`<client>`) and names (`<name>`) from `.harness/clients.txt` and `.harness/names.txt`, whole words, case-insensitive, longest first. The vault is `ANYBRAIN_VAULT` when set, else the nearest parent folder with a `.harness/` folder. Patterns are shared with `lint --secrets` (D017), with one difference: `anonymize` masks any IBAN-shaped string without the checksum test, because masking too much is the safe side for text sent to a frontier model. For the same reason, a ten-digit number starting with 0 (an ISBN-10 such as `0306406152`) is masked as a French phone number. Dates such as `2026-01-10` are never masked (regression test of 19.3). Amounts are recognised with a currency sign or code before or after the number (`12 500 €`, `$3,000`, `40 k€`, `15 EUR`).
+- **Decision.** Masks are applied in this order, each replaced by a placeholder: emails (`<email>`), IBANs (`<iban>`), card numbers (`<card>`), phone numbers (`<phone>`), amounts with a currency (`<amount>`), then client names (`<client>`) and names (`<name>`) from `.harness/clients.txt` and `.harness/names.txt`, whole words, case-insensitive, longest first. The vault is `ANYBRAIN_VAULT` when set, else the nearest parent folder with a `.harness/` folder. Patterns are shared with `lint --secrets` (D017), with one difference: `anonymize` masks any IBAN-shaped string without the checksum test, because masking too much is the safe side for text sent to a frontier model. For the same reason, a ten-digit number starting with 0 (for example an ISBN-10 that starts with 0) is masked as a French phone number. Dates such as `2026-01-10` are never masked (regression test of 19.3). Amounts are recognised with a currency sign or code before or after the number (`12 500 €`, `$3,000`, `40 k€`, `15 EUR`).
 - **Why.** The scaffold masked emails, phones, IBANs, amounts and `names.txt`; 19.3 adds card numbers and `clients.txt`. `names.txt` is now read line by line, so a full name such as "Jane Doe" is one name, where the scaffold split it into words.
 
 ## D023 · Feedback details
@@ -203,3 +203,23 @@ Format: `D<number> · <title>`, with the build step and the PRD sections involve
 - **Step:** 7. **PRD:** 6, 9.3, 16.5.
 - **Decision.** One row per ISO week (the current week last, `--weeks 4` by default) with a count per skill found in `log.md`, plus `ingest` and `ask` always shown, and a total. A week that reaches the target of section 6 (at least 2 `ingest` and 3 `ask`) is marked `target met`. When the last 4 weeks all have fewer than 2 ingests, the kill criterion of section 6 is printed as a reminder. Malformed log lines are counted and skipped. Edit ratios per published piece (16.5) and owner metrics per channel (15.11) are P1b and come with `content.py` in step 15.
 - **Why.** Section 6 names `anybrain stats` as the measure of the usage metric and of the kill criterion.
+
+## D025 · Fixes from the adversarial review of steps 2 to 4, and the "local-only" rule
+
+- **Step:** after 7. **PRD:** 10.3, 13.1, 13.2, 13.5, 14.2, 18.4, 19.4. **Open question:** Q18.
+- **How.** Three reviewers read `vault.py`, `graph.py` and `index.py` against the PRD (conformance, correctness, privacy); each finding was handed to an independent verifier asked to refute it by reproducing it. 14 findings were confirmed, 3 rejected.
+- **Fixed.**
+  - A confidential page outside `company/` and `finance/` (a `kind: mission` project, a page that declares `sensitivity: confidential`) printed its full description in `projects/index.md` or `library/index.md`. It now shows its title and `(confidential: local profile only)` only, like `neighbors`.
+  - `[[A/B testing]]` and other targets with a `/` now fall back to aliases and titles when no path matches (13.2).
+  - `[[slug\|text]]`, the form Obsidian writes inside a table, resolves.
+  - Markdown links with spaces (`[x](<my file.md>)`) or parentheses (`[x](notes(1).md)`) are parsed.
+  - A single string in `aliases`, `sources` or `protected` is read as one item, not letter by letter.
+  - A UTF-8 byte order mark at the start of a file no longer hides its frontmatter.
+  - Several authors given as a YAML list are joined with commas in the index line.
+  - Unknown statuses and pages without a status go under `## other`, as D013 says.
+  - `neighbors --depth 2` no longer lists a masked page twice.
+  - A page whose frontmatter cannot be read is treated as confidential until it is fixed (`lint --schema` reports it), because it may be a mission or declare `sensitivity: confidential`.
+- **Rejected by the verifiers, kept as conservative choices.**
+  - **Local-only pages.** The verifiers found that `graph.json` and `neighbors` showed text from `me/` and `journal/` pages, and judged it not a PRD defect, since 13.5 only masks confidential pages. It is kept fixed: the harness configs of 18.4 deny reading `me/` and `journal/` in frontier sessions, so a script must not show their content there either. Pages in `company/`, `finance/`, `me/`, `journal/`, and every confidential page, are "local-only": outside `ANYBRAIN_PROFILE=local`, `graph.json`, `neighbors` and `lint` show their title and path, never their description, link context or findings. Their own domain indexes sit inside those denied folders and stay complete.
+  - **Guessing hidden names.** Outside the local profile, `neighbors` finds a local-only page by its exact path only, not by title or alias, and its refusal message gives the path, not the title. Otherwise a session could confirm a client name by guessing it.
+  - The third rejected finding (a `sensitivity: Confidential` with a capital letter is ignored) stays as it is: the value is invalid and `lint --schema` reports it.

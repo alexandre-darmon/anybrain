@@ -46,6 +46,9 @@ class VaultError(Exception):
 DOMAINS = ["me", "library", "wiki", "projects", "company", "finance", "journal", "content"]
 COMPILED = ("library", "wiki", "projects")
 CONFIDENTIAL_FOLDERS = ("company", "finance")
+# Folders the frontier harness may not read (PRD 18.4). Scripts never show their content outside the
+# local profile either (docs/decisions.md D025).
+LOCAL_ONLY_FOLDERS = ("company", "finance", "me", "journal")
 GENERATED_NAMES = {"index.md"}
 ROOT_NON_PAGES = {"log.md", "AGENTS.md", "CLAUDE.md"}
 APPEND_ONLY_FILES = ("log.md", "content/ideas.md")
@@ -128,8 +131,17 @@ def as_date(value) -> _dt.date | None:
 
 
 def read_text(path: Path) -> str:
-    """UTF-8 text with LF line endings (PRD 9.2)."""
-    return path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    """UTF-8 text with LF line endings (PRD 9.2). A byte order mark at the start is dropped."""
+    return path.read_text(encoding="utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def as_list(value) -> list:
+    """A frontmatter list field as a list: a single string becomes a one-item list, None an empty one."""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
 
 
 def write_text(path: Path, text: str) -> None:
@@ -274,7 +286,16 @@ class Page:
 
     @property
     def sensitivity(self) -> str:
+        """Effective sensitivity. A page whose frontmatter cannot be read is treated as confidential
+        until it is fixed, since it may declare `sensitivity: confidential` or `kind: mission` (D025)."""
+        if self.fm is None:
+            return "confidential"
         return effective_sensitivity(self.rel, self.meta)
+
+    @property
+    def local_only(self) -> bool:
+        """True when scripts must not show this page's content outside the local profile (D012, D025)."""
+        return self.sensitivity == "confidential" or self.folder in LOCAL_ONLY_FOLDERS
 
     @property
     def is_compiled(self) -> bool:

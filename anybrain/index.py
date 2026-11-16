@@ -43,40 +43,58 @@ def _stars(rating) -> str:
     return ""
 
 
-def page_line(page: v.Page, link: str, graph: g.Graph) -> str:
-    """One index line in the formats of 14.2."""
+def _text(value) -> str | None:
+    """A frontmatter value as display text; a list (several authors) is joined with commas."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(item) for item in value if item not in (None, "")) or None
+    return str(value)
+
+
+def page_line(page: v.Page, link: str, graph: g.Graph, domain: str = "") -> str:
+    """One index line in the formats of 14.2.
+
+    A confidential page listed outside a local-only folder (a mission project, a page that declares
+    `sensitivity: confidential`) shows its title only, as `neighbors` does (13.5, D025).
+    """
     fm = page.meta
+    if page.sensitivity == "confidential" and domain not in v.LOCAL_ONLY_FOLDERS:
+        return f"- [{page.title}]({link}): {g.CONFIDENTIAL_MARK}"
     head = f"- [{page.title}]({link}): {page.description}"
     if page.type == "book":
-        parts = [fm.get("author"), _stars(fm.get("rating")), fm.get("status"), fm.get("date_read")]
+        parts = [_text(fm.get("author")), _stars(fm.get("rating")), _text(fm.get("status")), _text(fm.get("date_read"))]
     elif page.type == "concept":
-        sources = len(fm.get("sources") or [])
+        sources = len(v.as_list(fm.get("sources")))
         inbound = len(graph.nodes[page.rel].inbound)
         parts = [f"confidence {fm.get('confidence', 'low')}", _plural(sources, "source"), _plural(inbound, "in-link")]
     elif page.type == "project":
         review = v.as_date(fm.get("next_review"))
-        parts = [fm.get("status"), fm.get("kind"), f"review {review.isoformat()}" if review else None]
+        parts = [_text(fm.get("status")), _text(fm.get("kind")), f"review {review.isoformat()}" if review else None]
     else:
         parts = []
     extra = " · ".join(str(p) for p in parts if p not in (None, ""))
     return f"{head} ({extra})" if extra else head
 
 
-def _group_key(page: v.Page) -> str:
-    if page.type in STATUS_ORDER:
-        return str(page.meta.get("status") or OTHER_GROUP)
-    return ""
+def _known_statuses(domain_pages: list[v.Page]) -> list[str]:
+    order: list[str] = []
+    for page_type in ("book", "project"):
+        if any(p.type == page_type for p in domain_pages):
+            order += [s for s in STATUS_ORDER[page_type] if s not in order]
+    return order
 
 
-def _group_order(domain_pages: list[v.Page], key: str) -> tuple[int, str]:
-    types = {p.type for p in domain_pages}
-    order = []
-    for t in ("book", "project"):
-        if t in types:
-            order += STATUS_ORDER[t]
-    if key in order:
-        return (order.index(key), key)
-    return (len(order) + (1 if key == OTHER_GROUP else 0), key)
+def _group_key(page: v.Page, known: list[str]) -> str:
+    """The status group of a page; "" when the domain is not grouped; `other` for anything unknown (D013)."""
+    if not known:
+        return ""
+    status = page.meta.get("status") if page.type in STATUS_ORDER else None
+    return status if isinstance(status, str) and status in known else OTHER_GROUP
+
+
+def _group_order(known: list[str], key: str) -> int:
+    return known.index(key) if key in known else len(known)
 
 
 def domain_index(domain: str, pages: list[v.Page], graph: g.Graph) -> str:
@@ -84,31 +102,31 @@ def domain_index(domain: str, pages: list[v.Page], graph: g.Graph) -> str:
     if not pages:
         out += ["No pages yet.", ""]
         return "\n".join(out)
+    known = _known_statuses(pages)
     groups: dict[str, list[v.Page]] = {}
     for page in pages:
-        groups.setdefault(_group_key(page), []).append(page)
-    for key in sorted(groups, key=lambda k: _group_order(pages, k)):
+        groups.setdefault(_group_key(page, known), []).append(page)
+    for key in sorted(groups, key=lambda k: _group_order(known, k)):
         members = sorted(groups[key], key=lambda p: p.rel)
         members.sort(key=_updated, reverse=True)
         if key:
             out += [f"## {key}", ""]
         for page in members:
             link = page.rel[len(domain) + 1:]
-            out.append(page_line(page, link, graph))
+            out.append(page_line(page, link, graph, domain))
         out.append("")
     return "\n".join(out)
 
 
 def _domain_summary(pages: list[v.Page]) -> str:
+    known = _known_statuses(pages)
+    if not known or not pages:
+        return _plural(len(pages), "page")
     counts: dict[str, int] = {}
     for page in pages:
-        key = _group_key(page)
-        if key:
-            counts[key] = counts.get(key, 0) + 1
-    if counts and sum(counts.values()) == len(pages):
-        ordered = sorted(counts, key=lambda k: _group_order(pages, k))
-        return ", ".join(f"{counts[k]} {k}" for k in ordered)
-    return _plural(len(pages), "page")
+        key = _group_key(page, known)
+        counts[key] = counts.get(key, 0) + 1
+    return ", ".join(f"{counts[k]} {k}" for k in sorted(counts, key=lambda k: _group_order(known, k)))
 
 
 def root_index(vault: Path, by_domain: dict[str, list[v.Page]]) -> str:

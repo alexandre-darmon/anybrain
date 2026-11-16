@@ -145,3 +145,38 @@ def test_vault_from_environment(monkeypatch, tmp_path, capsys):
     shutil.copytree(EXAMPLE, tmp_path / "v")
     monkeypatch.setenv("ANYBRAIN_VAULT", str(tmp_path / "v"))
     assert cli.main(["index", "--check"]) == 0
+
+
+# ---------------------------------------------------------------- regressions found by the review of steps 2 to 4
+
+def test_confidential_pages_outside_confidential_folders_show_their_title_only(make_vault):
+    root = make_vault({
+        "projects/acme-pricing.md": page("Pricing mission", "project", "Client cuts prices 30 percent in Q1.",
+                                         status="active", kind="mission", next_review="2026-12-01"),
+        "library/secret-book.md": page("Secret book", "book", "Notes on a merger hidden in a review.",
+                                       author="Someone", status="read", sensitivity="confidential"),
+        "company/plan.md": page("Plan", "note", "The plan in full."),
+    })
+    files = index.build(root)[0]
+    assert "- [Pricing mission](acme-pricing.md): (confidential: local profile only)" in files["projects/index.md"]
+    assert "30 percent" not in files["projects/index.md"] and "mission ·" not in files["projects/index.md"]
+    assert "- [Secret book](secret-book.md): (confidential: local profile only)" in files["library/index.md"]
+    assert "- [Plan](plan.md): The plan in full." in files["company/index.md"]
+
+
+def test_several_authors_are_joined(make_vault):
+    root = make_vault({"library/a.md": page("A", "book", author="[Ada Lovelace, Alan Turing]", status="read")})
+    assert "(Ada Lovelace, Alan Turing · read)" in index.build(root)[0]["library/index.md"]
+
+
+def test_unknown_or_missing_status_goes_under_other(make_vault):
+    root = make_vault({
+        "library/a.md": page("A", "book", author="X", status="read"),
+        "library/b.md": page("B", "book", author="X", status="wishlist"),
+        "library/c.md": page("C", "note"),
+    })
+    text = index.build(root)[0]["library/index.md"]
+    assert "## wishlist" not in text
+    other = text[text.index("## other"):]
+    assert "[B](b.md)" in other and "[C](c.md)" in other
+    assert "1 read, 2 other" in index.build(root)[0]["index.md"]

@@ -19,7 +19,11 @@ from urllib.parse import unquote
 from . import vault as v
 
 WIKILINK_RE = re.compile(r"(!?)\[\[([^\[\]\n]+?)\]\]")
-MDLINK_RE = re.compile(r"(!?)\[([^\[\]\n]*)\]\(\s*<?([^()\s<>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
+# [text](dest), [text](<dest with spaces>), [text](dest(1).md), with an optional "title"
+MDLINK_RE = re.compile(
+    r"(!?)\[([^\[\]\n]*)\]\(\s*(?:<([^<>\n]+)>|((?:[^()\s]|\([^()\s]*\))+))(?:\s+\"[^\"]*\")?\s*\)"
+)
+WIKI_PIPE_RE = re.compile(r"\\?\|")
 COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
 INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
 URL_SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:")
@@ -92,13 +96,14 @@ def extract_links(page: v.Page) -> list[Link]:
         context = None
         for match in WIKILINK_RE.finditer(line):
             inner = match.group(2)
-            target = inner.split("|", 1)[0].split("#", 1)[0].strip()
+            # `[[slug\|text]]` is how Obsidian writes an aliased link inside a table
+            target = WIKI_PIPE_RE.split(inner, 1)[0].split("#", 1)[0].strip()
             if not target:
                 continue  # [[#heading]] points inside the same page
             context = context or clean_context(original[i])
             links.append(Link("wiki", target, page.body_offset + i + 1, context, bool(match.group(1)), match.group(0)))
         for match in MDLINK_RE.finditer(WIKILINK_RE.sub(_blank, line)):
-            target = match.group(3)
+            target = (match.group(3) or match.group(4) or "").strip()
             if URL_SCHEME_RE.match(target) or target.startswith("#"):
                 continue
             target = unquote(target.split("#", 1)[0])
@@ -134,7 +139,7 @@ class Resolver:
                     self._raw_stems.setdefault(path.stem.lower(), []).append(rel)
         for rel, page in self.pages.items():
             self._page_stems.setdefault(page.stem.lower(), []).append(rel)
-            for alias in page.meta.get("aliases") or []:
+            for alias in v.as_list(page.meta.get("aliases")):
                 if isinstance(alias, str) and alias.strip():
                     self._aliases.setdefault(alias.strip().lower(), []).append(rel)
             title = page.meta.get("title")
@@ -172,7 +177,11 @@ class Resolver:
         if "/" in lower:
             suffix = "/" + lower
             matches = [rel for key, rels in self._by_noext.items() if key.endswith(suffix) for rel in rels]
-            return self._unique(matches)
+            found = self._unique(matches)
+            if found:
+                return found
+            # not a path after all ("A/B testing"): aliases, then titles (13.2)
+            return self._unique(self._aliases.get(lower)) or self._unique(self._titles.get(lower))
         found = self._unique(self._page_stems.get(lower))
         if found:
             return found
@@ -200,13 +209,21 @@ class Resolver:
             return self.resolve_wiki(link.target)
         return self.resolve_md(link.target, from_rel)
 
-    def resolve_page_arg(self, value: str) -> str | None:
-        """A page given on the command line: a vault path, or anything a wikilink accepts."""
+    def resolve_page_arg(self, value: str, local: bool = True) -> str | None:
+        """A page given on the command line: a vault path, or anything a wikilink accepts.
+
+        Outside the local profile, a local-only page is found by its exact path only, so a session cannot
+        confirm a hidden title or alias by guessing it (D025).
+        """
         rel = value.strip().removeprefix("./")
         if rel in self.pages:
             return rel
         found = self.resolve_wiki(value)
-        return found if found in self.pages else None
+        if found not in self.pages:
+            return None
+        if not local and self.pages[found].local_only:
+            return None
+        return found
 
 
 # ---------------------------------------------------------------------------- graph
@@ -231,6 +248,10 @@ class Node:
     def sensitivity(self) -> str:
         return self.page.sensitivity
 
+    @property
+    def local_only(self) -> bool:
+        return self.page.local_only
+
 
 class Graph:
     def __init__(self, vault: Path, pages: list[v.Page] | None = None):
@@ -240,7 +261,7 @@ class Graph:
         self.nodes: dict[str, Node] = {p.rel: Node(p) for p in self.pages}
         for rel, node in self.nodes.items():
             seen_out: set[str] = set()
-            for source in node.page.meta.get("sources") or []:
+            for source in v.as_list(node.page.meta.get("sources")):
                 if isinstance(source, str) and source not in node.sources:
                     node.sources.append(source)
             for link in extract_links(node.page):
@@ -276,11 +297,11 @@ class Graph:
         }
 
     def to_json_dict(self, generated: str) -> dict:
-        """The schema of 13.4. Confidential pages keep their title and structure only (D012)."""
+        """The schema of 13.4. Local-only pages keep their title and structure only (D012, D025)."""
         pages = {}
         for rel in sorted(self.nodes):
             node = self.nodes[rel]
-            secret = node.sensitivity == "confidential"
+            secret = node.local_only
             pages[rel] = {
                 "title": node.page.title,
                 "type": node.page.type,
@@ -288,7 +309,7 @@ class Graph:
                 "sensitivity": node.sensitivity,
                 "out": [{"to": e.other, "context": "" if secret else e.context} for e in node.out],
                 "in": [
-                    {"from": e.other, "context": "" if self.nodes[e.other].sensitivity == "confidential" else e.context}
+                    {"from": e.other, "context": "" if self.nodes[e.other].local_only else e.context}
                     for e in node.inbound
                 ],
                 "sources": [] if secret else list(node.sources),
@@ -334,22 +355,22 @@ def neighbor_entries(graph: Graph, rel: str, depth: int = 1, profile: str | None
 
     def entry(other: str, direction: str, context: str, distance: int, via: str | None) -> dict:
         node = graph.nodes[other]
-        if node.sensitivity == "confidential" and not local:
+        if node.local_only and not local:
             return {"distance": distance, "direction": direction, "path": None, "title": node.page.title,
                     "type": None, "description": None, "sensitivity": "confidential", "context": None,
-                    "via": via, "masked": True}
+                    "via": via, "masked": True, "_rel": other}
         return {"distance": distance, "direction": direction, "path": other, "title": node.page.title,
                 "type": node.page.type, "description": node.page.description, "sensitivity": node.sensitivity,
-                "context": context, "via": via, "masked": False}
+                "context": context, "via": via, "masked": False, "_rel": other}
 
     def around(center: str, distance: int, via: str | None) -> list[dict]:
         node = graph.nodes[center]
         found = []
-        center_secret = node.sensitivity == "confidential" and not local
+        center_secret = node.local_only and not local
         for edge in node.out:
             found.append(entry(edge.other, "out", edge.context, distance, via))
         for edge in node.inbound:
-            other_secret = graph.nodes[edge.other].sensitivity == "confidential" and not local
+            other_secret = graph.nodes[edge.other].local_only and not local
             context = None if other_secret else edge.context
             item = entry(edge.other, "in", context, distance, via)
             found.append(item)
@@ -359,20 +380,21 @@ def neighbor_entries(graph: Graph, rel: str, depth: int = 1, profile: str | None
         return found
 
     first = around(rel, 1, None)
-    if depth < 2:
-        return first
-    seen = {rel} | {e["path"] for e in first if e["path"]}
-    second = []
+    if depth >= 2:
+        seen = {rel} | {e["_rel"] for e in first}
+        second = []
+        for item in first:
+            if item["masked"]:
+                continue  # never expand through a page the profile cannot read
+            for nxt in around(item["path"], 2, item["path"]):
+                if nxt["_rel"] in seen:
+                    continue
+                seen.add(nxt["_rel"])
+                second.append(nxt)
+        first = first + second
     for item in first:
-        if item["masked"] or not item["path"]:
-            continue  # never expand through a page the profile cannot read
-        for nxt in around(item["path"], 2, item["path"]):
-            key = nxt["path"] or ("masked", nxt["title"])
-            if key in seen:
-                continue
-            seen.add(key)
-            second.append(nxt)
-    return first + second
+        item.pop("_rel", None)
+    return first
 
 
 def format_neighbors(graph: Graph, rel: str, entries: list[dict], depth: int) -> str:
@@ -398,13 +420,13 @@ def format_neighbors(graph: Graph, rel: str, entries: list[dict], depth: int) ->
 
 def run_neighbors(vault: Path, page_arg: str, depth: int = 1, as_json: bool = False) -> int:
     graph = Graph(vault)
-    rel = graph.resolver.resolve_page_arg(page_arg)
+    profile = current_profile()
+    rel = graph.resolver.resolve_page_arg(page_arg, local=profile == "local")
     if rel is None:
         raise v.VaultError(f"page not found: {page_arg}")
     node = graph.nodes[rel]
-    profile = current_profile()
-    if node.sensitivity == "confidential" and profile != "local":
-        print(f"{node.page.title} {CONFIDENTIAL_MARK}. Open a session with ANYBRAIN_PROFILE=local to see its links.",
+    if node.local_only and profile != "local":
+        print(f"{rel} {CONFIDENTIAL_MARK}. Open a session with ANYBRAIN_PROFILE=local to see its links.",
               file=sys.stderr)
         return 1
     entries = neighbor_entries(graph, rel, depth, profile)

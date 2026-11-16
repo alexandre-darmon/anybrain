@@ -232,7 +232,9 @@ def check_graph(ctx: Context) -> list[Finding]:
     for rel, node in graph.nodes.items():
         if node.sensitivity != "confidential":
             for edge in node.out:
-                if graph.nodes[edge.other].sensitivity == "confidential":
+                target = graph.nodes[edge.other]
+                # a page whose frontmatter cannot be read counts as confidential; --schema reports it instead
+                if target.sensitivity == "confidential" and target.page.fm is not None:
                     findings.append(Finding("error", "graph",
                                             f"{rel}:{edge.line}: {node.sensitivity} page links to confidential page {edge.other}",
                                             rel))
@@ -251,7 +253,7 @@ def check_graph(ctx: Context) -> list[Finding]:
     for a, b in _near_duplicates(concepts):
         findings.append(Finding("warning", "graph", f"near-duplicate concepts: {a.rel} and {b.rel}; merge?", a.rel))
     for page in concepts:
-        sources = page.meta.get("sources") or []
+        sources = v.as_list(page.meta.get("sources"))
         age = _days_since(page.meta.get("created"), ctx.today)
         if len(sources) < 2 and age is not None and age >= ONE_SOURCE_DAYS:
             findings.append(Finding("warning", "graph",
@@ -347,7 +349,7 @@ def check_quotes(ctx: Context) -> list[Finding]:
         if not quotes:
             continue
         haystacks = []
-        for source in page.meta.get("sources") or []:
+        for source in v.as_list(page.meta.get("sources")):
             if not isinstance(source, str) or g.URL_SCHEME_RE.match(source):
                 continue
             path = ctx.vault / source.strip().removeprefix("./")
@@ -486,7 +488,7 @@ def masked(finding: Finding, ctx: Context, local: bool) -> Finding:
     """On a non-local profile, a finding about a confidential page keeps only its path (D016)."""
     if local or not finding.path or finding.path not in ctx.graph.nodes:
         return finding
-    if ctx.graph.nodes[finding.path].sensitivity != "confidential":
+    if not ctx.graph.nodes[finding.path].local_only:
         return finding
     return Finding(finding.level, finding.check,
                    f"{finding.path}: details hidden (confidential: local profile only)", finding.path)

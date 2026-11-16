@@ -80,9 +80,7 @@ def protected_headings(rel: str, fm: dict | None) -> list[str]:
         if rel.startswith(prefix):
             heads += names
     heads += FILE_PROTECTED.get(rel, [])
-    extra = (fm or {}).get("protected") or []
-    if isinstance(extra, list):
-        heads += [h for h in extra if isinstance(h, str)]
+    heads += [h for h in v.as_list((fm or {}).get("protected")) if isinstance(h, str)]
     wanted, seen = [], set()
     for head in heads:
         key = v.normalise_heading(head)

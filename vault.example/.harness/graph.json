@@ -1,5 +1,5 @@
 {
-  "generated": "2026-11-16T20:25:28Z",
+  "generated": "2026-11-16T20:47:52Z",
   "pages": {
     "company/admin.md": {
       "title": "Company admin",
@@ -34,18 +34,16 @@
     "journal/2026-11-03.md": {
       "title": "Brief 2026-11-03",
       "type": "brief",
-      "description": "Daily brief with 2 meetings, 1 reply pending and no project review due.",
+      "description": "",
       "sensitivity": "personal",
       "out": [
         {
           "to": "projects/example-tool.md",
-          "context": "10:00 · Demo of the tool · open [[example-tool]] for the v0.2 notes"
+          "context": ""
         }
       ],
       "in": [],
-      "sources": [
-        "projects/index.md"
-      ],
+      "sources": [],
       "broken": []
     },
     "library/100m-offers.md": {
@@ -162,7 +160,7 @@
     "me/aspirations.md": {
       "title": "Aspirations",
       "type": "profile",
-      "description": "Goals at 1, 3 and 5 years. Owner-written, fully protected.",
+      "description": "",
       "sensitivity": "personal",
       "out": [],
       "in": [],
@@ -172,7 +170,7 @@
     "me/cv.md": {
       "title": "CV",
       "type": "profile",
-      "description": "Source of truth for roles, missions and skills used in tailored documents. Owner-written.",
+      "description": "",
       "sensitivity": "personal",
       "out": [],
       "in": [],
@@ -182,7 +180,7 @@
     "me/preferences.md": {
       "title": "Preferences",
       "type": "profile",
-      "description": "How the agent should work for the owner; owner rules first, then rules learned from corrections.",
+      "description": "",
       "sensitivity": "personal",
       "out": [],
       "in": [],
@@ -192,7 +190,7 @@
     "me/principles.md": {
       "title": "Principles",
       "type": "profile",
-      "description": "How the owner decides; rules the agent applies when weighing options. Owner-written, fully protected.",
+      "description": "",
       "sensitivity": "personal",
       "out": [],
       "in": [],
@@ -202,7 +200,7 @@
     "me/profile.md": {
       "title": "Profile",
       "type": "profile",
-      "description": "Who the owner is, in stable facts that stay true for a year. Owner-written, fully protected.",
+      "description": "",
       "sensitivity": "personal",
       "out": [],
       "in": [],
@@ -223,7 +221,7 @@
       "in": [
         {
           "from": "journal/2026-11-03.md",
-          "context": "10:00 · Demo of the tool · open [[example-tool]] for the v0.2 notes"
+          "context": ""
         },
         {
           "from": "wiki/notes/discovery-interviews.md",

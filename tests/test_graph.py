@@ -283,3 +283,100 @@ def test_neighbors_json(capsys):
     assert data["page"] == "wiki/concepts/languaging.md"
     assert {e["direction"] for e in data["neighbors"]} == {"out", "in"}
     assert all(e["distance"] == 1 for e in data["neighbors"])
+
+
+# ---------------------------------------------------------------- regressions found by the review of steps 2 to 4
+
+def test_slash_in_a_title_or_alias_falls_back_to_aliases_and_titles(make_vault):
+    root = make_vault({
+        "wiki/concepts/tcp-ip.md": page("TCP/IP", "concept", confidence="low", aliases=['"TCP/IP stack"']),
+        "wiki/concepts/ab-testing.md": page("A/B testing", "concept", confidence="low"),
+        "library/b.md": page("B", "book", body="Uses [[TCP/IP]], the [[tcp/ip stack]] and [[A/B testing]]."),
+    })
+    graph = build(root)
+    assert graph.nodes["library/b.md"].broken == []
+    assert out_of(graph, "library/b.md") == ["wiki/concepts/tcp-ip.md", "wiki/concepts/ab-testing.md"]
+
+
+def test_aliased_wikilink_with_escaped_pipe_inside_a_table(make_vault):
+    root = make_vault({
+        "library/target.md": page("Target", "book"),
+        "wiki/notes/a.md": page("A", body="| Book | Why |\n| --- | --- |\n| [[target\\|The target]] | same thesis |\n"),
+    })
+    graph = build(root)
+    assert graph.nodes["wiki/notes/a.md"].broken == []
+    assert out_of(graph, "wiki/notes/a.md") == ["library/target.md"]
+
+
+def test_markdown_links_with_spaces_or_parentheses(make_vault):
+    root = make_vault({
+        "library/my book.md": "x",
+        "library/notes(1).md": "x",
+        "wiki/notes/a.md": page("A", body='See [one](<../../library/my book.md>), [two](../../library/notes(1).md) '
+                                          'and [three](../../library/notes(1).md "title").'),
+    })
+    node = build(root).nodes["wiki/notes/a.md"]
+    assert node.broken == []
+    assert len(node.links) == 3
+
+
+def test_scalar_aliases_and_sources_are_one_item(make_vault):
+    root = make_vault({
+        "library/inspired.md": page("Inspired", "book", aliases='"Inspired book"', sources="raw/highlights/i.md"),
+        "wiki/notes/a.md": page("A", body="- [[n]] and [[Inspired book]]"),
+    })
+    graph = build(root)
+    assert [link.target for link in graph.nodes["wiki/notes/a.md"].broken] == ["n"]
+    assert graph.nodes["library/inspired.md"].sources == ["raw/highlights/i.md"]
+
+
+def test_byte_order_mark_does_not_hide_the_frontmatter(make_vault):
+    root = make_vault({})
+    path = root / "wiki" / "notes" / "bom.md"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"\xef\xbb\xbf" + page("Bom").encode("utf-8"))
+    (p,) = v.load_pages(root)
+    assert p.error is None and p.title == "Bom"
+
+
+def test_unreadable_frontmatter_counts_as_confidential(make_vault, monkeypatch, capsys):
+    root = make_vault({
+        "projects/mission.md": "---\ntitle: Mission\nkind: mission\ndescription: [broken\n---\nbody\n",
+        "wiki/notes/a.md": page("A", body="Lessons from [[mission]] apply here."),
+    })
+    graph = build(root)
+    assert graph.nodes["projects/mission.md"].sensitivity == "confidential"
+    entries = g.neighbor_entries(graph, "wiki/notes/a.md", profile="frontier")
+    assert entries == [] or all(e["masked"] for e in entries)
+
+
+def test_depth_two_lists_a_masked_page_once(mixed):
+    graph = build(mixed)
+    entries = g.neighbor_entries(graph, "wiki/notes/a-note.md", depth=2, profile="frontier")
+    titles = [e["title"] for e in entries]
+    assert titles.count("Company admin") <= 1
+    assert all("_rel" not in e for e in entries)
+
+
+def test_me_and_journal_are_masked_like_confidential_pages(make_vault, monkeypatch, capsys):
+    root = make_vault({
+        "projects/tool.md": page("Tool", "project"),
+        "journal/2026-11-03.md": page("Brief", "brief", "Met the bank about a loan.", body="Asked about [[tool]] pricing."),
+    })
+    data = build(root).to_json_dict("t")
+    assert data["pages"]["journal/2026-11-03.md"]["description"] == ""
+    assert data["pages"]["projects/tool.md"]["in"] == [{"from": "journal/2026-11-03.md", "context": ""}]
+    assert g.run_neighbors(root, "projects/tool.md") == 0
+    out = capsys.readouterr().out
+    assert "Brief (confidential: local profile only)" in out and "pricing" not in out
+    monkeypatch.setenv("ANYBRAIN_PROFILE", "local")
+    assert g.run_neighbors(root, "projects/tool.md") == 0
+    assert "Asked about [[tool]] pricing." in capsys.readouterr().out
+
+
+def test_hidden_titles_and_aliases_are_not_confirmed_on_frontier(mixed, capsys):
+    with pytest.raises(v.VaultError, match="page not found"):
+        g.run_neighbors(mixed, "Company admin")
+    assert g.run_neighbors(mixed, "company/company-admin.md") == 1
+    err = capsys.readouterr().err
+    assert "Company admin" not in err and "company/company-admin.md" in err
