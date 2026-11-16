@@ -8,6 +8,11 @@ from __future__ import annotations
 
 import datetime as _dt
 import re
+
+try:  # POSIX file locks (macOS and Linux); without them, appends still never truncate the log
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -149,15 +154,23 @@ def add(vault: Path, topic: str, skill: str, note: str) -> str:
     line = f"{v.today().isoformat()}{SEP}topic:{topic}{SEP}skill:{skill}{SEP}{note}"
     path = vault / LOG
     path.parent.mkdir(parents=True, exist_ok=True)
-    # append in one write, never truncate: two sessions adding at once cannot erase each other's lines
+    # append in one write under a lock, never truncate: two sessions adding at once cannot erase or
+    # interleave each other's lines
     with open(path, "a+b") as handle:
-        handle.seek(0, 2)
-        prefix = b""
-        if handle.tell() > 0:
-            handle.seek(-1, 2)
-            if handle.read(1) != b"\n":
-                prefix = b"\n"
-        handle.write(prefix + (line + "\n").encode("utf-8"))
+        if fcntl is not None:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            handle.seek(0, 2)
+            prefix = b""
+            if handle.tell() > 0:
+                handle.seek(-1, 2)
+                if handle.read(1) != b"\n":
+                    prefix = b"\n"
+            handle.write(prefix + (line + "\n").encode("utf-8"))
+            handle.flush()
+        finally:
+            if fcntl is not None:
+                fcntl.flock(handle, fcntl.LOCK_UN)
     return line
 
 
