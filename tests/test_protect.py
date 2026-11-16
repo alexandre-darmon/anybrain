@@ -130,9 +130,10 @@ def test_a_page_with_a_finding_keeps_its_old_record(vault):
 
 def test_store_format(vault):
     data = json.loads((vault / ".harness" / "protected.json").read_text())
-    assert data["version"] == 1
-    assert len(data["protected"]["library/book.md#My take"]) == 64
-    assert isinstance(data["append_only"]["log.md"], list)
+    assert data["version"] == 2
+    assert len(data["files"]["library/book.md"]["protected"]["My take"]) == 64
+    assert isinstance(data["files"]["log.md"]["append_only"][""], list)
+    assert len(data["files"]["me/aspirations.md"]["protected"][""]) == 64
 
 
 def test_lint_cli_protected_and_accept(vault, capsys):

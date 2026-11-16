@@ -66,11 +66,11 @@ def test_cli_reads_names_from_the_file_vault_and_never_edits_the_file(make_vault
     root = make_vault({
         ".harness/names.txt": "# comment\nJane Doe\n",
         ".harness/clients.txt": "Acme Bank\n",
-        "projects/p.md": f"Jane Doe of Acme Bank, {EMAIL}, on 2026-01-10.\n",
+        "projects/p.md": "---\ntitle: P\nkind: portfolio\n---\n" + f"Jane Doe of Acme Bank, {EMAIL}, on 2026-01-10.\n",
     })
     before = (root / "projects" / "p.md").read_bytes()
     assert cli.main(["anonymize", str(root / "projects" / "p.md")]) == 0
-    assert capsys.readouterr().out == "<name> of <client>, <email>, on 2026-01-10.\n"
+    assert capsys.readouterr().out == "---\ntitle: P\nkind: portfolio\n---\n<name> of <client>, <email>, on 2026-01-10.\n"
     assert (root / "projects" / "p.md").read_bytes() == before
 
 

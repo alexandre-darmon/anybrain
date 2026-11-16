@@ -132,6 +132,14 @@ def save_render(vault: Path, data: dict, out: Callable[[str], None]) -> None:
 
 # ---------------------------------------------------------------------------- shared steps
 
+def refuse_if_evicted(vault: Path) -> None:
+    """An evicted file looks missing; writing a new one in its place would create an iCloud conflict."""
+    placeholders = v.icloud_placeholders(vault)
+    if placeholders:
+        raise v.VaultError(f"{len(placeholders)} file(s) are evicted by iCloud (e.g. {placeholders[0]}), so they look "
+                           f"missing and would be replaced. {ICLOUD_HINT} Then run the command again")
+
+
 def merge_obsidian(vault: Path, out: Callable[[str], None]) -> None:
     """Add anybrain's Obsidian keys that are missing; never change a key the owner already set (PRD 20)."""
     wanted = json.loads(v.read_text(v.framework_root() / "templates" / "obsidian" / "app.json"))
@@ -209,6 +217,7 @@ def init(target: str, owner: str | None = None, role: str | None = None, lang: s
     vault = Path(target).expanduser().resolve()
     if vault.exists() and not vault.is_dir():
         raise v.VaultError(f"not a folder: {vault}")
+    refuse_if_evicted(vault)
     written = 0
 
     def say(line: str) -> None:
@@ -305,6 +314,7 @@ def _ask_tty(question: str) -> bool:
 def update(target: str | None, yes: bool = False, out: Callable[[str], None] = print,
            ask: Callable[[str], bool] | None = None) -> int:
     vault = v.resolve_vault(target)
+    refuse_if_evicted(vault)
     ask = ask or _ask_tty
     render = load_render(vault)
     params = render["params"] or {"owner": DEFAULT_OWNER, "role": DEFAULT_ROLE, "lang": DEFAULT_LANG}

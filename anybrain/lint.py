@@ -69,6 +69,7 @@ class Context:
         self._pages: list[v.Page] | None = None
         self._graph: g.Graph | None = None
         self.today = v.today()
+        self.local = g.current_profile() == "local"
 
     @property
     def pages(self) -> list[v.Page]:
@@ -134,7 +135,7 @@ def _check_page_schema(page: v.Page) -> list[str]:
         if not missing(field) and v.as_date(fm[field]) is None:
             problems.append(f"`{field}` is not a valid date (YYYY-MM-DD)")
     for field in ("tags",):
-        for tag in fm.get(field) or []:
+        for tag in fm.get(field) if isinstance(fm.get(field), list) else []:
             if isinstance(tag, str) and not v.is_kebab(tag):
                 problems.append(f"tag {tag!r} is not kebab-case")
     for field in ("aliases", "protected"):
@@ -179,7 +180,11 @@ def _check_page_schema(page: v.Page) -> list[str]:
 def check_schema(ctx: Context) -> list[Finding]:
     findings = []
     for page in ctx.pages:
-        for problem in _check_page_schema(page):
+        try:
+            problems = _check_page_schema(page)
+        except Exception as exc:  # an unexpected value type must become a finding, never stop the run
+            problems = [f"frontmatter could not be checked ({exc.__class__.__name__}: {exc})"]
+        for problem in problems:
             findings.append(Finding("error", "schema", f"{page.rel}: {problem}", page.rel))
     return findings
 
@@ -230,14 +235,26 @@ def check_graph(ctx: Context) -> list[Finding]:
     for stem, rels in sorted(graph.resolver.duplicate_stems().items()):
         findings.append(Finding("error", "graph", f"duplicate filename {stem}.md: {', '.join(rels)}", rels[0]))
     for rel, node in graph.nodes.items():
-        if node.sensitivity != "confidential":
-            for edge in node.out:
-                target = graph.nodes[edge.other]
-                # a page whose frontmatter cannot be read counts as confidential; --schema reports it instead
-                if target.sensitivity == "confidential" and target.page.fm is not None:
-                    findings.append(Finding("error", "graph",
-                                            f"{rel}:{edge.line}: {node.sensitivity} page links to confidential page {edge.other}",
-                                            rel))
+        if node.sensitivity == "confidential":
+            continue
+        reported: set[str] = set()
+        for link, target in node.targets:
+            if target in reported or target == rel:
+                continue
+            in_confidential_folder = target.split("/", 1)[0] in v.CONFIDENTIAL_FOLDERS
+            if target in graph.nodes:
+                page = graph.nodes[target].page
+                # a page counts as confidential when its frontmatter cannot be read; outside the confidential
+                # folders that alone is a --schema problem, not a leak
+                leak = in_confidential_folder or (page.sensitivity == "confidential" and page.fm is not None)
+                kind = "page"
+            else:
+                leak, kind = in_confidential_folder, "file"
+            if leak:
+                reported.add(target)
+                findings.append(Finding("error", "graph",
+                                        f"{rel}:{link.line}: {node.sensitivity} page links to confidential {kind} {target}",
+                                        rel))
     for rel in graph.orphans():
         age = _days_since(graph.nodes[rel].page.meta.get("created"), ctx.today)
         if age is not None and age < ORPHAN_GRACE_DAYS:
@@ -349,16 +366,25 @@ def check_quotes(ctx: Context) -> list[Finding]:
         if not quotes:
             continue
         haystacks = []
+        skipped = 0
         for source in v.as_list(page.meta.get("sources")):
             if not isinstance(source, str) or g.URL_SCHEME_RE.match(source):
                 continue
-            path = ctx.vault / source.strip().removeprefix("./")
+            source = source.strip().removeprefix("./")
+            path = ctx.vault / source
+            if path.is_file() and not ctx.local and _local_only_path(ctx, source):
+                skipped += 1  # comparing would let a session confirm a guess about a hidden file (D026)
+                continue
             if path.is_file():
                 try:
                     haystacks.append(_fold(v.read_text(path)))
                 except UnicodeDecodeError:
                     continue
         first_line = page.body_offset + section.heading_line + 2
+        if skipped and not haystacks:
+            findings.append(Finding("warning", "quotes", f"{page.rel}: quotes not checked, their sources are "
+                                    "local-only; run lint with ANYBRAIN_PROFILE=local", page.rel))
+            continue
         for i, quote in quotes:
             if not any(_fold(quote) in hay for hay in haystacks):
                 reason = "not found in its sources" if haystacks else "no readable file in `sources`"
@@ -416,15 +442,15 @@ def check_secrets(ctx: Context) -> list[Finding]:
         except UnicodeDecodeError:
             continue
         # isbn values look like phone numbers or card numbers; they are public data
-        scan = re.sub(r"(?m)^isbn:.*$", "", text)
+        scan = pii.fold_spaces(re.sub(r"(?m)^isbn:.*$", "", text))
         hits: list[tuple[int, str]] = []
         for label, pattern in pii.API_KEY_PATTERNS:
             hits += [(_line_of(scan, m.start()), label) for m in pattern.finditer(scan)]
         if not rel.startswith(PII_FREE_FOLDERS):
-            hits += [(_line_of(scan, m.start()), "IBAN") for m in pii.find_ibans(scan)]
-            hits += [(_line_of(scan, m.start()), "card number") for m in pii.find_cards(scan)]
-            hits += [(_line_of(scan, m.start()), "email address") for m in pii.EMAIL_RE.finditer(scan)]
-            hits += [(_line_of(scan, m.start()), "phone number") for m in pii.find_phones(scan)]
+            hits += [(_line_of(scan, start), "IBAN") for start, _ in pii.find_ibans(scan)]
+            hits += [(_line_of(scan, start), "card number") for start, _ in pii.find_cards(scan)]
+            hits += [(_line_of(scan, start), "email address") for start, _ in pii.find_emails(scan)]
+            hits += [(_line_of(scan, start), "phone number") for start, _ in pii.find_phones(scan)]
         if rel in page_rels and rel not in mission_pages:
             for name, pattern in clients:
                 hits += [(_line_of(scan, m.start()), "client name from .harness/clients.txt") for m in pattern.finditer(scan)]
@@ -484,20 +510,36 @@ CHECKS = {
 }
 
 
+def _local_only_path(ctx: Context, rel: str) -> bool:
+    """Local-only by folder (D025), by page sensitivity, or because it is raw/docs/ or .harness/ (10.3)."""
+    top = rel.split("/", 1)[0]
+    if top in v.LOCAL_ONLY_FOLDERS or rel.startswith(("raw/docs/", ".harness/")):
+        return True
+    node = ctx.graph.nodes.get(rel)
+    return bool(node and node.local_only)
+
+
 def masked(finding: Finding, ctx: Context, local: bool) -> Finding:
-    """On a non-local profile, a finding about a confidential page keeps only its path (D016)."""
-    if local or not finding.path or finding.path not in ctx.graph.nodes:
-        return finding
-    if not ctx.graph.nodes[finding.path].local_only:
+    """On a non-local profile, a finding about a local-only file keeps only its path (D016, D025)."""
+    if local or not finding.path or not _local_only_path(ctx, finding.path):
         return finding
     return Finding(finding.level, finding.check,
                    f"{finding.path}: details hidden (confidential: local profile only)", finding.path)
 
 
 def write_report(ctx: Context, target: str, findings: list[Finding]) -> str:
-    path = Path(target)
+    """Write the findings as a `type: report` page.
+
+    Findings sit in fenced blocks, so the links they quote are not links of the report (the next lint would
+    report them again). An existing file is replaced only when it is itself a report (D026).
+    """
+    path = Path(target).expanduser()
     if not path.is_absolute():
         path = ctx.vault / target
+    if path.exists():
+        fm, *_ = v.parse_frontmatter(v.read_text(path)) if path.is_file() else (None,)
+        if not path.is_file() or not fm or fm.get("type") != "report":
+            raise v.VaultError(f"refusing to overwrite {target}: it is not a lint report")
     errors = [f for f in findings if f.level == "error"]
     warnings = [f for f in findings if f.level == "warning"]
     day = ctx.today.isoformat()
@@ -517,7 +559,10 @@ def write_report(ctx: Context, target: str, findings: list[Finding]) -> str:
     ]
     for title, group in (("Errors", errors), ("Warnings", warnings)):
         lines += [f"## {title}", ""]
-        lines += [f"- {f.check}: {f.message}" for f in group] or ["- None."]
+        if group:
+            lines += ["```text", *(f"{f.check}: {f.message}" for f in group), "```"]
+        else:
+            lines.append("None.")
         lines.append("")
     v.write_text(path, "\n".join(lines))
     try:
@@ -536,7 +581,7 @@ def run(vault: Path, selected: list[str] | None = None, report_only: bool = Fals
         if not selected and not report:
             return 0
     ctx = Context(vault)
-    local = g.current_profile() == "local"
+    local = ctx.local
     findings: list[Finding] = []
     seen = set()
     for name in selected or list(CHECKS):

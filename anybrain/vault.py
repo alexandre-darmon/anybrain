@@ -135,6 +135,14 @@ def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
 
 
+def icloud_placeholders(vault: Path) -> list[str]:
+    """`*.icloud` files: iCloud evicted the real file ("Optimize Mac Storage", PRD 9.5)."""
+    if not vault.is_dir():
+        return []
+    return sorted(rel_path(vault, p) for p in vault.rglob("*.icloud")
+                  if p.is_file() and not rel_path(vault, p).startswith(".git/"))
+
+
 def as_list(value) -> list:
     """A frontmatter list field as a list: a single string becomes a one-item list, None an empty one."""
     if value is None:

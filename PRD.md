@@ -1304,6 +1304,7 @@ P2, P3, P4 are planned only after step 18 and the 4-week measure.
 | Q16 | OpenCode's config cannot set environment variables, so `ANYBRAIN_PROFILE` cannot come from `opencode.json`. How is the local profile selected? | Launch with `ANYBRAIN_PROFILE=local opencode` (or `opencode run --standalone --agent local`); documented in D020, to write into the README in step 12 |
 | Q17 | `init` is described as creating the vault "from `vault.example/` structure". Should the fake example pages be copied too? | No: folders, templates, config and four empty `me/` pages only (`docs/decisions.md` D019) |
 | Q18 | Section 13.5 masks only confidential neighbours, while 18.4 denies reading `me/` and `journal/` in frontier sessions. Should scripts (`graph.json`, `neighbors`, `lint`) also hide `me/` and `journal/` content outside the local profile? | Yes: they are treated as local-only, like confidential pages (`docs/decisions.md` D025) |
+| Q19 | `init` builds the indexes, but 9.3 says it never overwrites existing files. What if the owner's folder already has a hand-written `index.md` (a home note, a MOC)? | `index` and `init` stop, write nothing, and ask the owner to rename that file (`docs/decisions.md` D026). The migration (section 21) may decide where such notes go |
 
 ---
 

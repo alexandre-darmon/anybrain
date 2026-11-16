@@ -243,6 +243,7 @@ class Node:
     sources: list[str] = field(default_factory=list)
     broken: list[Link] = field(default_factory=list)
     links: list[Link] = field(default_factory=list)
+    targets: list[tuple[Link, str]] = field(default_factory=list)  # every resolved link, files included
 
     @property
     def sensitivity(self) -> str:
@@ -267,6 +268,8 @@ class Graph:
             for link in extract_links(node.page):
                 node.links.append(link)
                 target = self.resolver.resolve(link, rel)
+                if target is not None:
+                    node.targets.append((link, target))
                 if target is None:
                     node.broken.append(link)
                 elif target == rel:

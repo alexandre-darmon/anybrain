@@ -149,10 +149,15 @@ def add(vault: Path, topic: str, skill: str, note: str) -> str:
     line = f"{v.today().isoformat()}{SEP}topic:{topic}{SEP}skill:{skill}{SEP}{note}"
     path = vault / LOG
     path.parent.mkdir(parents=True, exist_ok=True)
-    existing = v.read_text(path) if path.is_file() else ""
-    if existing and not existing.endswith("\n"):
-        existing += "\n"
-    v.write_text(path, existing + line + "\n")
+    # append in one write, never truncate: two sessions adding at once cannot erase each other's lines
+    with open(path, "a+b") as handle:
+        handle.seek(0, 2)
+        prefix = b""
+        if handle.tell() > 0:
+            handle.seek(-1, 2)
+            if handle.read(1) != b"\n":
+                prefix = b"\n"
+        handle.write(prefix + (line + "\n").encode("utf-8"))
     return line
 
 

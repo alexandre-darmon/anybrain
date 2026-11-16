@@ -1,6 +1,6 @@
 """Protected and append-only content (PRD section 12).
 
-`.harness/protected.json` stores, per file:
+`.harness/protected.json` stores, per file (keys are file paths, so a `#` in a filename is harmless):
 - for each protected section, or fully protected file, the SHA-256 of its normalised content;
 - for each append-only section, or append-only file, the set of hashes of its lines.
 
@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,7 +20,7 @@ from pathlib import Path
 from . import vault as v
 
 STORE = ".harness/protected.json"
-STORE_VERSION = 1
+STORE_VERSION = 2
 
 # 12.1: folder defaults, file-specific sections, fully protected files.
 FOLDER_PROTECTED = {"library/": ["My take"], "projects/": ["Why"], "wiki/concepts/": ["My position"]}
@@ -90,12 +91,23 @@ def protected_headings(rel: str, fm: dict | None) -> list[str]:
     return wanted
 
 
+WHOLE_FILE = ""  # section key of a fully protected file
+
+
 @dataclass
 class Records:
-    """What the store holds for one file."""
+    """What the store holds for one file, by section key (`My take`, `Timeline (2)`, or "" for the file)."""
 
-    protected: dict[str, str] = field(default_factory=dict)  # key -> hash
-    append_only: dict[str, list[str]] = field(default_factory=dict)  # key -> line hashes
+    protected: dict[str, str] = field(default_factory=dict)  # section -> hash
+    append_only: dict[str, list[str]] = field(default_factory=dict)  # section -> line hashes
+
+    def as_json(self) -> dict:
+        data = {}
+        if self.protected:
+            data["protected"] = dict(sorted(self.protected.items()))
+        if self.append_only:
+            data["append_only"] = dict(sorted(self.append_only.items()))
+        return data
 
 
 def _keyed_sections(body: str) -> list[tuple[str, v.Section]]:
@@ -117,10 +129,10 @@ def records_for_file(vault: Path, rel: str, page: v.Page | None = None) -> Recor
         return records
     text = page.text if page is not None else v.read_text(path)
     if rel in APPEND_ONLY_FILES:
-        records.append_only[rel] = line_hashes(text.split("\n"))
+        records.append_only[WHOLE_FILE] = line_hashes(text.split("\n"))
         return records
     if is_fully_protected(rel):
-        records.protected[rel] = _sha(normalise(text))
+        records.protected[WHOLE_FILE] = _sha(normalise(text))
     if page is not None:
         fm, body = page.fm, page.body
     else:
@@ -130,10 +142,14 @@ def records_for_file(vault: Path, rel: str, page: v.Page | None = None) -> Recor
     for key, section in _keyed_sections(body):
         title = v.normalise_heading(section.title)
         if title in heads and not is_fully_protected(rel):
-            records.protected[f"{rel}#{key}"] = _sha(normalise(section.content))
+            records.protected[key] = _sha(normalise(section.content))
         if title in append_heads:
-            records.append_only[f"{rel}#{key}"] = line_hashes(section.lines)
+            records.append_only[key] = line_hashes(section.lines)
     return records
+
+
+def is_tracked(rel: str) -> bool:
+    return rel in APPEND_ONLY_FILES or v.is_page_path(rel)
 
 
 def current_records(vault: Path, pages: list[v.Page] | None = None) -> dict[str, Records]:
@@ -148,61 +164,52 @@ def current_records(vault: Path, pages: list[v.Page] | None = None) -> dict[str,
 
 # ---------------------------------------------------------------------------- store
 
-def _file_of(key: str) -> str:
-    return key.split("#", 1)[0]
+def display(rel: str, section: str) -> str:
+    return rel if section == WHOLE_FILE else f"{rel}#{section}"
 
 
-def load_store(vault: Path) -> dict:
+def load_store(vault: Path) -> dict[str, Records]:
+    """The store as {file: Records}. A version 1 store (keys `path#section`) is converted."""
     path = vault / STORE
     if not path.is_file():
-        return {"version": STORE_VERSION, "protected": {}, "append_only": {}}
+        return {}
     try:
         data = json.loads(v.read_text(path))
     except ValueError as exc:
         raise v.VaultError(f"{STORE} is not valid JSON; fix or delete it ({exc})") from exc
-    data.setdefault("protected", {})
-    data.setdefault("append_only", {})
-    data["version"] = STORE_VERSION
-    return data
+    store: dict[str, Records] = {}
+    if data.get("version", 1) == 1:
+        for bucket in ("protected", "append_only"):
+            for key, value in (data.get(bucket) or {}).items():
+                rel, _, section = key.partition("#")
+                getattr(store.setdefault(rel, Records()), bucket)[section] = value
+        return store
+    for rel, item in (data.get("files") or {}).items():
+        store[rel] = Records(dict(item.get("protected") or {}), dict(item.get("append_only") or {}))
+    return store
 
 
-def save_store(vault: Path, data: dict) -> bool:
+def save_store(vault: Path, store: dict[str, Records]) -> bool:
     """Write the store if it changed. Return True when written."""
+    files = {rel: r.as_json() for rel, r in sorted(store.items()) if r.protected or r.append_only}
+    text = json.dumps({"version": STORE_VERSION, "files": files}, indent=1, ensure_ascii=False) + "\n"
     path = vault / STORE
-    text = json.dumps({"version": STORE_VERSION,
-                       "protected": dict(sorted(data["protected"].items())),
-                       "append_only": dict(sorted(data["append_only"].items()))}, indent=1) + "\n"
     if path.is_file() and v.read_text(path) == text:
         return False
     v.write_text(path, text)
     return True
 
 
-def _keys_by_file(store: dict) -> dict[str, list[tuple[str, str]]]:
-    index: dict[str, list[tuple[str, str]]] = {}
-    for bucket in ("protected", "append_only"):
-        for key in store[bucket]:
-            index.setdefault(_file_of(key), []).append((bucket, key))
-    return index
-
-
-def _replace_file_records(store: dict, rel: str, records: Records, index: dict | None = None) -> None:
-    index = index if index is not None else _keys_by_file(store)
-    for bucket, key in index.get(rel, []):
-        store[bucket].pop(key, None)
-    store["protected"].update(records.protected)
-    store["append_only"].update(records.append_only)
-
-
 @dataclass
 class Problem:
     kind: str  # "protected" or "append-only"
-    key: str
+    file: str
+    section: str
     detail: str = ""
 
     @property
-    def file(self) -> str:
-        return _file_of(self.key)
+    def key(self) -> str:
+        return display(self.file, self.section)
 
     def message(self) -> str:
         if self.kind == "protected":
@@ -214,41 +221,59 @@ def check(vault: Path, pages: list[v.Page] | None = None) -> tuple[list[Problem]
     """Compare the vault with the store; re-record files without problems. Return (problems, written)."""
     store = load_store(vault)
     current = current_records(vault, pages)
-    now_protected = {k: h for r in current.values() for k, h in r.protected.items()}
-    now_append = {k: lines for r in current.values() for k, lines in r.append_only.items()}
     problems = []
-    for key, old in sorted(store["protected"].items()):
-        new = now_protected.get(key)
-        if new is None:
-            gone = "file missing" if not (vault / _file_of(key)).is_file() else "section missing"
-            problems.append(Problem("protected", key, f" ({gone})"))
-        elif new != old:
-            problems.append(Problem("protected", key))
-    for key, old_lines in sorted(store["append_only"].items()):
-        new_lines = set(now_append.get(key, []))
-        missing = [h for h in old_lines if h not in new_lines]
-        if missing:
-            detail = "line removed" if len(missing) == 1 else f"{len(missing)} lines removed"
-            if key not in now_append and not (vault / _file_of(key)).is_file():
-                detail += " (file missing)"
-            problems.append(Problem("append-only", key, detail))
+    for rel, old in sorted(store.items()):
+        new = current.get(rel, Records())
+        exists = (vault / rel).is_file()
+        for section, old_hash in sorted(old.protected.items()):
+            new_hash = new.protected.get(section)
+            if new_hash is None:
+                problems.append(Problem("protected", rel, section, " (file missing)" if not exists else " (section missing)"))
+            elif new_hash != old_hash:
+                problems.append(Problem("protected", rel, section))
+        for section, old_lines in sorted(old.append_only.items()):
+            present = set(new.append_only.get(section, []))
+            missing = [h for h in old_lines if h not in present]
+            if missing:
+                detail = "line removed" if len(missing) == 1 else f"{len(missing)} lines removed"
+                if not exists:
+                    detail += " (file missing)"
+                problems.append(Problem("append-only", rel, section, detail))
     blocked = {p.file for p in problems}
-    index = _keys_by_file(store)
     for rel, records in current.items():
         if rel not in blocked:
-            _replace_file_records(store, rel, records, index)
-    written = save_store(vault, store)
-    return problems, written
+            store[rel] = records
+    return problems, save_store(vault, store)
 
 
-def accept(vault: Path, rels: list[str]) -> list[str]:
+def canonical_rel(vault: Path, value: str) -> str:
+    """A path typed by the owner as the vault-relative path the store uses, or VaultError."""
+    raw = Path(value.strip()).expanduser()
+    target = Path(os.path.normpath(raw if raw.is_absolute() else vault / raw))
+    if target.exists():
+        target = target.resolve()
+    try:
+        return v.rel_path(vault, target)
+    except ValueError as exc:
+        raise v.VaultError(f"not inside the vault: {value}") from exc
+
+
+def accept(vault: Path, values: list[str]) -> list[str]:
     """Record the current content of these files as the owner's (12.3). Return the paths accepted."""
+    vault = vault.resolve()
     store = load_store(vault)
     done = []
-    for value in rels:
-        path = Path(value)
-        rel = v.rel_path(vault, path.resolve()) if path.is_absolute() else value.strip().removeprefix("./")
-        _replace_file_records(store, rel, records_for_file(vault, rel))
+    for value in values:
+        rel = canonical_rel(vault, value)
+        exists = (vault / rel).is_file()
+        if not exists and rel not in store:
+            raise v.VaultError(f"nothing to accept: {rel} is not in the vault and has no record")
+        if exists and not is_tracked(rel):
+            raise v.VaultError(f"nothing to accept: {rel} is not a page or an append-only file")
+        if exists:
+            store[rel] = records_for_file(vault, rel)
+        else:
+            store.pop(rel, None)  # the owner confirms the file is gone
         done.append(rel)
     save_store(vault, store)
     return done
