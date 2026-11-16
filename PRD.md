@@ -1294,6 +1294,8 @@ P2, P3, P4 are planned only after step 18 and the 4-week measure.
 | Q6 | Exact headless syntax and permission config keys for Claude Code and OpenCode | Verify against current docs in steps 6 and 9; record in `docs/decisions.md` |
 | Q7 | Can `evalblink` be used as the eval library? | Check its API in step 10; else minimal internal runner |
 | Q8 | Voice: iPhone Shortcut to save memos directly into `raw/voice/`, or manual share? | Manual share in P3 v1 |
+| Q9 | Slugs: section 13.2 says "no articles", but 13.3 and 21.1 use `the-art-and-business-of-online-writing`. Drop all articles or only a leading one? | Drop a leading article only; keep the other words (`docs/decisions.md` D007) |
+| Q10 | What if a page declares a weaker `sensitivity` than its folder default (e.g. `public` in `company/`)? | The stricter of the two applies (`docs/decisions.md` D009) |
 
 ---
 
