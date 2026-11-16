@@ -83,3 +83,23 @@ Format: `D<number> · <title>`, with the build step and the PRD sections involve
 - **Step:** 3. **PRD:** 11.9.
 - **Decision.** Placeholders are quoted (`title: "{{title}}"`) so every template is valid YAML. Allowed values of an enum field are given in a YAML comment on the same line. Example lines from the contracts that contain a link (`- [[source-slug]]: ...`) sit inside the HTML guidance comment, so a page created from a template has no broken link. P1b templates (`draft`, `published`, `channel`, `voice`) arrive in step 15 (D004).
 - **Why.** A template that fails to parse or that creates a broken link on day one would teach the agent a wrong pattern.
+
+## D012 · graph.json keeps only the title and the structure of confidential pages
+
+- **Step:** 4. **PRD:** 10.3, 13.4, 13.5, 18.4. **Open question:** Q12.
+- **Context.** Agents read `.harness/graph.json` (10.3) in any session, including frontier sessions. Section 13.4 does not say what the file holds for confidential pages, while 13.5 lists confidential neighbours "with title only" unless the profile is local, and 14.2 shows confidential domains in the root index "with counts only".
+- **Decision.** For a confidential page (effective sensitivity, D009), `graph.json` keeps `title`, `type`, `sensitivity` and the paths of its edges, and empties `description`, `sources`, `broken` and the `context` of every edge that starts on that page. `anybrain neighbors` does not read `graph.json`: it rebuilds the graph from the files each time (under 1.2 s on 2,000 pages) and applies the masking of 13.5 for the current `ANYBRAIN_PROFILE`. On a frontier profile, it also refuses to list the links of a confidential page itself, and never expands depth 2 through a masked page.
+- **Why.** The harness deny rules of 18.4 protect `company/` and `finance/`, not `.harness/`. Without this, a confidential description would reach a remote model through the graph file.
+
+## D013 · Index details the PRD leaves open
+
+- **Step:** 4. **PRD:** 14.1, 14.2, 13.5.
+- **Decision.**
+  - Group order: books follow the root-line example of 14.2 (`read`, `reading`, `to-read`, then `abandoned`); projects follow the enum order of 11.5 (`idea`, `active`, `paused`, `shipped`, `dropped`). A page with an unknown status goes under `## other`. Inside a group, lines are sorted by `updated` descending, then by path.
+  - Domains without a status (wiki, me, journal, company, finance) are a flat list. The root line says `N pages`, or the status counts when every page has a status.
+  - The root index is titled `# brain` (the scaffold's title) and lists the domains in the order of 10.2, then `log.md`. A confidential domain shows its page count and "confidential, local profile only", without its last update date.
+  - Concept lines say `1 source` and `1 in-link` in the singular.
+  - `neighbors --depth 2` prefixes each line with its distance (`[1]`, `[2]`) and ends distance-2 lines with `via <page>`.
+  - The `generated` timestamp of `graph.json` is ignored when comparing, so `--check` and idempotence hold.
+  - Wikilink resolution also accepts a unique path suffix (`[[concepts/x]]`), as the scaffold's `lint.py` did, and falls back to a unique raw file with the same stem when no page has it.
+- **Why.** Each point is either stated by an example in the PRD or kept from the scaffold.

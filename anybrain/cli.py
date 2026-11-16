@@ -35,14 +35,21 @@ def vault_arg(value: str | None) -> str:
 
 
 def _cmd_index(args: argparse.Namespace) -> int:
-    from . import index
+    from . import index, vault
 
-    argv = [vault_arg(args.vault)]
-    if args.check:
-        argv.append("--check")
-    if args.stats:
-        argv.append("--stats")
-    return index.main(argv)
+    return index.run(vault.resolve_vault(vault_arg(args.vault)), check=args.check, stats=args.stats)
+
+
+def _cmd_neighbors(args: argparse.Namespace) -> int:
+    from . import graph, vault
+
+    if len(args.args) == 1:
+        root, page = vault_arg(None), args.args[0]
+    elif len(args.args) == 2:
+        root, page = args.args
+    else:
+        raise UsageError("usage: anybrain neighbors [vault] <page>")
+    return graph.run_neighbors(vault.resolve_vault(root), page, depth=args.depth, as_json=args.json)
 
 
 LINT_CHECKS = ("schema", "links", "graph", "stale", "protected", "quotes", "secrets", "feedback", "icloud")
@@ -99,7 +106,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("neighbors", help="Print pages linked to and from a page")
     p.add_argument("args", nargs="+", metavar="[vault] page")
-    p.set_defaults(func=_not_built("PRD section 24 step 4"))
+    p.add_argument("--depth", type=int, choices=(1, 2), default=1, help="2 adds neighbours of neighbours")
+    p.add_argument("--json", action="store_true", help="print JSON instead of text")
+    p.set_defaults(func=_cmd_neighbors)
 
     p = sub.add_parser("lint", help="Deterministic checks; no flag runs them all")
     p.add_argument("vault", nargs="?")

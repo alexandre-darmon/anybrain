@@ -21,3 +21,5 @@ jobs:
         run: pytest -q
       - name: CLI is installed
         run: anybrain --help
+      - name: Golden indexes and graph.json of vault.example are up to date
+        run: anybrain index vault.example --check
