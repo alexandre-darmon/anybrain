@@ -84,7 +84,36 @@ def _cmd_lint(args: argparse.Namespace) -> int:
 def _cmd_anonymize(args: argparse.Namespace) -> int:
     from . import anonymize
 
-    return anonymize.main([args.file])
+    return anonymize.run(args.file)
+
+
+FEEDBACK_ACTIONS = ("add", "topics", "proposals")
+
+
+def _cmd_feedback(args: argparse.Namespace) -> int:
+    from . import feedback, vault
+
+    if len(args.args) == 1 and args.args[0] in FEEDBACK_ACTIONS:
+        root, action = vault_arg(None), args.args[0]
+    elif len(args.args) == 2 and args.args[1] in FEEDBACK_ACTIONS:
+        root, action = args.args
+    else:
+        raise UsageError("usage: anybrain feedback [vault] {add,topics,proposals}")
+    root = vault.resolve_vault(root)
+    if action == "add":
+        missing = [f"--{name}" for name in ("topic", "skill", "note") if not getattr(args, name)]
+        if missing:
+            raise UsageError(f"feedback add needs {', '.join(missing)}")
+        return feedback.run_add(root, args.topic, args.skill, args.note)
+    if action == "topics":
+        return feedback.run_topics(root)
+    return feedback.run_proposals(root)
+
+
+def _cmd_stats(args: argparse.Namespace) -> int:
+    from . import stats, vault
+
+    return stats.run(vault.resolve_vault(vault_arg(args.vault)), weeks=args.weeks)
 
 
 def _not_built(step: str):
@@ -144,7 +173,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("feedback", help="Log owner corrections and list rule proposals")
     p.add_argument("args", nargs="+", metavar="[vault] {add,topics,proposals}")
-    p.set_defaults(func=_not_built("PRD section 24 step 7"))
+    p.add_argument("--topic", metavar="SLUG", help="kebab-case topic, reused when one fits (add)")
+    p.add_argument("--skill", metavar="NAME", help="skill that produced the corrected output (add)")
+    p.add_argument("--note", metavar="TEXT", help="the correction, in one line (add)")
+    p.set_defaults(func=_cmd_feedback)
 
     p = sub.add_parser("anonymize", help="Print a PII-masked copy of a file to stdout")
     p.add_argument("file")
@@ -152,7 +184,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("stats", help="Usage counts from log.md per week and per skill")
     p.add_argument("vault", nargs="?")
-    p.set_defaults(func=_not_built("PRD section 24 step 7"))
+    p.add_argument("--weeks", type=int, default=4, help="number of weeks to show (default 4)")
+    p.set_defaults(func=_cmd_stats)
 
     for name, (summary, step) in PLANNED.items():
         p = sub.add_parser(name, help=f"{summary} (not built yet: {step})")

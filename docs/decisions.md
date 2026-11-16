@@ -180,3 +180,26 @@ Format: `D<number> · <title>`, with the build step and the PRD sections involve
 - **Step:** 6. **PRD:** 9.3.
 - **Decision.** For each framework file: missing, it is written; identical to the new render, nothing happens; equal to the hash of the last render (the owner did not touch it), it is replaced and reported as `updated`; otherwise the owner modified it, so `update` prints a unified diff and asks. With `--yes`, or when there is no terminal to ask on, the owner's version is kept. A file present before `init` that differs from the render is treated as the owner's. A skill link that points somewhere else is replaced only on a "yes"; a real folder in its place is never touched. Content folders, `log.md` and the owner files of D019 are never written by `update`. The values of `--owner`, `--role` and `--lang` are kept in `.harness/render.json`, so `update` renders `AGENTS.md` the same way.
 - **Why.** 9.3 says `--yes` keeps owner versions; without a terminal the same answer is the conservative one.
+
+## D022 · What `anonymize` masks, and how
+
+- **Step:** 7. **PRD:** 19.3.
+- **Decision.** Masks are applied in this order, each replaced by a placeholder: emails (`<email>`), IBANs (`<iban>`), card numbers (`<card>`), phone numbers (`<phone>`), amounts with a currency (`<amount>`), then client names (`<client>`) and names (`<name>`) from `.harness/clients.txt` and `.harness/names.txt`, whole words, case-insensitive, longest first. The vault is `ANYBRAIN_VAULT` when set, else the nearest parent folder with a `.harness/` folder. Patterns are shared with `lint --secrets` (D017), with one difference: `anonymize` masks any IBAN-shaped string without the checksum test, because masking too much is the safe side for text sent to a frontier model. For the same reason, a ten-digit number starting with 0 (an ISBN-10 such as `0306406152`) is masked as a French phone number. Dates such as `2026-01-10` are never masked (regression test of 19.3). Amounts are recognised with a currency sign or code before or after the number (`12 500 €`, `$3,000`, `40 k€`, `15 EUR`).
+- **Why.** The scaffold masked emails, phones, IBANs, amounts and `names.txt`; 19.3 adds card numbers and `clients.txt`. `names.txt` is now read line by line, so a full name such as "Jane Doe" is one name, where the scaffold split it into words.
+
+## D023 · Feedback details
+
+- **Step:** 7. **PRD:** 16.
+- **Decision.**
+  - The 90-day window includes the day 90 days before today. Corrections dated in the future are ignored.
+  - A rule is any line of `me/preferences.md` that carries `topic:<slug>` (exact slug, so `topic:no-em-dash` does not match `topic:no-em-dash-ever`). A rule stops proposals for its topic, wherever it sits in the file.
+  - "Rule not followed" needs the rule's `learned YYYY-MM-DD` date: corrections dated after it, within 90 days, are reported, with a suggestion to reword the rule when two of them fall within 30 days. A rule written by the owner without a date stops proposals but is never reported as not followed, because its evidence cannot be told apart from a violation.
+  - `feedback add` checks that the topic and the skill are kebab-case and joins a multi-line note into one line. `feedback topics` lists all-time counts and marks topics that already have a rule.
+  - A malformed log line is skipped and reported as a warning by `lint --feedback`.
+  - `vault.example/.harness/feedback.log` holds the three corrections behind its one learned rule, all dated before the rule, so the example shows the loop and stays clean.
+
+## D024 · What `stats` prints in P0
+
+- **Step:** 7. **PRD:** 6, 9.3, 16.5.
+- **Decision.** One row per ISO week (the current week last, `--weeks 4` by default) with a count per skill found in `log.md`, plus `ingest` and `ask` always shown, and a total. A week that reaches the target of section 6 (at least 2 `ingest` and 3 `ask`) is marked `target met`. When the last 4 weeks all have fewer than 2 ingests, the kill criterion of section 6 is printed as a reminder. Malformed log lines are counted and skipped. Edit ratios per published piece (16.5) and owner metrics per channel (15.11) are P1b and come with `content.py` in step 15.
+- **Why.** Section 6 names `anybrain stats` as the measure of the usage metric and of the kill criterion.

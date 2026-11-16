@@ -133,3 +133,56 @@ def rules_not_followed(vault: Path, today: _dt.date | None = None) -> list[NotFo
             recent = [c for c in after if c.date >= today - _dt.timedelta(days=REWORD_DAYS)]
             found.append(NotFollowed(rule, after, len(recent) >= 2))
     return found
+
+
+# ---------------------------------------------------------------------------- commands (9.3)
+
+def add(vault: Path, topic: str, skill: str, note: str) -> str:
+    """Append one correction to the log and return the line written."""
+    if not v.is_kebab(topic):
+        raise v.VaultError(f"topic must be kebab-case, like no-em-dash: {topic!r}")
+    if not v.is_kebab(skill):
+        raise v.VaultError(f"skill must be a skill name, like ingest: {skill!r}")
+    note = " ".join(note.split())
+    if not note:
+        raise v.VaultError("note is empty")
+    line = f"{v.today().isoformat()}{SEP}topic:{topic}{SEP}skill:{skill}{SEP}{note}"
+    path = vault / LOG
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = v.read_text(path) if path.is_file() else ""
+    if existing and not existing.endswith("\n"):
+        existing += "\n"
+    v.write_text(path, existing + line + "\n")
+    return line
+
+
+def run_add(vault: Path, topic: str, skill: str, note: str) -> int:
+    line = add(vault, topic, skill, note)
+    print(f"wrote {LOG}: {line}")
+    return 0
+
+
+def run_topics(vault: Path) -> int:
+    corrections, _ = read_log(vault)
+    counts = topic_counts(corrections)
+    if not counts:
+        print("no topics yet")
+        return 0
+    rules = read_rules(vault)
+    width = max(len(t) for t in counts)
+    for topic in sorted(counts, key=lambda t: (-counts[t], t)):
+        rule = "  (rule in me/preferences.md)" if topic in rules else ""
+        print(f"{topic.ljust(width)}  {counts[topic]}{rule}")
+    return 0
+
+
+def run_proposals(vault: Path) -> int:
+    found = proposals(vault)
+    if not found:
+        print(f"no proposals: no topic has {THRESHOLD} corrections in {WINDOW_DAYS} days without a rule")
+        return 0
+    for proposal in found:
+        print(f"topic:{proposal.topic}  {proposal.count} corrections in {WINDOW_DAYS} days, no rule in {PREFERENCES}")
+        for correction in proposal.evidence:
+            print(f"  {correction.line}")
+    return 0
