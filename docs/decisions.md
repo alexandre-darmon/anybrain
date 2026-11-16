@@ -141,3 +141,42 @@ Format: `D<number> · <title>`, with the build step and the PRD sections involve
 - **Step:** 5. **PRD:** 9.2.
 - **Measure.** On a synthetic vault of 2,000 pages (1,000 books, 500 concepts, 500 notes) in this build container: `anybrain index` about 0.8 s, `anybrain index --check` about 0.8 s, `anybrain lint` (all checks) about 2.4 s on a warm run, including 29,000 near-duplicate warnings caused by synthetic slugs (`concept-12`, `concept-123`).
 - **Optimisations.** The vault is parsed once per command and shared by every check; `protect` indexes its store by file instead of scanning it for each file; the near-duplicate check reuses one `difflib.SequenceMatcher` per concept; vault-relative paths are computed by string slicing instead of `Path.relative_to`; frontmatter is parsed with PyYAML's C loader when available.
+
+## D019 · What `init` creates in P0
+
+- **Step:** 6. **PRD:** 7, 9.3, 10.2, 24 steps 6 and 15.
+- **Decision.**
+  - Folders: the layout of 10.2 without `content/` and `.harness/drafts/`, which step 15 adds with P1b, and without `.harness/baseline/`, which `eval` creates in step 10.
+  - Framework files (re-rendered by `update`): `AGENTS.md`, the `CLAUDE.md -> AGENTS.md` symlink, `.harness/templates/*.md`, `.claude/settings.json`, `opencode.json`, the skill links.
+  - Owner files (created once, never re-rendered): `.harness/models.toml`, `.harness/.env` (created with mode 600), `.harness/clients.txt` and `.harness/names.txt` (a comment line each), `log.md` (one `init` line), `.gitignore` (`.harness/.env`, `.harness/baseline/`), and four starter pages in `me/`: `profile.md`, `aspirations.md`, `principles.md`, `preferences.md` (with empty `## Owner rules` and `## Learned rules`). `me/cv.md` and `me/voice.md` belong to P1b.
+  - `.obsidian/app.json`: only the missing keys are added (`newFileLocation: folder`, `newFileFolderPath: raw/inbox`, `attachmentFolderPath: raw/attachments`).
+  - The fake pages of `vault.example/` are not copied: "created from `vault.example/` structure" is read as folders, templates and config, and the example's content would end up in the owner's indexes.
+  - The `.gitignore` comes from the scaffold's `install.sh`. The vault is not a git repository, but the nightly backup of 19.6 copies it into one with `git add -A`; without this file, the API keys of `.harness/.env` would be committed there.
+- **Why.** Section 7 wants the structure complete on day one, and section 24 puts `content/` in step 15. The owner's first `init` happens in step 14, so P1b only adds folders and files later, and nothing is restructured.
+
+## D020 · Harness configuration, checked against the official docs on 2026-11-16 (Q6)
+
+- **Step:** 6. **PRD:** 18.2, 18.3, 18.4, 26 Q6.
+- **How.** Three research agents read the official documentation, and three other agents re-checked each claim against the cited source. Some sites (opencode.ai, agentskills.io, agents.md) could not be reached from the build container; for those, the agents read the source files the sites are built from, in the official GitHub repositories, at their latest commit of 2026-11-16.
+- **Claude Code** (code.claude.com/docs):
+  - Headless: `claude -p "<prompt>"`; `--output-format json` puts the answer in `result`. Since v2.1.302, `-p` runs start in manual permission mode, so tools that need approval are denied unless allowed (`--allowedTools`, `--permission-mode` or allow rules). To handle in step 10.
+  - Project settings: `<vault>/.claude/settings.json`, `{"permissions": {"deny": [...]}}`. Deny always wins over allow; an allow rule cannot carve an exception out of a deny.
+  - `Read(./company/**)` is a valid rule (the docs use `Read(./secrets/**)`); `./` is relative to the directory the session starts in, which is the vault root. A `Read` deny also blocks edits, Grep and Glob on the path, and the Bash commands Claude Code recognises (`cat`, `head`...), but **not** a script that opens files itself, such as `anybrain lint`. Hence D012 and D016, and the PRD's "gate, not a sandbox".
+  - `env` in `settings.json` sets variables for the session and its Bash commands: the template sets `ANYBRAIN_PROFILE=frontier`. A value there overrides the shell's, so a Claude Code session in the vault is always the frontier profile.
+  - Skills: `~/.claude/skills/<name>/SKILL.md`; a skill folder may be a symlink.
+  - Claude Code reads `AGENTS.md` natively only from v2.1.277 and only when no `CLAUDE.md` exists; a `CLAUDE.md -> AGENTS.md` symlink is the documented pattern for every version.
+- **OpenCode** (opencode.ai/docs, version 2.3.0 of 2026-11-13, "V2"):
+  - Headless: `opencode run "<prompt>"`, with `--agent`, `--model provider/model` and `--format json`. `--standalone` starts a private server that inherits the caller's environment.
+  - Config: `<vault>/opencode.json` with `"$schema": "https://opencode.ai/config.json"`. Native V2 keys are plural: `permissions` is an ordered list of `{action, resource, effect}` where the last match wins; `agents.<id>` takes `description`, `mode`, `model`, `permissions`. Agent rules are appended after the global ones, so the `local` agent's `allow` rules override the global `deny` rules. The V1 shapes (`permission`, `agent`) are still accepted; the template uses V2.
+  - Ollama is detected at `127.0.0.1:11434` without a provider block; the model is `ollama/<id>`.
+  - Skills are read from `~/.config/opencode/skills`, and also from `~/.claude/skills` and `~/.agents/skills`.
+  - `AGENTS.md` is read natively; `CLAUDE.md` is not read in V2.
+  - **The config cannot set environment variables** (no `env` key, globally or per agent). `ANYBRAIN_PROFILE=local` has to be set when OpenCode starts: `ANYBRAIN_PROFILE=local opencode` for a session, `ANYBRAIN_PROFILE=local opencode run --standalone --agent local "<prompt>"` for headless runs. See Q16.
+- **Agent Skills** (agentskills.io specification): `name` (1 to 64 characters, lowercase letters, digits and hyphens, equal to the folder name) and `description` (1 to 1,024 characters) are required. `~/.agents/skills` is a documented cross-client convention, read by OpenCode, Codex, Gemini CLI and Goose. The default `[skills] dirs` of 18.2 (`~/.agents/skills`, `~/.claude/skills`) therefore covers both target harnesses.
+- **Obsidian:** the help documents the settings but not the JSON keys. `attachmentFolderPath` is confirmed by Obsidian's own importer code; `newFileLocation` and `newFileFolderPath` come from community typings. Treated as reliable but not first-party.
+
+## D021 · How `update` decides, file by file
+
+- **Step:** 6. **PRD:** 9.3.
+- **Decision.** For each framework file: missing, it is written; identical to the new render, nothing happens; equal to the hash of the last render (the owner did not touch it), it is replaced and reported as `updated`; otherwise the owner modified it, so `update` prints a unified diff and asks. With `--yes`, or when there is no terminal to ask on, the owner's version is kept. A file present before `init` that differs from the render is treated as the owner's. A skill link that points somewhere else is replaced only on a "yes"; a real folder in its place is never touched. Content folders, `log.md` and the owner files of D019 are never written by `update`. The values of `--owner`, `--role` and `--lang` are kept in `.harness/render.json`, so `update` renders `AGENTS.md` the same way.
+- **Why.** 9.3 says `--yes` keeps owner versions; without a terminal the same answer is the conservative one.

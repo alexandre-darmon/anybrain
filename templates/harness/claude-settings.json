@@ -1,0 +1,13 @@
+{
+  "env": {
+    "ANYBRAIN_PROFILE": "frontier"
+  },
+  "permissions": {
+    "deny": [
+      "Read(./company/**)",
+      "Read(./finance/**)",
+      "Read(./me/**)",
+      "Read(./journal/**)"
+    ]
+  }
+}

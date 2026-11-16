@@ -52,6 +52,24 @@ def _cmd_neighbors(args: argparse.Namespace) -> int:
     return graph.run_neighbors(vault.resolve_vault(root), page, depth=args.depth, as_json=args.json)
 
 
+def _cmd_init(args: argparse.Namespace) -> int:
+    from . import install
+
+    return install.init(vault_arg(args.vault), owner=args.owner, role=args.role, lang=args.lang)
+
+
+def _cmd_update(args: argparse.Namespace) -> int:
+    from . import install
+
+    return install.update(vault_arg(args.vault), yes=args.yes)
+
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    from . import install
+
+    return install.doctor(vault_arg(args.vault))
+
+
 LINT_CHECKS = ("schema", "links", "graph", "stale", "protected", "quotes", "secrets", "feedback", "icloud")
 
 
@@ -88,15 +106,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("init", help="Create a vault: folders, templates, config, AGENTS.md, skill links, index")
     p.add_argument("vault", nargs="?")
-    p.set_defaults(func=_not_built("PRD section 24 step 6"))
+    p.add_argument("--owner", metavar="NAME", help="owner name written into AGENTS.md")
+    p.add_argument("--role", metavar="ROLE", help="owner role written into AGENTS.md")
+    p.add_argument("--lang", choices=("fr", "en"), help="default language of new pages")
+    p.set_defaults(func=_cmd_init)
 
     p = sub.add_parser("update", help="Re-render framework files; never touches content folders")
     p.add_argument("vault", nargs="?")
-    p.set_defaults(func=_not_built("PRD section 24 step 6"))
+    p.add_argument("--yes", action="store_true", help="do not ask; keep every file you modified")
+    p.set_defaults(func=_cmd_update)
 
     p = sub.add_parser("doctor", help="Check the environment around a vault")
     p.add_argument("vault", nargs="?")
-    p.set_defaults(func=_not_built("PRD section 24 step 6"))
+    p.set_defaults(func=_cmd_doctor)
 
     p = sub.add_parser("index", help="Build every index.md and .harness/graph.json")
     p.add_argument("vault", nargs="?")

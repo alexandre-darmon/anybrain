@@ -1,19 +1,22 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "_comment": "Fallback harness. Copy to <vault>/opencode.json. OpenCode reads AGENTS.md and ~/.agents/skills natively.",
-  "model": "openrouter/anthropic/claude-opus-5-5",
-  "provider": {
-    "ollama": {
-      "npm": "@ai-sdk/openai-compatible",
-      "options": { "baseURL": "http://localhost:11434/v1" },
-      "models": { "mistral-small": {} }
-    }
-  },
-  "agent": {
+  "permissions": [
+    { "action": "read", "resource": "company/**", "effect": "deny" },
+    { "action": "read", "resource": "finance/**", "effect": "deny" },
+    { "action": "read", "resource": "me/**", "effect": "deny" },
+    { "action": "read", "resource": "journal/**", "effect": "deny" }
+  ],
+  "agents": {
     "local": {
-      "description": "Local-only profile for finance/, company/, me/, journal/",
-      "model": "ollama/mistral-small",
-      "tools": { "webfetch": false }
+      "description": "Local profile: the only agent allowed to read company/, finance/, me/ and journal/. Start OpenCode with ANYBRAIN_PROFILE=local to use it.",
+      "mode": "primary",
+      "model": "ollama/<local model id>",
+      "permissions": [
+        { "action": "read", "resource": "company/**", "effect": "allow" },
+        { "action": "read", "resource": "finance/**", "effect": "allow" },
+        { "action": "read", "resource": "me/**", "effect": "allow" },
+        { "action": "read", "resource": "journal/**", "effect": "allow" }
+      ]
     }
   }
 }

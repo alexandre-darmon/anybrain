@@ -1,32 +1,29 @@
-# Model profiles and routing. Copied to <vault>/.harness/models.toml by anybrain init.
-# The harness reads the profile; the agent reads the routing and sensitivity defaults.
+# Model profiles and routing (PRD section 18.2). Copied to <vault>/.harness/models.toml by `anybrain init`.
+# The model of each profile is chosen by `anybrain eval`, not by this file.
 
 [profiles.frontier]
-provider    = "openai-compatible"
-base_url    = "https://openrouter.ai/api/v1"     # any OpenAI-compatible gateway; swap in one line
-model       = "anthropic/claude-opus-5-5"
-api_key_env = "FRONTIER_API_KEY"                 # value lives in .harness/.env
+base_url    = "https://openrouter.ai/api/v1"   # or a provider's own endpoint
+model       = "<frontier model id>"            # chosen by eval
+api_key_env = "FRONTIER_API_KEY"               # the value lives in .harness/.env
 
 [profiles.local]
-provider    = "openai-compatible"
-base_url    = "http://localhost:11434/v1"        # Ollama
-model       = "mistral-small"                     # chosen by: anybrain eval --profile local
+base_url    = "http://localhost:11434/v1"      # Ollama
+model       = "<local model id>"               # chosen by: anybrain eval --profile local
 api_key_env = ""
 
-[routing]
+[routing]                                      # folder -> profile
 default     = "frontier"
-"finance/"  = "local"
-"company/"  = "local"
 "me/"       = "local"
-"journal/"  = "local"      # daily-brief reads email: never a frontier model
+"journal/"  = "local"
+"company/"  = "local"
+"finance/"  = "local"
 "raw/docs/" = "local"
 
-[defaults.sensitivity]
-"finance/"  = "confidential"
-"company/"  = "confidential"
-"me/"       = "personal"
-"journal/"  = "personal"
-"projects/" = "personal"
-"library/"  = "public"
-"wiki/"     = "public"
-"raw/"      = "personal"
+[skills]
+dirs = ["~/.agents/skills", "~/.claude/skills"] # where init and update link the skills
+
+# Headless commands, checked against the official docs on 2026-11-16 (docs/decisions.md D020).
+[harnesses.claude]
+headless = "claude -p {prompt}"
+[harnesses.opencode]
+headless = "opencode run {prompt}"

@@ -1291,7 +1291,7 @@ P2, P3, P4 are planned only after step 18 and the 4-week measure.
 | Q3 | Calendar and email source for P4 (Google via MCP, macOS apps via local script)? | Decide at P4 |
 | Q4 | Encrypted off-site copy of the backup repo? | Local only |
 | Q5 | Should `ai-pm-skills` be linked into the same skill dirs by `init`? | No; documented as a manual option in README |
-| Q6 | Exact headless syntax and permission config keys for Claude Code and OpenCode | Verify against current docs in steps 6 and 9; record in `docs/decisions.md` |
+| Q6 | Exact headless syntax and permission config keys for Claude Code and OpenCode | Verified against the official docs on 2026-11-16 for step 6 (`docs/decisions.md` D020); re-check in step 9 with real OpenCode runs |
 | Q7 | Can `evalblink` be used as the eval library? | Check its API in step 10; else minimal internal runner |
 | Q8 | Voice: iPhone Shortcut to save memos directly into `raw/voice/`, or manual share? | Manual share in P3 v1 |
 | Q9 | Slugs: section 13.2 says "no articles", but 13.3 and 21.1 use `the-art-and-business-of-online-writing`. Drop all articles or only a leading one? | Drop a leading article only; keep the other words (`docs/decisions.md` D007) |
@@ -1300,6 +1300,9 @@ P2, P3, P4 are planned only after step 18 and the 4-week measure.
 | Q12 | `graph.json` is readable in frontier sessions. Should it hold the description and link context of confidential pages? | No: title and link structure only; `neighbors` rebuilds the graph and masks per profile (`docs/decisions.md` D012) |
 | Q13 | `lint --stale` compares `## Now` with the newest Timeline entry, but `Now` has no date. Which date does `Now` carry? | The latest date written in the section, else the page's `updated` (`docs/decisions.md` D015) |
 | Q14 | Does "outside `company/`, `finance/`, `raw/`" in `lint --secrets` apply to API keys too? | No: API keys are reported everywhere; personal data only outside those folders (`docs/decisions.md` D017) |
+| Q15 | Section 18.4 denies `Read(./me/**)` in frontier sessions, but 16.3 asks every agent to read `me/preferences.md` at session start. Should `me/preferences.md` be readable on the frontier profile? | Keep the deny of 18.4; `AGENTS.md` tells the agent to say once that it cannot read `me/` and continue. Learned rules then only apply on the local profile until decided |
+| Q16 | OpenCode's config cannot set environment variables, so `ANYBRAIN_PROFILE` cannot come from `opencode.json`. How is the local profile selected? | Launch with `ANYBRAIN_PROFILE=local opencode` (or `opencode run --standalone --agent local`); documented in D020, to write into the README in step 12 |
+| Q17 | `init` is described as creating the vault "from `vault.example/` structure". Should the fake example pages be copied too? | No: folders, templates, config and four empty `me/` pages only (`docs/decisions.md` D019) |
 
 ---
 
