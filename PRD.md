@@ -1298,6 +1298,8 @@ P2, P3, P4 are planned only after step 18 and the 4-week measure.
 | Q10 | What if a page declares a weaker `sensitivity` than its folder default (e.g. `public` in `company/`)? | The stricter of the two applies (`docs/decisions.md` D009) |
 | Q11 | Section 11.3 says a concept MUST list at least 2 sources, but 13.6 only warns after 60 days. Error or warning? | Warning from `lint --graph` after 60 days; `--schema` does not count sources (`docs/decisions.md` D010) |
 | Q12 | `graph.json` is readable in frontier sessions. Should it hold the description and link context of confidential pages? | No: title and link structure only; `neighbors` rebuilds the graph and masks per profile (`docs/decisions.md` D012) |
+| Q13 | `lint --stale` compares `## Now` with the newest Timeline entry, but `Now` has no date. Which date does `Now` carry? | The latest date written in the section, else the page's `updated` (`docs/decisions.md` D015) |
+| Q14 | Does "outside `company/`, `finance/`, `raw/`" in `lint --secrets` apply to API keys too? | No: API keys are reported everywhere; personal data only outside those folders (`docs/decisions.md` D017) |
 
 ---
 

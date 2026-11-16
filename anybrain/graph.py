@@ -202,7 +202,7 @@ class Resolver:
 
     def resolve_page_arg(self, value: str) -> str | None:
         """A page given on the command line: a vault path, or anything a wikilink accepts."""
-        rel = value.strip().lstrip("./")
+        rel = value.strip().removeprefix("./")
         if rel in self.pages:
             return rel
         found = self.resolve_wiki(value)

@@ -23,3 +23,8 @@ jobs:
         run: anybrain --help
       - name: Golden indexes and graph.json of vault.example are up to date
         run: anybrain index vault.example --check
+      - name: vault.example passes every lint check
+        # vault.example is a snapshot dated 2026-11-16; date-based checks use that date (docs/decisions.md D008)
+        env:
+          ANYBRAIN_TODAY: "2026-11-16"
+        run: anybrain lint vault.example

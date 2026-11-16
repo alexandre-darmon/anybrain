@@ -89,7 +89,10 @@ def resolve_vault(value: str | os.PathLike | None) -> Path:
 
 
 def rel_path(vault: Path, path: Path) -> str:
-    """Vault-relative POSIX path."""
+    """Vault-relative POSIX path. String slicing first: Path.relative_to is slow on large vaults."""
+    base, full = vault.as_posix().rstrip("/") + "/", path.as_posix()
+    if full.startswith(base):
+        return full[len(base):]
     return path.relative_to(vault).as_posix()
 
 

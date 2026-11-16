@@ -60,7 +60,7 @@ def _cmd_lint(args: argparse.Namespace) -> int:
 
     root = vault.resolve_vault(vault_arg(args.vault))
     selected = [name for name in LINT_CHECKS if getattr(args, name)]
-    return lint.run(root, selected, report_only=args.report_only)
+    return lint.run(root, selected, report_only=args.report_only, report=args.report, accept=args.accept)
 
 
 def _cmd_anonymize(args: argparse.Namespace) -> int:
@@ -115,6 +115,9 @@ def build_parser() -> argparse.ArgumentParser:
     for name in LINT_CHECKS:
         p.add_argument("--" + name, action="store_true")
     p.add_argument("--report-only", action="store_true", help="exit 0 even with findings")
+    p.add_argument("--report", metavar="FILE", help="also write the findings to FILE (relative to the vault)")
+    p.add_argument("--accept", metavar="PATH", action="append",
+                   help="record the protected sections of PATH as the owner's (repeatable)")
     p.set_defaults(func=_cmd_lint)
 
     p = sub.add_parser("feedback", help="Log owner corrections and list rule proposals")

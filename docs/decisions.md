@@ -103,3 +103,41 @@ Format: `D<number> · <title>`, with the build step and the PRD sections involve
   - The `generated` timestamp of `graph.json` is ignored when comparing, so `--check` and idempotence hold.
   - Wikilink resolution also accepts a unique path suffix (`[[concepts/x]]`), as the scaffold's `lint.py` did, and falls back to a unique raw file with the same stem when no page has it.
 - **Why.** Each point is either stated by an example in the PRD or kept from the scaffold.
+
+## D014 · How protected and append-only content is hashed
+
+- **Step:** 5. **PRD:** 12.
+- **Decision.**
+  - A protected section is hashed without its heading line, after trimming, LF line endings and removal of trailing spaces. Dated agent notes (`> Agent note YYYY-MM-DD: ...`) at the end of the section are removed before hashing, so the agent can append them as 12.1 allows. A note inserted inside the owner's text still changes the hash.
+  - A fully protected file is hashed as a whole, frontmatter included.
+  - Folder defaults: `library/` protects `## My take`, `projects/` protects `## Why`, `wiki/concepts/` protects `## My position`, `me/preferences.md` protects `## Owner rules`. Headings in `protected:` frontmatter are matched with or without the `##`, ignoring case.
+  - Append-only content keeps the hash of each non-blank line. A line that is only an HTML guidance comment (the template's `<!-- append-only ... -->`) is not tracked, so removing that comment is not reported. A changed line is reported as a removed line, as 12.3 says.
+  - A missing section or a deleted file is reported as changed; `--accept` on that path clears it.
+  - Files without a finding are re-recorded on every run, even when another file has a finding. A file with a finding keeps its old record until `--accept`. Section 12.3 says "on a clean run, update stored hashes"; updating per file is stricter, because a new page is protected from its first run instead of waiting for the whole vault to be clean.
+  - `vault.example/.harness/protected.json` is not committed: it is local state, created by the first `lint`.
+
+## D015 · The date of a project's `## Now`
+
+- **Step:** 5. **PRD:** 11.5, 15.4 (`--stale`). **Open question:** Q13.
+- **Context.** `--stale` reports "`Now` older than the newest Timeline entry by more than 14 days", but the contract of `## Now` has no date.
+- **Decision.** The date of `## Now` is the latest `YYYY-MM-DD` written inside the section, else the page's `updated`. The newest Timeline entry is the latest date that starts a Timeline line.
+- **Why.** It needs no new field and no change to the template. Since agents set `updated` on every edit, the check fires mostly when the owner adds Timeline lines by hand without touching `Now`, which is the case it exists for.
+
+## D016 · Lint output never shows details of a confidential page outside the local profile
+
+- **Step:** 5. **PRD:** 13.5, 15.4, 18.4, 19.2 (T1).
+- **Decision.** When `ANYBRAIN_PROFILE` is not `local`, any finding about a confidential page is printed as `<path>: details hidden (confidential: local profile only)`. `lint --secrets` never prints the matched value, only its kind and line.
+- **Why.** The weekly `lint` skill may run in a frontier session; link targets or quotes inside a confidential page would otherwise reach a remote model through the lint output.
+
+## D017 · Scope of `lint --secrets`
+
+- **Step:** 5. **PRD:** 15.4, 19.4. **Open question:** Q14.
+- **Context.** 15.4 lists "API key patterns, IBAN, card numbers, emails and phone numbers outside `company/`, `finance/`, `raw/`". It is unclear whether "outside" applies to API keys too.
+- **Decision.** API key patterns are reported in every text file of the vault, `raw/`, `company/` and `finance/` included, because 19.2 (T3) says keys live only in `.harness/.env`. IBANs, card numbers, emails and phone numbers are reported outside `company/`, `finance/` and `raw/` only. Dot folders (`.harness/`, `.obsidian/`, `.git/`) are not scanned: `.harness/.env` holds keys by design, and Obsidian plugins keep their own tokens. IBANs must pass the mod-97 check and card numbers the Luhn check and start with 2 to 6, which keeps ISBNs out; an `isbn:` frontmatter line is skipped. Client names match whole words, case-insensitively, in pages other than mission pages, and in the kebab-case form of `raw/` paths (`Acme Bank` matches `raw/inbox/acme-bank-brief.md`).
+- **Why.** A key pasted into a clipped article or a finance note is still a leaked key.
+
+## D018 · Performance measured, and what was optimised
+
+- **Step:** 5. **PRD:** 9.2.
+- **Measure.** On a synthetic vault of 2,000 pages (1,000 books, 500 concepts, 500 notes) in this build container: `anybrain index` about 0.8 s, `anybrain index --check` about 0.8 s, `anybrain lint` (all checks) about 2.4 s on a warm run, including 29,000 near-duplicate warnings caused by synthetic slugs (`concept-12`, `concept-123`).
+- **Optimisations.** The vault is parsed once per command and shared by every check; `protect` indexes its store by file instead of scanning it for each file; the near-duplicate check reuses one `difflib.SequenceMatcher` per concept; vault-relative paths are computed by string slicing instead of `Path.relative_to`; frontmatter is parsed with PyYAML's C loader when available.
