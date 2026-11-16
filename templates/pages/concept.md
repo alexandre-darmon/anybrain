@@ -1,21 +1,31 @@
 ---
-title: {{Concept name}}
+title: "{{title}}"
 type: concept
-description: {{one line, ≤ 150 chars}}
-confidence: low            # low · medium · high: how settled my view is
+description: "{{description}}"
+confidence: low  # low, medium, high
 tags: []
-created: {{YYYY-MM-DD}}
-updated: {{YYYY-MM-DD}}
-sources: []                # ≥ 2 required; a concept is never created from one source
+aliases: []
+language: "{{language}}"
+created: "{{created}}"
+updated: "{{updated}}"
+sources: []  # at least 2 pages
 sensitivity: public
 ---
 
-## In one paragraph
+## Summary
+<!-- agent; at most 1 paragraph; rewritten freely as sources accumulate -->
 
 ## What the sources say
-<!-- one bullet per source: [[library/<slug>]]: what it claims -->
+<!-- one bullet per source, ending with an evidence tag:
+- [[source-slug]]: <what it claims>. [doc] -->
 
 ## My position
-<!-- agent drafts from the sources; the owner edits; every agent change is logged in log.md -->
+<!-- owner. Protected. Empty until the owner writes or accepts a draft. -->
+
+## Draft position
+<!-- agent proposal. The owner moves accepted text into My position. Agent may rewrite this section. -->
+
+## Timeline
+<!-- append-only, newest first: YYYY-MM-DD · what changed in my thinking or in the sources -->
 
 ## Open questions

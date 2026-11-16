@@ -15,9 +15,26 @@ from pathlib import Path
 import yaml
 
 try:  # the C loader is much faster on large vaults (PRD 9.2: index and lint < 3 s on 2,000 pages)
-    _Loader = yaml.CSafeLoader
+    _BaseLoader = yaml.CSafeLoader
 except AttributeError:  # pragma: no cover
-    _Loader = yaml.SafeLoader
+    _BaseLoader = yaml.SafeLoader
+
+
+class _Loader(_BaseLoader):
+    """Safe loader where an impossible date (2026-02-30) stays a string instead of crashing.
+
+    `lint --schema` then reports it as an invalid date, and every other command keeps working.
+    """
+
+
+def _timestamp_or_string(loader, node):
+    try:
+        return yaml.constructor.SafeConstructor.construct_yaml_timestamp(loader, node)
+    except ValueError:
+        return loader.construct_scalar(node)
+
+
+_Loader.add_constructor("tag:yaml.org,2002:timestamp", _timestamp_or_string)
 
 
 class VaultError(Exception):

@@ -1,27 +1,31 @@
 ---
-title: {{Project name}}
+title: "{{title}}"
 type: project
-description: {{one line, ≤ 150 chars: what it is and the current state}}
-status: idea               # idea · active · paused · shipped · dropped
-kind: portfolio            # portfolio · mission · venture
+description: "{{description}}"
+status: "{{status}}"  # idea, active, paused, shipped, dropped
+kind: "{{kind}}"  # portfolio, mission, venture, personal
 repo:
-next_review: {{YYYY-MM-DD}}
+next_review: "{{next_review}}"
 links: []
 tags: []
-created: {{YYYY-MM-DD}}
-updated: {{YYYY-MM-DD}}
+aliases: []
+language: "{{language}}"
+created: "{{created}}"
+updated: "{{updated}}"
 sources: []
-sensitivity: personal
-protected: ["## Why"]
+sensitivity: personal  # confidential when kind is mission
 ---
 
 ## Why
-<!-- owner-written. The agent never edits this section. -->
+<!-- owner. Protected. -->
 
-## Current state
-<!-- dated bullets, newest first. The agent maintains this from log.md and owner notes. -->
+## Now
+<!-- agent; at most 5 lines; the current state, rewritten from Timeline and Decisions on every update -->
+
+## Timeline
+<!-- append-only, newest first: YYYY-MM-DD · event · [doc|said|hunch] -->
 
 ## Decisions
-<!-- append-only, dated: YYYY-MM-DD: decision: reason -->
+<!-- append-only, newest first: YYYY-MM-DD · decision · reason · [doc|said|hunch] -->
 
 ## Next steps

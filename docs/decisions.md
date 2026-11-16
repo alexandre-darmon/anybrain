@@ -64,3 +64,22 @@ Format: `D<number> · <title>`, with the build step and the PRD sections involve
 - **Context.** Section 11.1 says `sensitivity` "defaults from section 10.3" but does not say what happens when a page declares a weaker value than its folder (for example `sensitivity: public` in `company/`).
 - **Decision.** The effective sensitivity is the stricter of the declared value and the folder default. Routing, the confidential leak check and `neighbors` use the effective value.
 - **Why.** A typo in frontmatter must not be enough to send a confidential page to a remote model.
+
+## D010 · What `lint --schema` requires where the PRD is silent
+
+- **Step:** 3. **PRD:** 11.1 to 11.5, 13.6, 15.4. **Open question:** Q11.
+- **Context.** Section 11 marks some fields as required and lists others as "extra fields" without saying. Section 11.3 says a concept's `sources` "MUST list at least 2 pages", while the graph check of 13.6 only warns about a concept with one source after 60 days.
+- **Decision.**
+  - Common fields of 11.1 marked "yes" are required; `tags` and `sources` must be present, as lists, and may be empty.
+  - Books: `author` and `status` are required; `rating` is an integer from 1 to 5 and only allowed when `status` is `read` or `abandoned`; `date_read` is `YYYY-MM`.
+  - Concepts: `confidence` is required. The two-source rule is checked by `lint --graph` (warning after 60 days), not by `--schema`, so an ingest can create a concept and add its second source later in the same week without an error.
+  - Projects: `status`, `kind` and `next_review` are required, as in the scaffold's `lint.py`.
+  - Tags must be kebab-case. Filenames of pages must be ASCII kebab-case.
+  - Invalid dates (`2026-02-30`) never crash a command: the YAML loader keeps them as text and `--schema` reports them.
+- **Why.** It keeps the scaffold behaviour where the PRD does not change it, and follows the more specific rule (the 13.6 table) where two sections disagree.
+
+## D011 · Template conventions
+
+- **Step:** 3. **PRD:** 11.9.
+- **Decision.** Placeholders are quoted (`title: "{{title}}"`) so every template is valid YAML. Allowed values of an enum field are given in a YAML comment on the same line. Example lines from the contracts that contain a link (`- [[source-slug]]: ...`) sit inside the HTML guidance comment, so a page created from a template has no broken link. P1b templates (`draft`, `published`, `channel`, `voice`) arrive in step 15 (D004).
+- **Why.** A template that fails to parse or that creates a broken link on day one would teach the agent a wrong pattern.

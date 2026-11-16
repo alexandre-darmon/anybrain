@@ -1,29 +1,33 @@
 ---
-title: {{title}}
+title: "{{title}}"
 type: book
-author: {{author}}
-description: {{one line, ≤ 150 chars: what the book is about and why it matters to me}}
-status: to-read            # to-read · reading · read · abandoned
-rating:                    # 1–5, only when read
-date_read:                 # YYYY-MM
+description: "{{description}}"
+author: "{{author}}"
+status: "{{status}}"  # to-read, reading, read, abandoned
+rating:  # 1 to 5, owner only, only when read or abandoned
+date_read:  # YYYY-MM, owner only
 recommended_by:
-language: en
+isbn:
 tags: []
-created: {{YYYY-MM-DD}}
-updated: {{YYYY-MM-DD}}
-sources: []                # raw/highlights/<slug>.md
+aliases: []
+language: "{{language}}"
+created: "{{created}}"
+updated: "{{updated}}"
+sources: []
 sensitivity: public
-protected: ["## My take"]
 ---
 
 ## My take
-<!-- owner writes here. The agent never edits this section. -->
+<!-- owner writes here. Protected. -->
 
 ## Key ideas
-<!-- agent-compiled. One bullet per idea; link to [[wiki/concepts/<slug>]] when a concept page exists. -->
+<!-- 5 to 12 bullets, each a claim, not a chapter title:
+- <claim in one sentence>. <relation phrase> [[concept-slug]]. -->
 
 ## Quotes
-<!-- ≤ 5 short quotes from raw/highlights, with location. No paraphrase presented as quote. -->
+<!-- at most 5, each verbatim in a file listed in `sources`:
+- "<verbatim quote>" (loc. 412) -->
 
 ## Related
-<!-- [[library/<slug>]] and [[wiki/concepts/<slug>]] -->
+<!-- at most 5 books, each with the reason for the link:
+- <relation phrase> [[other-book-slug]]. -->

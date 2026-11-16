@@ -1,140 +1,169 @@
-"""Deterministic vault checks. Exit 1 on any finding unless --report-only.
+"""Deterministic vault checks (PRD sections 13.6 and 15.4).
 
-Usage: lint.py <vault_path> [--all | --schema | --links | --stale | --protected | --secrets] [--report-only]
-
-Checks:
-  schema     required frontmatter per type; description ≤ 150 chars
-  links      every [[wikilink]] and relative (path.md) resolves
-  stale      projects past next_review; books `reading` > 90 days
-  protected  hash of protected sections vs .harness/protected.json (written on first run)
-  secrets    API-key / IBAN / email patterns outside finance/ and company/
+`anybrain lint <vault> [--schema --links --graph --stale --protected --quotes --secrets --feedback --icloud]`
+No flag runs every check. Exit code 1 on any finding unless `--report-only`.
 """
-import sys, re, json, hashlib, datetime
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
 from pathlib import Path
-import yaml
 
-REQ = {"*": ["title", "type", "description", "updated"],
-       "book": ["author", "status"], "project": ["status", "kind", "next_review"],
-       "concept": ["confidence", "sources"]}
-FOLDER_PROTECT = {"library": ["## My take"], "projects": ["## Why"]}
-FULL_PROTECT = {"me/aspirations.md", "me/principles.md"}
-SECRET_PATTERNS = [r"sk-[A-Za-z0-9]{20,}", r"AKIA[0-9A-Z]{16}", r"\bFR\d{2}(?: ?\d{4}){5} ?\d{3}\b",
-                   r"[\w.+-]+@[\w-]+\.[\w.]+"]
-FM_RE = re.compile(r"^---\n(.*?)\n---\n(.*)$", re.S)
-LINK_RE = re.compile(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]|\]\(([^)#\s]+\.md)")
-SKIP = {"raw", ".harness", ".git", ".obsidian"}
+from . import vault as v
 
-
-def pages(vault: Path):
-    for p in vault.rglob("*.md"):
-        if any(part in SKIP for part in p.relative_to(vault).parts) or p.name in ("index.md", "log.md", "AGENTS.md", "CLAUDE.md"):
-            continue
-        m = FM_RE.match(p.read_text(encoding="utf-8"))
-        yield p, (yaml.safe_load(m.group(1)) or {}) if m else None, (m.group(2) if m else "")
+TYPES = ("book", "concept", "note", "project", "profile", "brief", "report")
+BOOK_STATUS = ("to-read", "reading", "read", "abandoned")
+PROJECT_STATUS = ("idea", "active", "paused", "shipped", "dropped")
+PROJECT_KIND = ("portfolio", "mission", "venture", "personal")
+CONFIDENCE = ("low", "medium", "high")
+LANGUAGES = ("fr", "en")
+DESCRIPTION_MAX = 150
+YEAR_MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 
 
-def check_schema(vault):
-    out = []
-    for p, fm, _ in pages(vault):
-        rel = p.relative_to(vault)
-        if fm is None:
-            out.append(f"schema: no frontmatter: {rel}"); continue
-        for f in REQ["*"] + REQ.get(fm.get("type", ""), []):
-            if not fm.get(f):
-                out.append(f"schema: missing `{f}`: {rel}")
-        if len(str(fm.get("description", ""))) > 150:
-            out.append(f"schema: description > 150 chars: {rel}")
-    return out
+@dataclass(frozen=True)
+class Finding:
+    level: str  # "error" or "warning"
+    check: str
+    message: str
+
+    def __str__(self) -> str:
+        return f"{self.level:<7} {self.check}: {self.message}"
 
 
-def check_links(vault):
-    out, known = [], {p.relative_to(vault).with_suffix("").as_posix() for p in vault.rglob("*.md")}
-    for p, _, body in pages(vault):
-        for wiki, rel in LINK_RE.findall(body):
-            if wiki:
-                target = wiki.strip()
-                ok = target in known or any(k.endswith("/" + target) for k in known)
-            else:
-                ok = (p.parent / rel).resolve().exists()
-            if not ok:
-                out.append(f"links: broken `{wiki or rel}`: {p.relative_to(vault)}")
-    return out
+class Context:
+    """What the checks share: the vault path and its pages, loaded once."""
+
+    def __init__(self, vault: Path):
+        self.vault = vault
+        self._pages: list[v.Page] | None = None
+
+    @property
+    def pages(self) -> list[v.Page]:
+        if self._pages is None:
+            self._pages = v.load_pages(self.vault)
+        return self._pages
 
 
-def check_stale(vault):
-    out, today = [], datetime.date.today()
-    for p, fm, _ in pages(vault):
-        if not fm:
-            continue
-        rel = p.relative_to(vault)
-        if fm.get("type") == "project" and fm.get("status") == "active" and fm.get("next_review"):
-            if datetime.date.fromisoformat(str(fm["next_review"])) < today:
-                out.append(f"stale: project past next_review ({fm['next_review']}): {rel}")
-        if fm.get("type") == "book" and fm.get("status") == "reading" and fm.get("updated"):
-            if (today - datetime.date.fromisoformat(str(fm["updated"]))).days > 90:
-                out.append(f"stale: book `reading` for > 90 days: {rel}")
-    return out
+# ---------------------------------------------------------------------------- --schema
+
+def _is_str_list(value) -> bool:
+    return isinstance(value, list) and all(isinstance(item, str) and item.strip() for item in value)
 
 
-def protected_hashes(vault):
-    h = {}
-    for p, fm, body in pages(vault):
-        rel = p.relative_to(vault).as_posix()
-        if rel in FULL_PROTECT:
-            h[rel] = hashlib.sha256(body.encode()).hexdigest(); continue
-        heads = (fm or {}).get("protected") or FOLDER_PROTECT.get(rel.split("/")[0], [])
-        for head in heads:
-            m = re.search(re.escape(head) + r"\n(.*?)(?=\n## |\Z)", body, re.S)
-            if m:
-                h[f"{rel}#{head}"] = hashlib.sha256(m.group(1).strip().encode()).hexdigest()
-    return h
+def _check_page_schema(page: v.Page) -> list[str]:
+    """Problems with one page's frontmatter and filename (PRD 11.1 to 11.7, 13.2)."""
+    problems = []
+    if not v.is_kebab(page.stem):
+        problems.append(f"filename is not ASCII kebab-case: {page.path.name}")
+    if page.error:
+        problems.append(page.error)
+        return problems
+    fm = page.meta
+
+    def missing(field: str) -> bool:
+        value = fm.get(field)
+        return value is None or (isinstance(value, str) and not value.strip())
+
+    for field in ("title", "type", "description", "language", "created", "updated", "sensitivity"):
+        if missing(field):
+            problems.append(f"missing `{field}`")
+    for field in ("tags", "sources"):
+        if field not in fm:
+            problems.append(f"missing `{field}` (may be an empty list)")
+        elif fm[field] is not None and not isinstance(fm[field], list):
+            problems.append(f"`{field}` must be a list")
+        elif fm[field] and not _is_str_list(fm[field]):
+            problems.append(f"`{field}` must be a list of strings")
+
+    page_type = fm.get("type")
+    if not missing("type") and page_type not in TYPES:
+        problems.append(f"`type` is {page_type!r}, expected one of {', '.join(TYPES)}")
+    if not missing("description"):
+        description = str(fm["description"]).strip()
+        if len(description) > DESCRIPTION_MAX:
+            problems.append(f"`description` is {len(description)} characters (max {DESCRIPTION_MAX})")
+    if not missing("language") and fm["language"] not in LANGUAGES:
+        problems.append(f"`language` is {fm['language']!r}, expected fr or en")
+    if not missing("sensitivity") and fm["sensitivity"] not in v.SENSITIVITY_LEVELS:
+        problems.append(f"`sensitivity` is {fm['sensitivity']!r}, expected one of {', '.join(v.SENSITIVITY_LEVELS)}")
+    for field in ("created", "updated"):
+        if not missing(field) and v.as_date(fm[field]) is None:
+            problems.append(f"`{field}` is not a valid date (YYYY-MM-DD)")
+    for field in ("tags",):
+        for tag in fm.get(field) or []:
+            if isinstance(tag, str) and not v.is_kebab(tag):
+                problems.append(f"tag {tag!r} is not kebab-case")
+    for field in ("aliases", "protected"):
+        if fm.get(field) not in (None, []) and not _is_str_list(fm.get(field)):
+            problems.append(f"`{field}` must be a list of strings")
+
+    if page_type == "book":
+        if missing("author"):
+            problems.append("missing `author`")
+        status = fm.get("status")
+        if missing("status"):
+            problems.append("missing `status`")
+        elif status not in BOOK_STATUS:
+            problems.append(f"`status` is {status!r}, expected one of {', '.join(BOOK_STATUS)}")
+        rating = fm.get("rating")
+        if rating is not None:
+            if isinstance(rating, bool) or not isinstance(rating, int) or not 1 <= rating <= 5:
+                problems.append(f"`rating` is {rating!r}, expected an integer from 1 to 5")
+            elif status not in ("read", "abandoned"):
+                problems.append("`rating` is set but `status` is not read or abandoned")
+        date_read = fm.get("date_read")
+        if date_read is not None and not YEAR_MONTH_RE.match(str(date_read)):
+            problems.append(f"`date_read` is {date_read!r}, expected YYYY-MM")
+    elif page_type == "concept":
+        if missing("confidence"):
+            problems.append("missing `confidence`")
+        elif fm["confidence"] not in CONFIDENCE:
+            problems.append(f"`confidence` is {fm['confidence']!r}, expected one of {', '.join(CONFIDENCE)}")
+    elif page_type == "project":
+        for field, allowed in (("status", PROJECT_STATUS), ("kind", PROJECT_KIND)):
+            if missing(field):
+                problems.append(f"missing `{field}`")
+            elif fm[field] not in allowed:
+                problems.append(f"`{field}` is {fm[field]!r}, expected one of {', '.join(allowed)}")
+        if missing("next_review"):
+            problems.append("missing `next_review`")
+        elif v.as_date(fm["next_review"]) is None:
+            problems.append("`next_review` is not a valid date (YYYY-MM-DD)")
+    return problems
 
 
-def check_protected(vault):
-    store = vault / ".harness" / "protected.json"
-    now = protected_hashes(vault)
-    if not store.exists():
-        store.parent.mkdir(exist_ok=True)
-        store.write_text(json.dumps(now, indent=1)); return []
-    old = json.loads(store.read_text())
-    out = [f"protected: section changed: {k}" for k in now if k in old and old[k] != now[k]]
-    if not out:
-        store.write_text(json.dumps(now, indent=1))
-    return out
-
-
-def check_secrets(vault):
-    out = []
-    for p in vault.rglob("*"):
-        if not p.is_file() or any(part in SKIP for part in p.relative_to(vault).parts):
-            continue
-        top = p.relative_to(vault).parts[0]
-        if top in ("finance", "company"):
-            continue
-        text = p.read_text(encoding="utf-8", errors="ignore")
-        for pat in SECRET_PATTERNS:
-            if re.search(pat, text):
-                out.append(f"secrets: pattern `{pat[:12]}…`: {p.relative_to(vault)}"); break
-    return out
-
-
-def main(argv=None):
-    args = sys.argv[1:] if argv is None else argv
-    if not args:
-        raise SystemExit(__doc__)
-    vault = Path(args[0]).expanduser().resolve()
-    want = {a.lstrip("-") for a in args[1:]} or {"all"}
-    runs = {"schema": check_schema, "links": check_links, "stale": check_stale,
-            "protected": check_protected, "secrets": check_secrets}
+def check_schema(ctx: Context) -> list[Finding]:
     findings = []
-    for name, fn in runs.items():
-        if "all" in want or name in want:
-            findings += fn(vault)
-    for f in findings:
-        print(f)
-    print(f"[lint] {len(findings)} finding(s)")
-    return 1 if findings and "report-only" not in want else 0
+    for page in ctx.pages:
+        for problem in _check_page_schema(page):
+            findings.append(Finding("error", "schema", f"{page.rel}: {problem}"))
+    return findings
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+# ---------------------------------------------------------------------------- registry and runner
+
+CHECKS = {
+    "schema": check_schema,
+}
+PLANNED = ("links", "graph", "stale", "protected", "quotes", "secrets", "feedback", "icloud")
+
+
+def run(vault: Path, selected: list[str] | None = None, report_only: bool = False) -> int:
+    """Run the selected checks (all when none), print findings, return the exit code."""
+    ctx = Context(vault)
+    names = selected or list(CHECKS)
+    findings: list[Finding] = []
+    for name in names:
+        if name not in CHECKS:
+            print(f"lint --{name}: not built yet (PRD section 24 step 5)")
+            continue
+        for finding in CHECKS[name](ctx):
+            if finding not in findings:
+                findings.append(finding)
+    for finding in findings:
+        print(finding)
+    errors = sum(f.level == "error" for f in findings)
+    warnings = len(findings) - errors
+    print(f"lint: {errors} error(s), {warnings} warning(s)")
+    return 1 if findings and not report_only else 0

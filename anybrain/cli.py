@@ -45,16 +45,15 @@ def _cmd_index(args: argparse.Namespace) -> int:
     return index.main(argv)
 
 
-def _cmd_lint(args: argparse.Namespace) -> int:
-    from . import lint
+LINT_CHECKS = ("schema", "links", "graph", "stale", "protected", "quotes", "secrets", "feedback", "icloud")
 
-    argv = [vault_arg(args.vault)]
-    for name in ("schema", "links", "stale", "protected", "secrets"):
-        if getattr(args, name):
-            argv.append("--" + name)
-    if args.report_only:
-        argv.append("--report-only")
-    return lint.main(argv)
+
+def _cmd_lint(args: argparse.Namespace) -> int:
+    from . import lint, vault
+
+    root = vault.resolve_vault(vault_arg(args.vault))
+    selected = [name for name in LINT_CHECKS if getattr(args, name)]
+    return lint.run(root, selected, report_only=args.report_only)
 
 
 def _cmd_anonymize(args: argparse.Namespace) -> int:
@@ -104,7 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("lint", help="Deterministic checks; no flag runs them all")
     p.add_argument("vault", nargs="?")
-    for name in ("schema", "links", "stale", "protected", "secrets"):
+    for name in LINT_CHECKS:
         p.add_argument("--" + name, action="store_true")
     p.add_argument("--report-only", action="store_true", help="exit 0 even with findings")
     p.set_defaults(func=_cmd_lint)
@@ -135,9 +134,11 @@ def main(argv: list[str] | None = None) -> int:
     if not getattr(args, "func", None):
         parser.print_help()
         return 2
+    from .vault import VaultError
+
     try:
         return args.func(args)
-    except UsageError as exc:
+    except (UsageError, VaultError) as exc:
         print(f"anybrain: error: {exc}", file=sys.stderr)
         return 2
 

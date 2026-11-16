@@ -212,3 +212,11 @@ def test_framework_root_finds_templates_and_skills():
     root = v.framework_root()
     assert (root / "templates" / "AGENTS.vault.md").is_file()
     assert (root / "skills").is_dir()
+
+
+def test_impossible_date_stays_a_string_instead_of_crashing():
+    fm, _, _, error = v.parse_frontmatter("---\ncreated: 2026-02-30\nupdated: 2026-03-01\n---\n")
+    assert error is None
+    assert fm["created"] == "2026-02-30"
+    assert fm["updated"] == dt.date(2026, 3, 1)
+    assert v.as_date(fm["created"]) is None

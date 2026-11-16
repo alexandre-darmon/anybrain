@@ -1296,6 +1296,7 @@ P2, P3, P4 are planned only after step 18 and the 4-week measure.
 | Q8 | Voice: iPhone Shortcut to save memos directly into `raw/voice/`, or manual share? | Manual share in P3 v1 |
 | Q9 | Slugs: section 13.2 says "no articles", but 13.3 and 21.1 use `the-art-and-business-of-online-writing`. Drop all articles or only a leading one? | Drop a leading article only; keep the other words (`docs/decisions.md` D007) |
 | Q10 | What if a page declares a weaker `sensitivity` than its folder default (e.g. `public` in `company/`)? | The stricter of the two applies (`docs/decisions.md` D009) |
+| Q11 | Section 11.3 says a concept MUST list at least 2 sources, but 13.6 only warns after 60 days. Error or warning? | Warning from `lint --graph` after 60 days; `--schema` does not count sources (`docs/decisions.md` D010) |
 
 ---
 
