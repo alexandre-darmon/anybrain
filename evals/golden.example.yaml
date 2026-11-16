@@ -1,0 +1,40 @@
+# Golden questions about the vault. Copy to <vault>/.harness/golden.yaml and write 15+ of your own.
+# Graders: cited_files (exact), must_include / must_not_include (exact), behaviour (judge, rubric in README.md).
+# Tag `needle` = the answer lives in raw/, not in a compiled page (feeds the scaling gates).
+
+- id: g001
+  question: What is my current position on category design?
+  expected:
+    cited_files: [wiki/concepts/category-design.md]
+    must_include: ["positioning"]
+    must_not_include: ["I don't have", "I cannot find"]
+  tags: [concept, navigation]
+
+- id: g002
+  question: Which of my books did I rate 5?
+  expected:
+    cited_files: [library/index.md]
+    must_include: ["Snow Leopard"]
+    must_not_include: ["Inspired"]
+  tags: [library, navigation]
+
+- id: g003
+  question: Which project is active and when is its next review?
+  expected:
+    cited_files: [projects/index.md]
+    must_include: ["Example tool", "2026-11-30"]
+  tags: [project, navigation]
+
+- id: g004
+  question: What did the Snow Leopard highlights say about languaging?
+  expected:
+    cited_files: [raw/highlights/snow-leopard.md]
+    must_include: ["naming"]
+  tags: [needle]
+
+- id: g005
+  question: Recommend me one book and explain why from my ratings.
+  expected:
+    behaviour: proposes a title not in library/, links it to a book rated 5, names one risk
+    must_not_include: ["$100M Offers", "Snow Leopard", "Inspired"]
+  tags: [recommend, judge]

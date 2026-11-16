@@ -1,0 +1,19 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "_comment": "Fallback harness. Copy to <vault>/opencode.json. OpenCode reads AGENTS.md and ~/.agents/skills natively.",
+  "model": "openrouter/anthropic/claude-opus-5-5",
+  "provider": {
+    "ollama": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": { "baseURL": "http://localhost:11434/v1" },
+      "models": { "mistral-small": {} }
+    }
+  },
+  "agent": {
+    "local": {
+      "description": "Local-only profile for finance/, company/, me/, journal/",
+      "model": "ollama/mistral-small",
+      "tools": { "webfetch": false }
+    }
+  }
+}

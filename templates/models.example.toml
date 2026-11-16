@@ -1,0 +1,32 @@
+# Model profiles and routing. Copied to <vault>/.harness/models.toml by install.sh.
+# The harness reads the profile; the agent reads the routing and sensitivity defaults.
+
+[profiles.frontier]
+provider    = "openai-compatible"
+base_url    = "https://openrouter.ai/api/v1"     # any OpenAI-compatible gateway; swap in one line
+model       = "anthropic/claude-opus-5-5"
+api_key_env = "FRONTIER_API_KEY"                 # value lives in .harness/.env
+
+[profiles.local]
+provider    = "openai-compatible"
+base_url    = "http://localhost:11434/v1"        # Ollama
+model       = "mistral-small"                     # pick with: scripts/run_evals.sh --profile local
+api_key_env = ""
+
+[routing]
+default     = "frontier"
+"finance/"  = "local"
+"company/"  = "local"
+"me/"       = "local"
+"journal/"  = "local"      # daily-brief reads email: never a frontier model
+"raw/docs/" = "local"
+
+[defaults.sensitivity]
+"finance/"  = "confidential"
+"company/"  = "confidential"
+"me/"       = "personal"
+"journal/"  = "personal"
+"projects/" = "personal"
+"library/"  = "public"
+"wiki/"     = "public"
+"raw/"      = "personal"
