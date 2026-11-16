@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Mask PII in a page before it is sent to a frontier model.
 
 Usage: anonymize.py <file.md>  → prints the masked text to stdout; never edits the file.
@@ -15,8 +14,9 @@ PATTERNS = [
 ]
 
 
-def main():
-    path = Path(sys.argv[1]).resolve()
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    path = Path(argv[0]).resolve()
     text = path.read_text(encoding="utf-8")
     for pat, rep in PATTERNS:
         text = re.sub(pat, rep, text)
@@ -27,7 +27,8 @@ def main():
                 text = re.sub(re.escape(n), "<name>", text, flags=re.I)
             break
     sys.stdout.write(text)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

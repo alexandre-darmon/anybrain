@@ -1,7 +1,7 @@
 ---
 title: {{Project name}}
 type: project
-description: {{one line, ≤ 150 chars — what it is and the current state}}
+description: {{one line, ≤ 150 chars: what it is and the current state}}
 status: idea               # idea · active · paused · shipped · dropped
 kind: portfolio            # portfolio · mission · venture
 repo:
@@ -22,6 +22,6 @@ protected: ["## Why"]
 <!-- dated bullets, newest first. The agent maintains this from log.md and owner notes. -->
 
 ## Decisions
-<!-- append-only, dated: YYYY-MM-DD — decision — reason -->
+<!-- append-only, dated: YYYY-MM-DD: decision: reason -->
 
 ## Next steps

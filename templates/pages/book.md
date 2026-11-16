@@ -2,7 +2,7 @@
 title: {{title}}
 type: book
 author: {{author}}
-description: {{one line, ≤ 150 chars — what the book is about and why it matters to me}}
+description: {{one line, ≤ 150 chars: what the book is about and why it matters to me}}
 status: to-read            # to-read · reading · read · abandoned
 rating:                    # 1–5, only when read
 date_read:                 # YYYY-MM

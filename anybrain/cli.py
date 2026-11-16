@@ -1,0 +1,146 @@
+"""Command-line entry point: one argparse dispatcher for every subcommand (PRD section 9.3).
+
+Exit codes: 0 success, 1 findings (checks) or refusal, 2 usage or environment error.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+
+from . import __version__
+
+# Commands listed in PRD 9.3 that belong to later build steps. They are registered so that
+# `anybrain --help` shows the full surface, and they say plainly that they are not built yet.
+PLANNED = {
+    "content": ("Draft snapshots, edit ratio and content checks", "P1b, PRD section 24 step 15"),
+    "migrate": ("Snapshot a legacy vault and check owner text survived", "P1, PRD section 24 step 11"),
+    "eval": ("Run the golden set and print the gates", "P1, PRD section 24 step 10"),
+    "transcribe": ("Transcribe new audio in raw/voice/ locally", "P3"),
+}
+
+
+class UsageError(Exception):
+    """Raised for a bad invocation or a missing vault; reported with exit code 2."""
+
+
+def vault_arg(value: str | None) -> str:
+    """Return the vault path from the argument, else from ANYBRAIN_VAULT (PRD 9.2)."""
+    if value:
+        return value
+    env = os.environ.get("ANYBRAIN_VAULT")
+    if env:
+        return env
+    raise UsageError("no vault given: pass the vault path or set ANYBRAIN_VAULT")
+
+
+def _cmd_index(args: argparse.Namespace) -> int:
+    from . import index
+
+    argv = [vault_arg(args.vault)]
+    if args.check:
+        argv.append("--check")
+    if args.stats:
+        argv.append("--stats")
+    return index.main(argv)
+
+
+def _cmd_lint(args: argparse.Namespace) -> int:
+    from . import lint
+
+    argv = [vault_arg(args.vault)]
+    for name in ("schema", "links", "stale", "protected", "secrets"):
+        if getattr(args, name):
+            argv.append("--" + name)
+    if args.report_only:
+        argv.append("--report-only")
+    return lint.main(argv)
+
+
+def _cmd_anonymize(args: argparse.Namespace) -> int:
+    from . import anonymize
+
+    return anonymize.main([args.file])
+
+
+def _not_built(step: str):
+    def run(args: argparse.Namespace) -> int:
+        print(f"anybrain {args.command}: not built yet ({step})", file=sys.stderr)
+        return 2
+
+    return run
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="anybrain",
+        description="Your second brain in Markdown. Any model, any agent.",
+        epilog="Every command takes the vault path first, or reads ANYBRAIN_VAULT.",
+    )
+    parser.add_argument("--version", action="version", version=f"anybrain {__version__}")
+    sub = parser.add_subparsers(dest="command", metavar="<command>")
+
+    p = sub.add_parser("init", help="Create a vault: folders, templates, config, AGENTS.md, skill links, index")
+    p.add_argument("vault", nargs="?")
+    p.set_defaults(func=_not_built("PRD section 24 step 6"))
+
+    p = sub.add_parser("update", help="Re-render framework files; never touches content folders")
+    p.add_argument("vault", nargs="?")
+    p.set_defaults(func=_not_built("PRD section 24 step 6"))
+
+    p = sub.add_parser("doctor", help="Check the environment around a vault")
+    p.add_argument("vault", nargs="?")
+    p.set_defaults(func=_not_built("PRD section 24 step 6"))
+
+    p = sub.add_parser("index", help="Build every index.md and .harness/graph.json")
+    p.add_argument("vault", nargs="?")
+    p.add_argument("--check", action="store_true", help="write nothing; exit 1 if anything would change")
+    p.add_argument("--stats", action="store_true", help="print pages, edges, orphans and index token estimates")
+    p.set_defaults(func=_cmd_index)
+
+    p = sub.add_parser("neighbors", help="Print pages linked to and from a page")
+    p.add_argument("args", nargs="+", metavar="[vault] page")
+    p.set_defaults(func=_not_built("PRD section 24 step 4"))
+
+    p = sub.add_parser("lint", help="Deterministic checks; no flag runs them all")
+    p.add_argument("vault", nargs="?")
+    for name in ("schema", "links", "stale", "protected", "secrets"):
+        p.add_argument("--" + name, action="store_true")
+    p.add_argument("--report-only", action="store_true", help="exit 0 even with findings")
+    p.set_defaults(func=_cmd_lint)
+
+    p = sub.add_parser("feedback", help="Log owner corrections and list rule proposals")
+    p.add_argument("args", nargs="+", metavar="[vault] {add,topics,proposals}")
+    p.set_defaults(func=_not_built("PRD section 24 step 7"))
+
+    p = sub.add_parser("anonymize", help="Print a PII-masked copy of a file to stdout")
+    p.add_argument("file")
+    p.set_defaults(func=_cmd_anonymize)
+
+    p = sub.add_parser("stats", help="Usage counts from log.md per week and per skill")
+    p.add_argument("vault", nargs="?")
+    p.set_defaults(func=_not_built("PRD section 24 step 7"))
+
+    for name, (summary, step) in PLANNED.items():
+        p = sub.add_parser(name, help=f"{summary} (not built yet: {step})")
+        p.add_argument("rest", nargs=argparse.REMAINDER)
+        p.set_defaults(func=_not_built(step))
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if not getattr(args, "func", None):
+        parser.print_help()
+        return 2
+    try:
+        return args.func(args)
+    except UsageError as exc:
+        print(f"anybrain: error: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

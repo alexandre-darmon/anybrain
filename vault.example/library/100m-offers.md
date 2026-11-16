@@ -2,7 +2,7 @@
 title: $100M Offers
 type: book
 author: Alex Hormozi
-description: Build an offer so valuable that price stops being the objection — the value equation and how to stack it.
+description: Build an offer so valuable that price stops being the objection: the value equation and how to stack it.
 status: read
 rating: 4
 date_read: 2024-03

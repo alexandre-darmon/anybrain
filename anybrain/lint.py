@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Deterministic vault checks. Exit 1 on any finding unless --report-only.
 
 Usage: lint.py <vault_path> [--all | --schema | --links | --stale | --protected | --secrets] [--report-only]
@@ -39,12 +38,12 @@ def check_schema(vault):
     for p, fm, _ in pages(vault):
         rel = p.relative_to(vault)
         if fm is None:
-            out.append(f"schema: no frontmatter — {rel}"); continue
+            out.append(f"schema: no frontmatter: {rel}"); continue
         for f in REQ["*"] + REQ.get(fm.get("type", ""), []):
             if not fm.get(f):
-                out.append(f"schema: missing `{f}` — {rel}")
+                out.append(f"schema: missing `{f}`: {rel}")
         if len(str(fm.get("description", ""))) > 150:
-            out.append(f"schema: description > 150 chars — {rel}")
+            out.append(f"schema: description > 150 chars: {rel}")
     return out
 
 
@@ -58,7 +57,7 @@ def check_links(vault):
             else:
                 ok = (p.parent / rel).resolve().exists()
             if not ok:
-                out.append(f"links: broken `{wiki or rel}` — {p.relative_to(vault)}")
+                out.append(f"links: broken `{wiki or rel}`: {p.relative_to(vault)}")
     return out
 
 
@@ -70,10 +69,10 @@ def check_stale(vault):
         rel = p.relative_to(vault)
         if fm.get("type") == "project" and fm.get("status") == "active" and fm.get("next_review"):
             if datetime.date.fromisoformat(str(fm["next_review"])) < today:
-                out.append(f"stale: project past next_review ({fm['next_review']}) — {rel}")
+                out.append(f"stale: project past next_review ({fm['next_review']}): {rel}")
         if fm.get("type") == "book" and fm.get("status") == "reading" and fm.get("updated"):
             if (today - datetime.date.fromisoformat(str(fm["updated"]))).days > 90:
-                out.append(f"stale: book `reading` for > 90 days — {rel}")
+                out.append(f"stale: book `reading` for > 90 days: {rel}")
     return out
 
 
@@ -98,7 +97,7 @@ def check_protected(vault):
         store.parent.mkdir(exist_ok=True)
         store.write_text(json.dumps(now, indent=1)); return []
     old = json.loads(store.read_text())
-    out = [f"protected: section changed — {k}" for k in now if k in old and old[k] != now[k]]
+    out = [f"protected: section changed: {k}" for k in now if k in old and old[k] != now[k]]
     if not out:
         store.write_text(json.dumps(now, indent=1))
     return out
@@ -115,12 +114,12 @@ def check_secrets(vault):
         text = p.read_text(encoding="utf-8", errors="ignore")
         for pat in SECRET_PATTERNS:
             if re.search(pat, text):
-                out.append(f"secrets: pattern `{pat[:12]}…` — {p.relative_to(vault)}"); break
+                out.append(f"secrets: pattern `{pat[:12]}…`: {p.relative_to(vault)}"); break
     return out
 
 
-def main():
-    args = sys.argv[1:]
+def main(argv=None):
+    args = sys.argv[1:] if argv is None else argv
     if not args:
         raise SystemExit(__doc__)
     vault = Path(args[0]).expanduser().resolve()
@@ -134,8 +133,8 @@ def main():
     for f in findings:
         print(f)
     print(f"[lint] {len(findings)} finding(s)")
-    sys.exit(1 if findings and "report-only" not in want else 0)
+    return 1 if findings and "report-only" not in want else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

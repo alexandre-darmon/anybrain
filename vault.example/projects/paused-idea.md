@@ -1,7 +1,7 @@
 ---
 title: Paused idea
 type: project
-description: A venture idea explored for two weeks and paused — no distribution advantage found.
+description: A venture idea explored for two weeks and paused: no distribution advantage found.
 status: paused
 kind: venture
 repo:
@@ -19,9 +19,9 @@ protected: ["## Why"]
 It solved a problem I had. Not a problem I could reach many people with.
 
 ## Current state
-- 2026-09-14 — paused after interviews.
+- 2026-09-14: paused after interviews.
 
 ## Decisions
-- 2026-09-14 — pause — no distribution channel; revisit if one appears.
+- 2026-09-14: pause: no distribution channel; revisit if one appears.
 
 ## Next steps

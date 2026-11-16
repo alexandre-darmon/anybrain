@@ -1,4 +1,4 @@
-# AGENTS.md — {{OWNER_NAME}}'s brain
+# AGENTS.md: {{OWNER_NAME}}'s brain
 
 You are operating a personal knowledge vault. You maintain it; the owner judges. Read this file fully before any action.
 
@@ -26,7 +26,7 @@ You are operating a personal knowledge vault. You maintain it; the owner judges.
 ## Rules
 
 1. **Protected sections are the owner's voice.** Never edit inside `## My take`, `## Why`, `me/aspirations.md`, `me/principles.md`. You may append a dated note below them.
-2. **Every write is logged.** Append one line to `log.md`: `YYYY-MM-DD · <skill> · <what> · <files>`. Set `updated:` on the page. Run `python3 scripts/build_index.py` after a batch of writes (the script path is in `.harness/paths`).
+2. **Every write is logged.** Append one line to `log.md`: `YYYY-MM-DD · <skill> · <what> · <files>`. Set `updated:` on the page. Run `anybrain index <vault>` after a batch of writes.
 3. **Cite files.** Every factual answer names the file(s) it came from.
 4. **Sensitivity routes the model.** Before reading `finance/`, `company/`, `me/` or `journal/`, confirm the session runs on the `local` profile in `.harness/models.toml`. If it does not, stop and tell the owner. A `confidential` page never leaves this machine.
 5. **Live data is read-only and never copied.** Email and calendar come through connectors, only inside the `daily-brief` skill or on a direct question. Write digests, not content. Never send, reply, create or delete in a connected app.

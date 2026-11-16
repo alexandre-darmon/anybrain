@@ -14,8 +14,8 @@ sensitivity: public
 A named thing can be wanted, searched and repeated. Both sources treat naming as a lever, not decoration.
 
 ## What the sources say
-- [[library/snow-leopard]] — "languaging" as the act of naming new concepts to leave old categories.
-- [[library/100m-offers]] — name the offer.
+- [[library/snow-leopard]]: "languaging" as the act of naming new concepts to leave old categories.
+- [[library/100m-offers]]: name the offer.
 
 ## My position
 Draft: use it, sparingly; a name without a real difference behind it reads as marketing.

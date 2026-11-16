@@ -2,7 +2,7 @@
 title: Inspired
 type: book
 author: Marty Cagan
-description: How empowered product teams discover products worth building — the four risks and dual-track discovery.
+description: How empowered product teams discover products worth building: the four risks and dual-track discovery.
 status: reading
 rating:
 date_read:

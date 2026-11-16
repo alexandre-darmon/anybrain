@@ -1,4 +1,4 @@
-# Model profiles and routing. Copied to <vault>/.harness/models.toml by install.sh.
+# Model profiles and routing. Copied to <vault>/.harness/models.toml by anybrain init.
 # The harness reads the profile; the agent reads the routing and sensitivity defaults.
 
 [profiles.frontier]
@@ -10,7 +10,7 @@ api_key_env = "FRONTIER_API_KEY"                 # value lives in .harness/.env
 [profiles.local]
 provider    = "openai-compatible"
 base_url    = "http://localhost:11434/v1"        # Ollama
-model       = "mistral-small"                     # pick with: scripts/run_evals.sh --profile local
+model       = "mistral-small"                     # chosen by: anybrain eval --profile local
 api_key_env = ""
 
 [routing]

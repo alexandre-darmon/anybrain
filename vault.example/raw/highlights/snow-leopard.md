@@ -1,4 +1,4 @@
-# The Snow Leopard — highlights export (fake sample)
+# The Snow Leopard: highlights export (fake sample)
 
 Highlight (loc. 412): Obvious creators sell information. Non-obvious creators sell experience.
 

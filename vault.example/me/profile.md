@@ -1,7 +1,7 @@
 ---
 title: Profile
 type: profile
-description: Who the owner is — role, sectors, stable facts. Owner-written.
+description: Who the owner is: role, sectors, stable facts. Owner-written.
 tags: [me]
 created: 2026-11-01
 updated: 2026-11-01

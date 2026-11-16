@@ -9,4 +9,4 @@ sources: [finance/holdings.csv]
 sensitivity: confidential
 ---
 
-- 2026-01-10 — monthly ETF purchase, no change in allocation.
+- 2026-01-10: monthly ETF purchase, no change in allocation.
