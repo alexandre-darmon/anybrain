@@ -72,10 +72,11 @@
 | G7 | Prove quality with a golden set of questions that runs on every model or harness change |
 | G8 | Be a clear, forkable public repo that demonstrates agents, evaluation, retrieval and security trade-offs |
 | G9 | Turn vault knowledge into drafts in the owner's voice (public pieces and documents tailored to one reader), grounded in vault pages, with the owner's editing effort decreasing over time |
+| G10 | Know what the agent did in each run: which files it read and wrote, which tools it called, what it cost, and whether a local-only file reached a frontier model. Traces stay on the owner's machine (section 22.5) |
 
 ### 3.2 Non-goals
 
-- A web app, a mobile app, a server, or a hosted service.
+- A web app, a mobile app, a server, or a hosted service. This includes hosted observability services: run traces stay in the vault (section 22.5).
 - A vector database or graph database. QMD is the only search component, and only in phase 2.
 - An agent runtime. anybrain runs on existing harnesses. (Runtime work belongs to the owner's separate `nanoagent` repo.)
 - Copying email or calendar content into the vault.
@@ -152,6 +153,9 @@
 | Content cadence | ≥ 1 piece per week drafted from the vault and published, 4 weeks in a row | Count of `content/published/` |
 | Confidential sources in published content | 0 | `anybrain lint --content` |
 | Banned patterns in `ready` drafts (em dashes, owner's banned words) | 0 | `anybrain lint --content` |
+| Local-only files read in frontier runs | 0 | Run traces (section 22.5): eval runs from P1, every run from P2 |
+| Files opened per answer, measured | Median ≤ 8, and equal to the self-reported `files opened: N` | Run traces (section 22.5) |
+| Cost per skill run | Reported per skill and per week; no target before 4 weeks of data | Run traces (section 22.5), `anybrain stats` |
 
 **Kill criterion.** If usage is below 2 ingests per week for 4 consecutive weeks after migration, stop adding features. Run a retro in `journal/` and simplify before continuing.
 
@@ -164,9 +168,9 @@ The vault structure is created complete on day one so nothing needs restructurin
 | Phase | Name | In scope | Exit criteria |
 | --- | --- | --- | --- |
 | **P0** | Repo foundation | Repo layout, CLI, templates, example vault, `index` + `graph.json`, `neighbors`, `lint`, `init`, `update`, tests, CI | Section 24 steps 1 to 7 pass |
-| **P1** | Readings | Skills `ingest`, `ask`, `lint`, `recommend`, `migrate`, `feedback`; Readwise and Web Clipper capture; migration of the Obsidian vault; golden set v1; evals on two harnesses | Metrics of section 6 for G2, G3, G4, G7; migration accepted |
+| **P1** | Readings | Skills `ingest`, `ask`, `lint`, `recommend`, `migrate`, `feedback`; Readwise and Web Clipper capture; migration of the Obsidian vault; golden set v1; evals on two harnesses, with a run trace per eval case (section 22.5) | Metrics of section 6 for G2, G3, G4, G7; migration accepted |
 | **P1b** | Content | `me/voice.md`, `content/` folder, channel guides, skills `draft` and `publish`, content ideas in the weekly lint, content evals | 4 pieces published from drafts; edit ratio measured on each; content evals pass |
-| **P2** | Me and projects | `me/` pages filled by the owner; `projects/` pages with Now + Timeline; QMD **only if** a gate of section 17.3 trips | 5 projects migrated; golden set covers projects |
+| **P2** | Me and projects | `me/` pages filled by the owner; `projects/` pages with Now + Timeline; QMD **only if** a gate of section 17.3 trips; run traces for every session, not only evals (section 22.6) | 5 projects migrated; golden set covers projects; traces recorded for 4 weeks of real use |
 | **P3** | Sensitive and voice | `company/`, `finance/` on local profile; voice capture with local transcription | Safety evals pass; voice memo filed end to end |
 | **P4** | Live data | `daily-brief` skill with read-only calendar and email | Brief ≤ 25 lines, no copied content, local profile only |
 
@@ -257,7 +261,8 @@ anybrain/
 │   ├── install.py               init, update, doctor (section 9.3)
 │   ├── evals.py                 golden set runner, harness adapters, gates (section 22)
 │   ├── content.py               draft snapshots, edit ratio, content checks (sections 15.10, 15.11)
-│   └── stats.py                 usage metrics from log.md
+│   ├── stats.py                 usage metrics from log.md and run traces
+│   └── trace.py                 run traces: normalise harness output, store, report (sections 22.5, 22.6)
 ├── skills/
 │   ├── ingest/SKILL.md
 │   ├── ask/SKILL.md
@@ -322,6 +327,8 @@ anybrain/
 | `anybrain eval <vault> [--harness claude\|opencode] [--profile frontier\|local] [--tags T,...] [--max-cost EUR] [--freeze]` | Run the golden set, print pass rate and gates | P1 |
 | `anybrain stats <vault> [--weeks 4]` | Usage counts from `log.md` per week and per skill | P1 |
 | `anybrain transcribe <vault>` | Transcribe new audio in `raw/voice/` with local whisper.cpp | P3 |
+| `anybrain trace <vault> show [--last N] [--skill NAME]` | Print recent run traces: files read and written, tool calls, tokens, cost, local-only reads | P1 (eval traces), P2 (all runs) |
+| `anybrain trace <vault> import [--since DATE]` | Read finished session transcripts of the configured harnesses and store them as run traces | P2 |
 
 ### 9.4 README requirements
 
@@ -395,6 +402,7 @@ brain/
     ├── render.json                  hashes of framework files at last render
     ├── golden.yaml                  owner's golden questions (private)
     ├── baseline/                    frozen eval runs
+    ├── traces/                      run traces, one JSON line per run (section 22.5)
     ├── clients.txt                  client names, one per line (section 19.4), never synced to the repo
     ├── names.txt                    names to mask in anonymize
     └── .env                         API keys, chmod 600
@@ -1222,6 +1230,45 @@ gates
 
 ---
 
+### 22.5 Run traces (observability)
+
+An answer can be right for the wrong reasons: the agent opened 30 files, or read a confidential file and did not quote it. Graders only see the answer. A run trace records what the agent **did**.
+
+**Source.** The harness, never the model's own report. Each harness adapter in `anybrain/trace.py` turns the harness's machine output into one normalised record: `claude -p --output-format stream-json --verbose` for Claude Code, `opencode run --format json` for OpenCode. Adding a harness means adding an adapter, never a hook or a plugin in the vault (principle 5).
+
+**Record** (one JSON line in `.harness/traces/<YYYY-MM>.jsonl`):
+
+```json
+{"run_id": "...", "started": "2026-11-17T09:00:00Z", "duration_ms": 41200,
+ "harness": "claude", "harness_version": "2.1.326", "profile": "frontier", "model": "<model id>",
+ "trigger": "eval", "case_id": "g010", "skill": "ask",
+ "tokens": {"input": 18234, "output": 912, "cached": 15000}, "cost_usd": 0.21,
+ "tool_calls": [{"tool": "read", "target": "wiki/concepts/category-design.md", "result": "ok"},
+                {"tool": "shell", "target": "anybrain neighbors . wiki/concepts/category-design.md", "result": "ok"}],
+ "files_read": ["index.md", "wiki/index.md", "wiki/concepts/category-design.md"],
+ "files_written": [],
+ "denied": [{"tool": "read", "target": "me/profile.md"}],
+ "local_only_read_on_frontier": [],
+ "self_reported_files_opened": 3}
+```
+
+**Rules.**
+- A trace holds paths, tool names, commands, counts, tokens and cost. It never holds file content, the answer text, or the owner's prompt; an eval trace refers to its question by `case_id`. A shell command is stored without its output.
+- Traces stay in `.harness/traces/`, on the owner's machine and in the nightly backup. No command sends them anywhere. Any future viewer reads these files locally.
+- `local_only_read_on_frontier` lists every file read in a frontier run that the routing of `models.toml` keeps local. It is the measured form of the safety metric of section 6: a non-empty list fails the run and is printed first by `anybrain trace show` and `anybrain eval`.
+- The cost gate of 17.3 and the `files_opened` grader of 22.2 use `files_read` from the trace; the agent's `files opened: N` line is kept and compared with it.
+- Retention: traces older than 12 months are not deleted by anybrain; the owner decides (Q21).
+
+**Phase.** P1 (step 10): `anybrain eval` writes a trace for every case and reports per tag: median files read, tokens, cost, local-only reads. `anybrain trace show` prints them.
+
+### 22.6 Continuous observability (P2)
+
+From P2, every session is traced, not only evals, so the owner sees what the agent does day to day: cost per skill per week, files read per answer, and any local-only file read on the frontier profile.
+
+- **Source:** `anybrain trace import` reads the transcripts the harnesses already keep after a session ends and stores normalised records (22.5). No daemon, no hook, no collector to run. Harness-native telemetry (OpenTelemetry) MAY be supported later, only towards a collector on the same machine (Q20).
+- **Report:** `anybrain stats` adds cost per skill and per week, median files read per `ask`, and the count of local-only reads on frontier (target 0). The weekly `lint` skill adds these lines to its report.
+- **Exit criterion:** 4 weeks of traces from real use, with no local-only read on the frontier profile, or each one explained in `journal/`.
+
 ## 23. Testing strategy
 
 - **Unit tests** (`pytest`) for every module in `anybrain/`: frontmatter parsing, slug rules, link extraction and resolution (all syntaxes in 13.1, aliases, duplicates), graph in/out edges and context, index formats and grouping, each lint check (one passing and one failing fixture each), protected and append-only hashing, feedback counting and proposals, anonymize patterns (including the date regression), migrate inventory and check.
@@ -1247,7 +1294,7 @@ Time budget: steps 1 to 7 over one weekend; steps 8 to 13 over one to two weeks 
 | 7 | `anonymize.py`, `feedback.py`, `stats.py` | Acceptance of 16 and 19.3 |
 | 8 | Skills `ingest`, `ask`, `lint`, `recommend`, `feedback` rewritten to sections 15 and 16 | Each run once on `vault.example/` in Claude Code; results recorded in `docs/decisions.md` |
 | 9 | Same skills in OpenCode with the local profile | Recorded; any harness-specific wording removed |
-| 10 | `evals.py`: runner, graders, judge in fresh context, cost cap, gates, baseline; `evals/golden.example.yaml` with ≥ 8 cases covering every tag | Runs end to end on `vault.example/` with both harnesses |
+| 10 | `evals.py`: runner, graders, judge in fresh context, cost cap, gates, baseline; `evals/golden.example.yaml` with ≥ 8 cases covering every tag; `trace.py` with one adapter per harness and a run trace per case (22.5); `anybrain trace show` | Runs end to end on `vault.example/` with both harnesses; every case has a trace with files read, tokens and cost; a safety case that reads a local-only file on frontier fails |
 | 11 | `migrate.py` + `migrate` skill; fixture `legacy-obsidian/` | Acceptance of 21.3 on the fixture |
 | 12 | README per 9.4; `docs/architecture.md`, `docs/prior-art.md`, `docs/decisions.md` | No em dashes (a search for the character U+2014 in `*.md` returns nothing); every claim maps to a section of this PRD |
 | 13 | Release `v0.1.0` tag | CI green; `init` on a clean macOS user works |
@@ -1306,6 +1353,8 @@ P2, P3, P4 are planned only after step 18 and the 4-week measure.
 | Q17 | `init` is described as creating the vault "from `vault.example/` structure". Should the fake example pages be copied too? | No: folders, templates, config and four empty `me/` pages only (`docs/decisions.md` D019) |
 | Q18 | Section 13.5 masks only confidential neighbours, while 18.4 denies reading `me/` and `journal/` in frontier sessions. Should scripts (`graph.json`, `neighbors`, `lint`) also hide `me/` and `journal/` content outside the local profile? | Yes: they are treated as local-only, like confidential pages (`docs/decisions.md` D025) |
 | Q19 | `init` builds the indexes, but 9.3 says it never overwrites existing files. What if the owner's folder already has a hand-written `index.md` (a home note, a MOC)? | `index` and `init` stop, write nothing, and ask the owner to rename that file (`docs/decisions.md` D026). The migration (section 21) may decide where such notes go |
+| Q20 | Continuous observability (22.6): import finished session transcripts, or receive harness OpenTelemetry on a local collector? | Import transcripts: no process to run; OpenTelemetry only to a collector on the same machine, never a hosted service |
+| Q21 | How long are run traces kept, and should paths of local-only files be hashed in traces read by frontier sessions? | Kept until the owner deletes them; from step 10, `.harness/traces/` is routed local, so harness configs deny it to frontier sessions |
 
 ---
 
