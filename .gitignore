@@ -5,3 +5,8 @@ __pycache__/
 .harness/.env
 .harness/baseline/
 .DS_Store
+*.egg-info/
+build/
+dist/
+.venv/
+vault.example/.harness/protected.json

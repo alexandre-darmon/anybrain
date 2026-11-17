@@ -1,8 +1,10 @@
-# personal-harness
+# anybrain
 
-**A local-first, model-agnostic second brain: Markdown you own, operated by whichever agent you choose.**
+**Your second brain in Markdown. Any model, any agent.**
 
-Most "AI second brains" die in one of two ways. You stop filing (the Obsidian graveyard), or you wake up locked into a vendor's memory feature you can't export. This repo is the harness I use to avoid both: plain files on disk, an agent that does the filing, and every layer on an open standard so the model and the tool are swappable.
+> Work in progress: the repo is being rebuilt from `PRD.md`, step by step (PRD section 24). This README is rewritten in step 12.
+
+Most "AI second brains" die in one of two ways. You stop filing (the Obsidian graveyard), or you wake up locked into a vendor's memory feature you can't export. This repo is the method I use to avoid both: plain files on disk, an agent that does the filing, and every layer on an open standard so the model and the tool are swappable.
 
 It was built after I abandoned a hand-maintained Obsidian vault. The knowledge base was good; the maintenance cost killed it. The fix was not a better note app. It was handing the filing job to the agent.
 
@@ -22,7 +24,7 @@ It was built after I abandoned a hand-maintained Obsidian vault. The knowledge b
 
 1. **File over app.** Markdown for knowledge, CSV for numbers. If every tool here disappeared, the vault still works in a text editor.
 2. **The agent writes, you judge.** The LLM maintains the wiki, the indexes and the links. You write only what needs your voice: reviews, aspirations, decisions. Those sections are protected.
-3. **Indexes before retrieval.** A hierarchy of `index.md` files, regenerated from frontmatter by a script, is the navigation layer. Semantic search is added only when measured recall drops (see `docs/SPEC.md`, section 8).
+3. **Indexes before retrieval.** A hierarchy of `index.md` files, regenerated from frontmatter by a script, is the navigation layer. Semantic search is added only when measured recall drops (see `PRD.md`, section 17).
 4. **Open standards at every seam.** `AGENTS.md` for instructions, Agent Skills (`SKILL.md`) for procedures, MCP for tools, an OpenAI-compatible endpoint for models. No hooks, no vendor plugins.
 5. **Live data is queried, never copied.** Email and calendar stay in their apps. The vault keeps a daily digest, not the raw messages.
 6. **Sensitivity decides the model.** Finance, company and email run on a local model by default. Frontier models get books and public research.
@@ -62,19 +64,20 @@ Two locations, one rule: **this repo holds the method, your machine holds the da
 ## Quick start
 
 ```bash
-git clone https://github.com/alexandre-darmon/personal-harness
-cd personal-harness
-./scripts/install.sh ~/Library/Mobile\ Documents/com~apple~CloudDocs/brain
+git clone https://github.com/alexandre-darmon/anybrain
+cd anybrain
+pip install -e .
+anybrain init ~/Library/Mobile\ Documents/iCloud~md~obsidian/Documents/brain
 # → creates the vault from vault.example, links skills into ~/.agents/skills,
 #   writes AGENTS.md, builds the first index
 
-cd ~/Library/Mobile\ Documents/com~apple~CloudDocs/brain
-claude          # or: opencode, codex, goose — anything that reads AGENTS.md
+cd ~/Library/Mobile\ Documents/iCloud~md~obsidian/Documents/brain
+claude          # or: opencode, codex, goose, or anything that reads AGENTS.md
 > ingest raw/highlights/snow-leopard.md
 > what do I believe about category design?
 ```
 
-Full implementation details, schemas and acceptance criteria: [`docs/SPEC.md`](docs/SPEC.md).
+Full implementation details, schemas and acceptance criteria: [`PRD.md`](PRD.md).
 
 ## The skills
 

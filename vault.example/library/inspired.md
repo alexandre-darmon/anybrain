@@ -1,23 +1,24 @@
 ---
 title: Inspired
 type: book
+description: Empowered product teams discover products worth building by retiring four risks before they build.
 author: Marty Cagan
-description: How empowered product teams discover products worth building — the four risks and dual-track discovery.
 status: reading
 rating:
 date_read:
 recommended_by:
-language: en
+isbn:
 tags: [product-management, discovery]
+aliases: []
+language: en
 created: 2026-10-20
 updated: 2026-10-20
 sources: []
 sensitivity: public
-protected: ["## My take"]
 ---
 
 ## My take
-<!-- owner writes here -->
+<!-- owner writes here. Protected. -->
 
 ## Key ideas
 - Four risks to retire before building: value, usability, feasibility, viability.
@@ -26,3 +27,4 @@ protected: ["## My take"]
 ## Quotes
 
 ## Related
+- The article behind [[discovery-interviews]] tests the value risk with interviews.

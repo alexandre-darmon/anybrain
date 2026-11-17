@@ -1,0 +1,12 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permissions": [],
+  "agents": {
+    "local": {
+      "description": "Local profile: the only agent allowed to read what .harness/models.toml routes to the local profile. Start OpenCode with ANYBRAIN_PROFILE=local to use it.",
+      "mode": "primary",
+      "model": "ollama/<local model id>",
+      "permissions": []
+    }
+  }
+}

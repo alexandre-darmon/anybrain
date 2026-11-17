@@ -3,9 +3,9 @@
 The vault is its own benchmark. Before trusting a new model or harness, run the golden set.
 
 ## Files
-- `golden.example.yaml` — five questions against `vault.example/`. Your real set lives in `<vault>/.harness/golden.yaml` (private, 15+ questions).
-- `suite.yaml` — the evalblink suite definition (step 10 of the build order).
-- `adapter.py` — runs the harness headless from the vault root for each question and returns `{answer, cited_files, files_opened}`.
+- `golden.example.yaml`: five questions against `vault.example/`. Your real set lives in `<vault>/.harness/golden.yaml` (private, 15+ questions).
+- `suite.yaml`: the evalblink suite definition (step 10 of the build order).
+- `adapter.py`: runs the harness headless from the vault root for each question and returns `{answer, cited_files, files_opened}`.
 
 ## Graders
 | Grader | Checks | Type |
@@ -20,4 +20,4 @@ Calibrate the judge once: 20 answers labelled by hand, agreement ≥ 0.80, then 
 Pass ≥ 0.80. The first passing run is frozen in `<vault>/.harness/baseline/` with model, harness, date. Later runs are compared to it.
 
 ## The four scaling gates
-Printed by `scripts/run_evals.sh`. Any ✗ means add QMD (see `docs/SPEC.md` §8). Until then, indexes are enough.
+Printed by `anybrain eval` (PRD section 22.4). Any ✗ means add QMD (PRD section 17.2). Until then, indexes are enough.

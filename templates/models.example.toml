@@ -1,32 +1,36 @@
-# Model profiles and routing. Copied to <vault>/.harness/models.toml by install.sh.
-# The harness reads the profile; the agent reads the routing and sensitivity defaults.
+# Model profiles and routing (PRD section 18.2). Copied to <vault>/.harness/models.toml by `anybrain init`.
+# The model of each profile is chosen by `anybrain eval`, not by this file.
 
 [profiles.frontier]
-provider    = "openai-compatible"
-base_url    = "https://openrouter.ai/api/v1"     # any OpenAI-compatible gateway; swap in one line
-model       = "anthropic/claude-opus-5-5"
-api_key_env = "FRONTIER_API_KEY"                 # value lives in .harness/.env
+base_url    = "https://openrouter.ai/api/v1"   # or a provider's own endpoint
+model       = "<frontier model id>"            # chosen by eval
+api_key_env = "FRONTIER_API_KEY"               # the value lives in .harness/.env
 
 [profiles.local]
-provider    = "openai-compatible"
-base_url    = "http://localhost:11434/v1"        # Ollama
-model       = "mistral-small"                     # pick with: scripts/run_evals.sh --profile local
+base_url    = "http://localhost:11434/v1"      # Ollama
+model       = "<local model id>"               # chosen by: anybrain eval --profile local
 api_key_env = ""
 
+# Folder ("me/") or file ("me/preferences.md") -> profile. A file entry wins over its folder; among
+# folders, the longest wins. Everything routed "local" is denied to frontier sessions by the harness
+# configs and hidden by anybrain's commands outside the local profile. To let frontier models read one more
+# file, add a line such as "me/voice.md" = "frontier", then run `anybrain update`. company/ and finance/
+# always stay local: a "frontier" line for them is ignored.
 [routing]
-default     = "frontier"
-"finance/"  = "local"
-"company/"  = "local"
-"me/"       = "local"
-"journal/"  = "local"      # daily-brief reads email: never a frontier model
-"raw/docs/" = "local"
+default             = "frontier"
+"me/"               = "local"
+"me/preferences.md" = "frontier"               # rules for the agent; read by every model
+"journal/"          = "local"
+"company/"          = "local"
+"finance/"          = "local"
+"raw/docs/"         = "local"
+"journal/reports/"  = "frontier"               # lint reports written by frontier sessions
 
-[defaults.sensitivity]
-"finance/"  = "confidential"
-"company/"  = "confidential"
-"me/"       = "personal"
-"journal/"  = "personal"
-"projects/" = "personal"
-"library/"  = "public"
-"wiki/"     = "public"
-"raw/"      = "personal"
+[skills]
+dirs = ["~/.agents/skills", "~/.claude/skills"] # where init and update link the skills
+
+# Headless commands, checked against the official docs on 2026-11-16 (docs/decisions.md D020).
+[harnesses.claude]
+headless = "claude -p {prompt}"
+[harnesses.opencode]
+headless = "opencode run {prompt}"

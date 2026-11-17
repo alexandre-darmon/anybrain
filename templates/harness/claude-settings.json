@@ -1,0 +1,8 @@
+{
+  "env": {
+    "ANYBRAIN_PROFILE": "frontier"
+  },
+  "permissions": {
+    "deny": []
+  }
+}

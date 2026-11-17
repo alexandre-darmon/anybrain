@@ -1,0 +1,372 @@
+{
+  "generated": "2026-11-17T21:37:17Z",
+  "pages": {
+    "company/admin.md": {
+      "title": "Company admin",
+      "type": "note",
+      "description": "",
+      "sensitivity": "confidential",
+      "out": [
+        {
+          "to": "finance/decisions.md",
+          "context": ""
+        }
+      ],
+      "in": [],
+      "sources": [],
+      "broken": []
+    },
+    "finance/decisions.md": {
+      "title": "Investment decisions",
+      "type": "note",
+      "description": "",
+      "sensitivity": "confidential",
+      "out": [],
+      "in": [
+        {
+          "from": "company/admin.md",
+          "context": ""
+        }
+      ],
+      "sources": [],
+      "broken": []
+    },
+    "journal/2026-11-03.md": {
+      "title": "Brief 2026-11-03",
+      "type": "brief",
+      "description": "",
+      "sensitivity": "personal",
+      "out": [
+        {
+          "to": "projects/example-tool.md",
+          "context": ""
+        }
+      ],
+      "in": [],
+      "sources": [],
+      "broken": []
+    },
+    "library/100m-offers.md": {
+      "title": "$100M Offers",
+      "type": "book",
+      "description": "Build an offer so valuable that price stops being the objection, using the value equation.",
+      "sensitivity": "public",
+      "out": [
+        {
+          "to": "wiki/concepts/category-design.md",
+          "context": "Niche down until the offer is obvious to one person; this is the offer-side version of [[category-design]]."
+        },
+        {
+          "to": "wiki/concepts/languaging.md",
+          "context": "A named offer is easier to want and to repeat, an application of [[languaging]]."
+        },
+        {
+          "to": "library/snow-leopard.md",
+          "context": "Makes the same argument from the content side: [[snow-leopard]]."
+        }
+      ],
+      "in": [
+        {
+          "from": "library/snow-leopard.md",
+          "context": "Same thesis applied to offers instead of content: [[100m-offers]]."
+        },
+        {
+          "from": "wiki/concepts/category-design.md",
+          "context": "[[100m-offers]]: niche until the offer is obviously for one person; then price is no longer the comparison. [doc]"
+        },
+        {
+          "from": "wiki/concepts/languaging.md",
+          "context": "[[100m-offers]]: name the offer so people can ask for it. [doc]"
+        }
+      ],
+      "sources": [
+        "raw/highlights/100m-offers.md"
+      ],
+      "broken": []
+    },
+    "library/continuous-discovery-habits.md": {
+      "title": "Continuous Discovery Habits",
+      "type": "book",
+      "description": "A weekly cadence of customer interviews that keeps product decisions tied to real customer needs.",
+      "sensitivity": "public",
+      "out": [],
+      "in": [
+        {
+          "from": "wiki/notes/discovery-interviews.md",
+          "context": "A fuller method for weekly interviews is in [[continuous-discovery-habits]], still to read."
+        }
+      ],
+      "sources": [],
+      "broken": []
+    },
+    "library/inspired.md": {
+      "title": "Inspired",
+      "type": "book",
+      "description": "Empowered product teams discover products worth building by retiring four risks before they build.",
+      "sensitivity": "public",
+      "out": [
+        {
+          "to": "wiki/notes/discovery-interviews.md",
+          "context": "The article behind [[discovery-interviews]] tests the value risk with interviews."
+        }
+      ],
+      "in": [
+        {
+          "from": "wiki/notes/discovery-interviews.md",
+          "context": "An interview tests the value risk listed in [[inspired]], not usability."
+        }
+      ],
+      "sources": [],
+      "broken": []
+    },
+    "library/snow-leopard.md": {
+      "title": "The Snow Leopard",
+      "type": "book",
+      "description": "Create a new content category by changing the point of view instead of competing inside an existing one.",
+      "sensitivity": "public",
+      "out": [
+        {
+          "to": "wiki/concepts/category-design.md",
+          "context": "Being different is being a snow leopard: rare in a niche, not better in a crowd. This is the core argument behind [[category-design]]."
+        },
+        {
+          "to": "wiki/concepts/languaging.md",
+          "context": "Naming a new concept separates it from the old ones, which is the practice described in [[languaging]]."
+        },
+        {
+          "to": "library/100m-offers.md",
+          "context": "Same thesis applied to offers instead of content: [[100m-offers]]."
+        }
+      ],
+      "in": [
+        {
+          "from": "library/100m-offers.md",
+          "context": "Makes the same argument from the content side: [[snow-leopard]]."
+        },
+        {
+          "from": "wiki/concepts/category-design.md",
+          "context": "[[snow-leopard]]: differentiation comes from a changed point of view, not from being better in a crowd. [doc]"
+        },
+        {
+          "from": "wiki/concepts/languaging.md",
+          "context": "[[snow-leopard]]: languaging is the act of naming new concepts to leave old categories. [doc]"
+        }
+      ],
+      "sources": [
+        "raw/highlights/snow-leopard.md"
+      ],
+      "broken": []
+    },
+    "me/aspirations.md": {
+      "title": "Aspirations",
+      "type": "profile",
+      "description": "",
+      "sensitivity": "personal",
+      "out": [],
+      "in": [],
+      "sources": [],
+      "broken": []
+    },
+    "me/cv.md": {
+      "title": "CV",
+      "type": "profile",
+      "description": "",
+      "sensitivity": "personal",
+      "out": [],
+      "in": [],
+      "sources": [],
+      "broken": []
+    },
+    "me/preferences.md": {
+      "title": "Preferences",
+      "type": "profile",
+      "description": "How the agent should work for the owner; owner rules first, then rules learned from corrections.",
+      "sensitivity": "personal",
+      "out": [],
+      "in": [],
+      "sources": [],
+      "broken": []
+    },
+    "me/principles.md": {
+      "title": "Principles",
+      "type": "profile",
+      "description": "",
+      "sensitivity": "personal",
+      "out": [],
+      "in": [],
+      "sources": [],
+      "broken": []
+    },
+    "me/profile.md": {
+      "title": "Profile",
+      "type": "profile",
+      "description": "",
+      "sensitivity": "personal",
+      "out": [],
+      "in": [],
+      "sources": [],
+      "broken": []
+    },
+    "projects/example-tool.md": {
+      "title": "Example tool",
+      "type": "project",
+      "description": "A small open-source CLI built to learn the stack; v0.2 is out and the README needs examples.",
+      "sensitivity": "personal",
+      "out": [
+        {
+          "to": "wiki/notes/discovery-interviews.md",
+          "context": "2026-10-20 · choose the second feature from three user interviews, not from my own wish list · past behaviour beats stated intent, the method later filed as [[…"
+        }
+      ],
+      "in": [
+        {
+          "from": "journal/2026-11-03.md",
+          "context": ""
+        },
+        {
+          "from": "wiki/notes/discovery-interviews.md",
+          "context": "Applied in the [[example-tool]] project to choose the second feature."
+        }
+      ],
+      "sources": [],
+      "broken": []
+    },
+    "projects/paused-idea.md": {
+      "title": "Paused idea",
+      "type": "project",
+      "description": "A venture idea explored for two weeks and paused because no distribution channel was found.",
+      "sensitivity": "personal",
+      "out": [],
+      "in": [
+        {
+          "from": "wiki/concepts/category-design.md",
+          "context": "Does this hold for a freelance service, or only for products and content? The [[paused-idea]] project had a clear niche but no way to reach it."
+        }
+      ],
+      "sources": [],
+      "broken": []
+    },
+    "wiki/concepts/category-design.md": {
+      "title": "Category design",
+      "type": "concept",
+      "description": "Win by creating the category you are judged in, not by ranking higher in an existing one.",
+      "sensitivity": "public",
+      "out": [
+        {
+          "to": "library/snow-leopard.md",
+          "context": "[[snow-leopard]]: differentiation comes from a changed point of view, not from being better in a crowd. [doc]"
+        },
+        {
+          "to": "library/100m-offers.md",
+          "context": "[[100m-offers]]: niche until the offer is obviously for one person; then price is no longer the comparison. [doc]"
+        },
+        {
+          "to": "wiki/concepts/languaging.md",
+          "context": "Both sources make naming the category part of creating it, which ties this concept to [[languaging]]."
+        },
+        {
+          "to": "projects/paused-idea.md",
+          "context": "Does this hold for a freelance service, or only for products and content? The [[paused-idea]] project had a clear niche but no way to reach it."
+        }
+      ],
+      "in": [
+        {
+          "from": "library/100m-offers.md",
+          "context": "Niche down until the offer is obvious to one person; this is the offer-side version of [[category-design]]."
+        },
+        {
+          "from": "library/snow-leopard.md",
+          "context": "Being different is being a snow leopard: rare in a niche, not better in a crowd. This is the core argument behind [[category-design]]."
+        },
+        {
+          "from": "wiki/concepts/languaging.md",
+          "context": "Use it sparingly: a name without a real difference behind it reads as marketing. Naming is the visible half of [[category-design]]."
+        }
+      ],
+      "sources": [
+        "library/snow-leopard.md",
+        "library/100m-offers.md"
+      ],
+      "broken": []
+    },
+    "wiki/concepts/languaging.md": {
+      "title": "Languaging",
+      "type": "concept",
+      "description": "Naming a new idea or offer so it is separated from what came before.",
+      "sensitivity": "public",
+      "out": [
+        {
+          "to": "library/snow-leopard.md",
+          "context": "[[snow-leopard]]: languaging is the act of naming new concepts to leave old categories. [doc]"
+        },
+        {
+          "to": "library/100m-offers.md",
+          "context": "[[100m-offers]]: name the offer so people can ask for it. [doc]"
+        },
+        {
+          "to": "wiki/concepts/category-design.md",
+          "context": "Use it sparingly: a name without a real difference behind it reads as marketing. Naming is the visible half of [[category-design]]."
+        }
+      ],
+      "in": [
+        {
+          "from": "library/100m-offers.md",
+          "context": "A named offer is easier to want and to repeat, an application of [[languaging]]."
+        },
+        {
+          "from": "library/snow-leopard.md",
+          "context": "Naming a new concept separates it from the old ones, which is the practice described in [[languaging]]."
+        },
+        {
+          "from": "wiki/concepts/category-design.md",
+          "context": "Both sources make naming the category part of creating it, which ties this concept to [[languaging]]."
+        }
+      ],
+      "sources": [
+        "library/snow-leopard.md",
+        "library/100m-offers.md"
+      ],
+      "broken": []
+    },
+    "wiki/notes/discovery-interviews.md": {
+      "title": "Why discovery interviews fail",
+      "type": "note",
+      "description": "Interviews fail when they ask for opinions about the future instead of facts about past behaviour.",
+      "sensitivity": "public",
+      "out": [
+        {
+          "to": "library/inspired.md",
+          "context": "An interview tests the value risk listed in [[inspired]], not usability."
+        },
+        {
+          "to": "library/continuous-discovery-habits.md",
+          "context": "A fuller method for weekly interviews is in [[continuous-discovery-habits]], still to read."
+        },
+        {
+          "to": "projects/example-tool.md",
+          "context": "Applied in the [[example-tool]] project to choose the second feature."
+        }
+      ],
+      "in": [
+        {
+          "from": "library/inspired.md",
+          "context": "The article behind [[discovery-interviews]] tests the value risk with interviews."
+        },
+        {
+          "from": "projects/example-tool.md",
+          "context": "2026-10-20 · choose the second feature from three user interviews, not from my own wish list · past behaviour beats stated intent, the method later filed as [[…"
+        }
+      ],
+      "sources": [
+        "raw/articles/why-discovery-interviews-fail.md"
+      ],
+      "broken": []
+    }
+  },
+  "stats": {
+    "pages": 17,
+    "edges": 20,
+    "orphans": 0,
+    "broken": 0
+  }
+}

@@ -1,8 +1,9 @@
 ---
 title: Principles
 type: profile
-description: How the owner decides — rules the agent should apply when weighing options. Owner-written, protected.
+description: How the owner decides; rules the agent applies when weighing options. Owner-written, fully protected.
 tags: [me, decisions]
+language: en
 created: 2026-11-01
 updated: 2026-11-01
 sources: []
