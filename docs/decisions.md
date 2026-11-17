@@ -310,3 +310,7 @@ Format: `D<number> · <title>`, with the build step and the PRD sections involve
   | GitHub Copilot | content exclusion in organisation or enterprise settings, not a file in the vault | No allow rules | Not documented | Needs a Copilot Business or Enterprise plan |
 
 - **Decision.** Keep Claude Code and OpenCode as the targets of G5 for now. A harness is added only with a measured probe like D027, because three of the eight mechanisms above behave differently from what their own docs suggest.
+
+## D031 · No command pre-approved in the harness configs (Q23)
+
+- **Decided by the owner on 2026-11-17.** The rendered harness configs pre-approve nothing. The owner approves `anybrain` commands and the profile check as they come, and the question is revisited after real use. When it is, `anybrain lint --accept` stays excluded: an agent that could run it unattended could accept its own edit of a protected section.
