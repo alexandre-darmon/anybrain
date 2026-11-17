@@ -257,6 +257,27 @@ def test_local_report_in_a_local_folder_is_complete(leaky_company, monkeypatch):
     assert "project-falcon-acquisition" in (leaky_company / "journal" / "lint-2026-11-16.md").read_text()
 
 
+@pytest.mark.parametrize("link, target", [("journal/reports", "journal/out"), ("wiki", "journal/out")])
+def test_a_symlinked_destination_is_judged_where_it_lands(leaky_company, monkeypatch, link, target):
+    monkeypatch.setenv("ANYBRAIN_PROFILE", "local")
+    (leaky_company / link).mkdir(parents=True, exist_ok=True)
+    (leaky_company / "journal").mkdir(exist_ok=True)
+    (leaky_company / target).symlink_to(leaky_company / link)
+    cli.main(["lint", str(leaky_company), "--links", "--report-only", "--report", f"{target}/lint-x.md"])
+    report = (leaky_company / link / "lint-x.md").read_text()
+    assert "project-falcon-acquisition" not in report and "details hidden" in report
+
+
+def test_a_symlinked_report_file_is_masked(leaky_company, monkeypatch):
+    monkeypatch.setenv("ANYBRAIN_PROFILE", "local")
+    (leaky_company / "journal").mkdir(exist_ok=True)
+    (leaky_company / "wiki").mkdir(exist_ok=True)
+    (leaky_company / "wiki" / "lint-x.md").write_text("---\ntitle: x\ntype: report\n---\n")
+    (leaky_company / "journal" / "lint-x.md").symlink_to(leaky_company / "wiki" / "lint-x.md")
+    cli.main(["lint", str(leaky_company), "--links", "--report-only", "--report", "journal/lint-x.md"])
+    assert "project-falcon-acquisition" not in (leaky_company / "wiki" / "lint-x.md").read_text()
+
+
 def test_frontier_report_is_masked_wherever_it_goes(leaky_company):
     cli.main(["lint", str(leaky_company), "--links", "--report-only", "--report", "journal/reports/lint-2026-11-16.md"])
     assert "project-falcon-acquisition" not in (leaky_company / "journal" / "reports" / "lint-2026-11-16.md").read_text()

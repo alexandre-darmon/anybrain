@@ -528,14 +528,27 @@ def masked(finding: Finding, ctx: Context, local: bool) -> Finding:
 
 
 def _report_is_local(ctx: Context, target: str) -> bool:
-    """True when the report lands somewhere only the local profile may read."""
+    """True when the report lands somewhere only the local profile may read.
+
+    Both the path as written and the place it resolves to through symlinks must route local: a link from
+    `journal/` to `journal/reports/` or `wiki/` would otherwise receive unmasked findings. A target that is
+    itself a symlink is never trusted.
+    """
     path = Path(target).expanduser()
     full = path if path.is_absolute() else ctx.vault / path
-    try:
-        rel = v.rel_path(ctx.vault.resolve(), Path(os.path.normpath(full)))
-    except ValueError:
-        return False  # outside the vault: assume anyone may read it
-    return v.is_local_only_path(ctx.vault, rel)
+    if full.is_symlink():
+        return False
+    vault = ctx.vault.resolve()
+    lexical = Path(os.path.normpath(full))
+    resolved = Path(os.path.realpath(lexical.parent)) / lexical.name
+    for form in (lexical, resolved):
+        try:
+            rel = v.rel_path(vault, form)
+        except ValueError:
+            return False  # outside the vault: assume anyone may read it
+        if not v.is_local_only_path(ctx.vault, rel):
+            return False
+    return True
 
 
 def write_report(ctx: Context, target: str, findings: list[Finding]) -> str:
