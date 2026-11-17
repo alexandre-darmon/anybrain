@@ -1,0 +1,27 @@
+# Golden questions on tests/fixtures/legacy-obsidian/ once migrated (acceptance of PRD 21.3, step 11).
+- id: m001
+  question: Qu'est-ce que je pense de Deep Work ?
+  tags: [concept, navigation]
+  expected:
+    cited_files: [library/deep-work.md]
+    behaviour: says the owner blocked mornings for deep work and disliked the part on social networks, from the owner's own text
+
+- id: m002
+  question: Selon moi, quel est le meilleur conseil de The Art & Business of Ghostwriting ?
+  tags: [navigation]
+  expected:
+    cited_files: [library/art-and-business-of-ghostwriting.md]
+    must_include: ["résultat"]
+
+- id: m003
+  question: Comment est-ce que je définis la création de niche ?
+  tags: [concept]
+  expected:
+    cited_files: [wiki/concepts/creation-de-niche.md]
+    behaviour: says a niche is created by changing the point of view rather than being better than others
+
+- id: m004
+  question: Quels plugins Obsidian est-ce que j'utilise vraiment ?
+  tags: [navigation]
+  expected:
+    must_include: ["Readwise", "Dataview"]

@@ -14,7 +14,6 @@ from . import __version__
 # `anybrain --help` shows the full surface, and they say plainly that they are not built yet.
 PLANNED = {
     "content": ("Draft snapshots, edit ratio and content checks", "P1b, PRD section 24 step 15"),
-    "migrate": ("Snapshot a legacy vault and check owner text survived", "P1, PRD section 24 step 11"),
     "transcribe": ("Transcribe new audio in raw/voice/ locally", "P3"),
 }
 
@@ -129,6 +128,19 @@ def _cmd_eval(args: argparse.Namespace) -> int:
                      tags=tags, max_cost=args.max_cost, freeze=args.freeze, golden=args.golden)
 
 
+def _cmd_migrate(args: argparse.Namespace) -> int:
+    from . import migrate, vault
+
+    words = list(args.args)
+    if words and words[0] in ("inventory", "check"):
+        words.insert(0, vault_arg(None))
+    if len(words) == 3 and words[1] == "inventory":
+        return migrate.inventory(vault.resolve_vault(words[0]), words[2])
+    if len(words) == 2 and words[1] == "check":
+        return migrate.check(vault.resolve_vault(words[0]))
+    raise UsageError("usage: anybrain migrate [vault] inventory <legacy_path> | anybrain migrate [vault] check")
+
+
 def _cmd_stats(args: argparse.Namespace) -> int:
     from . import stats, vault
 
@@ -205,6 +217,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("vault", nargs="?")
     p.add_argument("--weeks", type=int, default=4, help="number of weeks to show (default 4)")
     p.set_defaults(func=_cmd_stats)
+
+    p = sub.add_parser("migrate", help="Snapshot a legacy vault and check that the owner's text survived")
+    p.add_argument("args", nargs="+", metavar="[vault] {inventory <legacy_path>,check}")
+    p.set_defaults(func=_cmd_migrate)
 
     p = sub.add_parser("eval", help="Run the golden set on a harness, with a run trace per case, and print the gates")
     p.add_argument("vault", nargs="?")
