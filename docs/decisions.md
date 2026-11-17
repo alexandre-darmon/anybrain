@@ -291,3 +291,22 @@ Format: `D<number> · <title>`, with the build step and the PRD sections involve
 - **Changes made from the runs.** `ingest` now keeps a concept's `Summary` and `Draft position` true when it gains a source (both concept pages still said "both sources" after a third one). `AGENTS.md` says that every section not protected, `Summary` included, is the agent's to rewrite (`ask` had treated `Summary` as the owner's). `lint` gives its report in its answer outside the local profile.
 - **Friction seen in every run.** Shared rule 3 asks the agent to check `ANYBRAIN_PROFILE`, but reading an environment variable needs a shell command that the harness asks the owner to approve; in headless runs the agent could not check it and assumed a non-local profile, which is the safe side (Q23).
 - **Not done.** Step 9 (the same skills in OpenCode with the local profile) needs OpenCode and a local model, which this build container does not have.
+
+## D030 · How other coding agents deny file reads (research for Q24)
+
+- **Step:** after 8. **PRD:** 3.1 (G5), 18.4, 26 Q24. **Date:** 2026-11-17.
+- **How.** One research agent per harness family read the official docs or, when a docs host could not be reached from the build container, the vendor's official source repository or shipped code; an independent agent then tried to refute each claim. 82 claims were checked, 9 corrected. Claude Code facts were also measured in live sessions (D027).
+- **Findings.**
+
+  | Harness | Read deny by path | Exception inside a denied folder | Shell commands and scripts | Notes |
+  | --- | --- | --- | --- | --- |
+  | Claude Code | `permissions.deny` in `.claude/settings.json` | Yes: `Read(me/*)` then `Read(!me/preferences.md)`, the negation bare and after its rule, in the same file | Not covered: a command naming a denied file is refused, but `grep -r` over the folder and scripts read it (measured live). The optional sandbox covers the shell | Search tools may hide an exception from results even though it can be read by path |
+  | OpenCode | ordered `read` rules in `opencode.json` | Yes: the last matching rule wins | Not covered | The config cannot set `ANYBRAIN_PROFILE` (D020) |
+  | Codex | permission profiles (beta) in `.codex/config.toml` | Only with exact-path denies, not globs; on Linux the sandbox may not reopen a read-only file under a denied folder | **Covered** at OS level (Seatbelt, bubblewrap), the strongest of all | Project config loads only when the folder is marked trusted; `":workspace_roots"` entries apply to the launch folder, so Codex must start at the vault root |
+  | Cursor | `.cursorignore` (gitignore syntax) | Yes: `me/*` then `!me/preferences.md`; `.cursor/cli.json` denies cannot have exceptions | **Not a security boundary** per its docs; its sandbox may apply the ignore list, unverified | Reads `AGENTS.md` |
+  | Gemini CLI | `.geminiignore` | Yes: `me/**` then `!me/preferences.md` | Not covered; `grep_search` also leaks when ripgrep is missing | Reads `GEMINI.md` by default; a user setting can turn `.geminiignore` off unless the project pins it; project policies are disabled |
+  | Goose | none since 2026 (`.gooseignore` removed) | No | Not covered | Only a project plugin hook could guard paths |
+  | Windsurf, now Devin Desktop | `.devinignore`, and Claude-style `Read(...)` denies in `.devin/config.json` | gitignore negation | Only with its sandbox on | From search snippets only: its docs host could not be reached |
+  | GitHub Copilot | content exclusion in organisation or enterprise settings, not a file in the vault | No allow rules | Not documented | Needs a Copilot Business or Enterprise plan |
+
+- **Decision.** Keep Claude Code and OpenCode as the targets of G5 for now. A harness is added only with a measured probe like D027, because three of the eight mechanisms above behave differently from what their own docs suggest.
