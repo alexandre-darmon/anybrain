@@ -7,6 +7,7 @@ holds file content, the answer text or the prompt. `anybrain trace show` prints 
 from __future__ import annotations
 
 import datetime as _dt
+import fnmatch
 import json
 import os
 import re
@@ -43,6 +44,42 @@ class ToolCall:
         return {"tool": self.tool, "target": self.target, "result": self.result}
 
 
+@dataclass(frozen=True)
+class Search:
+    """A recursive search over a folder (`grep -r`, `rg`), with the filters that narrow the files it opens."""
+
+    folder: str  # vault-relative, "." for the vault root
+    include: tuple[str, ...] = ()
+    exclude: tuple[str, ...] = ()
+    exclude_dirs: tuple[str, ...] = ()
+    hidden: bool = True  # grep opens hidden files; rg and ag skip them unless told otherwise
+
+    def files(self, root: Path) -> list[str]:
+        base = root if self.folder in ("", ".") else root / self.folder
+        if not base.is_dir():
+            return []
+        found = []
+        for path in sorted(base.rglob("*")):
+            if not path.is_file() or not path.is_relative_to(root):
+                continue
+            rel = v.rel_path(root, path)
+            inner = path.relative_to(base).parts
+            if not self.hidden and any(part.startswith(".") for part in inner):
+                continue
+            if any(fnmatch.fnmatch(part, g) for part in inner[:-1] for g in self.exclude_dirs):
+                continue
+            if self.include and not any(_glob_match(rel, path.name, g) for g in self.include):
+                continue
+            if any(_glob_match(rel, path.name, g) for g in self.exclude):
+                continue
+            found.append(rel)
+        return found
+
+
+def _glob_match(rel: str, name: str, glob: str) -> bool:
+    return fnmatch.fnmatch(name, glob) or fnmatch.fnmatch(rel, glob) or fnmatch.fnmatch(rel, "*/" + glob)
+
+
 @dataclass
 class Run:
     """What one harness run did, before it becomes a trace record."""
@@ -55,6 +92,7 @@ class Run:
     files_read: list[str] = field(default_factory=list)
     files_written: list[str] = field(default_factory=list)
     files_searched: list[str] = field(default_factory=list)  # folders a recursive search went through
+    searches: list[Search] = field(default_factory=list)
     tokens: dict = field(default_factory=lambda: {"input": 0, "output": 0, "cached": 0})
     cost_usd: float | None = None
     duration_ms: int | None = None
@@ -173,14 +211,68 @@ def _is_dir(rel: str, root: Path) -> bool:
     return (root / rel).is_dir() if rel and not os.path.isabs(rel) else rel == ""
 
 
-def files_from_shell(command: str, root: Path, origin: Path | None = None) -> tuple[list[str], list[str], list[str]]:
-    """Files a shell command reads, files it writes, and folders it searches recursively.
+SEARCH_COMMANDS = {"grep", "egrep", "fgrep", "rg", "ag", "ack"}
+OPTIONS_WITH_VALUE = {"-e", "--regexp", "-f", "--file", "-g", "--glob", "--include", "--exclude", "--exclude-dir",
+                      "-m", "--max-count", "-A", "-B", "-C", "-t", "--type", "-T", "--type-not"}
+
+
+def _search(name: str, words: list[str], root: Path, origin: Path | None, cwd: str) -> tuple[list[Search], set[int]]:
+    """The recursive searches of a grep or rg command, and the positions of the words that are not paths."""
+    recursive = name in RECURSIVE_COMMANDS
+    include, exclude, exclude_dirs, positional, not_paths = [], [], [], [], set()
+    hidden = name not in RECURSIVE_COMMANDS
+    has_pattern_option = False
+    i = 1
+    while i < len(words):
+        word = words[i]
+        option, _, value = word.partition("=") if word.startswith("--") else (word, "", "")
+        if word.startswith("-") and word != "-":
+            if option in OPTIONS_WITH_VALUE and not value and i + 1 < len(words):
+                value = words[i + 1]
+                not_paths.add(i + 1)
+                i += 1
+            if option in ("-e", "--regexp", "-f", "--file"):
+                has_pattern_option = True
+            elif option == "--include":
+                include.append(value)
+            elif option == "--exclude":
+                exclude.append(value)
+            elif option == "--exclude-dir":
+                exclude_dirs.append(value)
+            elif option in ("-g", "--glob"):
+                (exclude if value.startswith("!") else include).append(value.lstrip("!"))
+            elif option in ("--hidden", "-uu", "-uuu"):
+                hidden = True
+            elif option in ("-r", "-R", "--recursive", "--dereference-recursive") or (
+                    not word.startswith("--") and name not in RECURSIVE_COMMANDS and ("r" in word or "R" in word)):
+                recursive = True
+        else:
+            positional.append(i)
+        i += 1
+    if not has_pattern_option and positional:
+        not_paths.add(positional.pop(0))  # the pattern
+    if not recursive:
+        return [], not_paths
+    folders = []
+    for i in positional:
+        rel = relative(words[i], root, origin, cwd)
+        if _is_dir(rel, root):
+            folders.append(rel or ".")
+    if not positional:
+        folders.append(relative(".", root, origin, cwd) or ".")
+    searches = [Search(folder, tuple(include), tuple(exclude), tuple(exclude_dirs), hidden) for folder in folders]
+    return searches, not_paths
+
+
+def files_from_shell(command: str, root: Path, origin: Path | None = None) -> tuple[list[str], list[str], list[Search]]:
+    """Files a shell command reads, files it writes, and the recursive searches it runs.
 
     Best effort, and conservative: any command outside NO_READ_COMMANDS reads every file it names, in any word
-    or inside quoted code; `cd` is followed; a recursive search (`grep -r`, `rg`) reads the folders it names,
-    or the current folder. A script that builds a path at run time is not seen (docs/decisions.md D036).
+    or inside quoted code; `cd` is followed; a recursive search (`grep -r`, `rg`) opens the files under the
+    folders it names, or the current folder, narrowed by its include and exclude globs. A script that builds a
+    path at run time is not seen (docs/decisions.md D036).
     """
-    read, written, searched = [], [], []
+    read, written, searches = [], [], []
     cwd = str(root)
     for words, inputs, outputs in _segments(command):
         for target in outputs:
@@ -205,24 +297,18 @@ def files_from_shell(command: str, root: Path, origin: Path | None = None) -> tu
             continue
         if name in NO_READ_COMMANDS:
             continue
-        options = [w for w in words[1:] if w.startswith("-")]
-        recursive = name in RECURSIVE_COMMANDS or (
-            name in ("grep", "egrep", "fgrep")
-            and any(o == "--recursive" or (not o.startswith("--") and ("r" in o or "R" in o)) for o in options))
-        folders = []
-        for word in words[1:]:
+        found, not_paths = _search(name, words, root, origin, cwd) if name in SEARCH_COMMANDS else ([], set())
+        for search in found:
+            if search not in searches:
+                searches.append(search)
+        for i, word in enumerate(words[1:], start=1):
+            if i in not_paths:
+                continue
             for candidate in [word] + [m for m in PATHISH_RE.findall(word) if m != word]:
                 rel = relative(candidate, root, origin, cwd)
                 if _is_file(rel, root, origin):
                     _add(read, rel)
-                elif recursive and not candidate.startswith("-") and _is_dir(rel, root):
-                    folders.append(rel)
-        if recursive:
-            if not folders:
-                folders.append(relative(".", root, origin, cwd))
-            for folder in folders:
-                _add(searched, folder if folder else ".")
-    return read, written, searched
+    return read, written, searches
 
 
 # ---------------------------------------------------------------------------- adapters
@@ -317,13 +403,15 @@ class ClaudeAdapter(Adapter):
         run.tool_calls = [calls[i] for i in order if i in calls]
         for call in run.tool_calls:
             if call.tool == "Bash" and call.ran:
-                read, written, searched = files_from_shell(call.target, root, origin)
+                read, written, searches = files_from_shell(call.target, root, origin)
                 for item in read:
                     _add(run.files_read, item)
                 for item in written:
                     _add(run.files_written, item)
-                for item in searched:
-                    _add(run.files_searched, item)
+                for search in searches:
+                    _add(run.files_searched, search.folder)
+                    if search not in run.searches:
+                        run.searches.append(search)
             elif call.result != "ok":
                 continue
             elif call.tool == "Read":
@@ -404,7 +492,7 @@ def _is_local_only(root: Path, rel: str) -> bool:
 
 
 def local_only_reads(root: Path, files: list[str], origin: Path | None = None,
-                     searched: list[str] | None = None) -> list[str]:
+                     searched: list[Search | str] | None = None) -> list[str]:
     """Files read that the routing of the vault keeps local, or that are confidential pages.
 
     A path counts when its own form or the form it resolves to through symlinks is local-only. A folder that
@@ -415,15 +503,10 @@ def local_only_reads(root: Path, files: list[str], origin: Path | None = None,
         real = resolved_rel(rel, root, origin) if not os.path.isabs(rel) else None
         if _is_local_only(root, rel) or (real is not None and _is_local_only(root, real)):
             _add(found, rel)
-    for folder in searched or []:
-        base = root if folder in ("", ".") else root / folder
-        if not base.is_dir():
-            continue
-        for path in sorted(base.rglob("*")):
-            if path.is_file():
-                rel = v.rel_path(root, path) if path.is_relative_to(root) else ""
-                if rel and _is_local_only(root, rel):
-                    _add(found, rel)
+    for search in searched or []:
+        for rel in (search if isinstance(search, Search) else Search(search)).files(root):
+            if _is_local_only(root, rel):
+                _add(found, rel)
     return found
 
 
@@ -435,7 +518,7 @@ def self_reported_files(answer: str) -> int | None:
 def build_record(run: Run, root: Path, profile: str, trigger: str, started: str,
                  case_id: str | None = None, skill: str | None = None, origin: Path | None = None) -> dict:
     denied = [c.as_json() for c in run.tool_calls if c.result == "denied"]
-    local_reads = local_only_reads(root, run.files_read, origin, run.files_searched) if profile != "local" else []
+    local_reads = local_only_reads(root, run.files_read, origin, run.searches) if profile != "local" else []
     return {
         "run_id": f"{started}-{trigger}-{case_id or skill or 'session'}",
         "started": started,

@@ -83,7 +83,7 @@ def test_files_from_shell(vault):
         "cat -n me/profile.md wiki/concepts/a.md | head -5 > /tmp/x; grep -r foo me", vault)
     assert read == ["me/profile.md", "wiki/concepts/a.md"]
     assert written == ["/tmp/x"]
-    assert searched == ["me"]
+    assert [x.folder for x in searched] == ["me"]
 
 
 @pytest.mark.parametrize("command", [
@@ -111,12 +111,29 @@ def test_listing_or_naming_a_file_is_not_a_read(vault):
 
 def test_recursive_search_counts_local_only_files_under_the_folder(vault):
     _, _, searched = t.files_from_shell("grep -rn Mission .", vault)
-    assert searched == ["."]
+    assert [x.folder for x in searched] == ["."]
     found = t.local_only_reads(vault, [], searched=searched)
     assert "me/profile.md" in found and "projects/mission.md" in found
     assert "me/preferences.md" not in found and "wiki/concepts/a.md" not in found
-    assert t.files_from_shell("rg Mission", vault)[2] == ["."]
+    assert [x.folder for x in t.files_from_shell("rg Mission", vault)[2]] == ["."]
     assert t.files_from_shell("grep -n Mission wiki", vault)[2] == []
+    assert t.files_from_shell("grep -rn me wiki", vault)[2][0].folder == "wiki", "the pattern is not a folder"
+
+
+def test_search_filters_narrow_what_counts(vault):
+    for rel in ("me/index.md", "wiki/index.md", ".harness/.env"):
+        (vault / rel).parent.mkdir(parents=True, exist_ok=True)
+        (vault / rel).write_text("x\n")
+
+    def local(command):
+        return t.local_only_reads(vault, [], searched=t.files_from_shell(command, vault)[2])
+
+    # the command of a real eval case (D036): only index files were opened
+    assert local('grep -ril "languag" --include=index.md .') == ["me/index.md"]
+    assert local("grep -r x --include '*.md' --exclude-dir me .") == ["projects/mission.md"]
+    assert ".harness/.env" in local("grep -r x .")
+    assert ".harness/.env" not in local("rg x") and ".harness/.env" in local("rg --hidden x")
+    assert local("rg x -g '!me/**' -g '!projects/**'") == []
 
 
 def test_failed_and_refused_shell_commands(vault):
