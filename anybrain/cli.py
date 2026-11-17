@@ -15,7 +15,6 @@ from . import __version__
 PLANNED = {
     "content": ("Draft snapshots, edit ratio and content checks", "P1b, PRD section 24 step 15"),
     "migrate": ("Snapshot a legacy vault and check owner text survived", "P1, PRD section 24 step 11"),
-    "eval": ("Run the golden set and print the gates", "P1, PRD section 24 step 10"),
     "transcribe": ("Transcribe new audio in raw/voice/ locally", "P3"),
 }
 
@@ -122,6 +121,14 @@ def _cmd_trace(args: argparse.Namespace) -> int:
     return trace.show(vault.resolve_vault(root), last=args.last, skill=args.skill)
 
 
+def _cmd_eval(args: argparse.Namespace) -> int:
+    from . import evals, vault
+
+    tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else None
+    return evals.run(vault.resolve_vault(vault_arg(args.vault)), harness=args.harness, profile=args.profile,
+                     tags=tags, max_cost=args.max_cost, freeze=args.freeze, golden=args.golden)
+
+
 def _cmd_stats(args: argparse.Namespace) -> int:
     from . import stats, vault
 
@@ -198,6 +205,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("vault", nargs="?")
     p.add_argument("--weeks", type=int, default=4, help="number of weeks to show (default 4)")
     p.set_defaults(func=_cmd_stats)
+
+    p = sub.add_parser("eval", help="Run the golden set on a harness, with a run trace per case, and print the gates")
+    p.add_argument("vault", nargs="?")
+    p.add_argument("--harness", choices=("claude", "opencode"), default="claude")
+    p.add_argument("--profile", choices=("frontier", "local"), default="frontier")
+    p.add_argument("--tags", metavar="T,...", help="only cases with one of these tags")
+    p.add_argument("--max-cost", type=float, metavar="AMOUNT",
+                   help="stop starting cases once this cost is spent (in the currency the harness reports)")
+    p.add_argument("--freeze", action="store_true", help="mark this run as the baseline")
+    p.add_argument("--golden", metavar="FILE", help="golden set to use instead of .harness/golden.yaml")
+    p.set_defaults(func=_cmd_eval)
 
     p = sub.add_parser("trace", help="Print recent run traces: files read and written, tokens, cost, local-only reads")
     p.add_argument("args", nargs="+", metavar="[vault] show")

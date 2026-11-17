@@ -1,0 +1,486 @@
+"""Golden-set runner: graders, judge, cost cap, gates, baseline (PRD sections 17.3 and 22).
+
+`anybrain eval <vault> [--harness claude|opencode] [--profile frontier|local] [--tags T,...] [--max-cost N]
+[--freeze] [--golden FILE]` drives the harness headless, one question per invocation, each in a throwaway copy
+of the vault so an eval never changes it. Every case gets a run trace (22.5). The run file goes to
+`.harness/baseline/run-<harness>-<profile>-<date>.json`, which only the local profile may read.
+"""
+from __future__ import annotations
+
+import concurrent.futures
+import json
+import os
+import re
+import shlex
+import shutil
+import statistics
+import subprocess
+import tempfile
+import time
+import tomllib
+import urllib.error
+import urllib.request
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import yaml
+
+from . import trace as tr
+from . import vault as v
+
+GOLDEN = ".harness/golden.yaml"
+BASELINE_DIR = tr.BASELINE_DIR
+TAGS = ("navigation", "concept", "multi-hop", "needle", "project", "recommend", "safety", "injection", "content")
+HARD_TAGS = ("safety", "injection")  # a failure here makes the run fail (exit code 1)
+COPY_IGNORE = (".git", "baseline", "traces")
+EVAL_DEFAULTS = {"judge": "endpoint:frontier", "jobs": 2, "timeout_s": 600, "max_tokens": 1024, "retries": 2}
+RETRY_DELAYS_S = (5, 15)
+PATH_RE = re.compile(r"(?<![\w/.-])((?:[\w.-]+/)*[\w.-]+\.(?:md|csv|txt))\b")
+SKIPPED_PHASE = {"content": "P1b: the draft skill and `anybrain content check` arrive in step 16"}
+
+
+# ---------------------------------------------------------------------------- golden set (22.1)
+
+@dataclass
+class Case:
+    id: str
+    question: str
+    tags: list[str]
+    expected: dict
+    profile: str | None = None
+
+
+def load_golden(path: Path) -> list[Case]:
+    if not path.is_file():
+        raise v.VaultError(f"no golden set at {path}; copy evals/golden.example.yaml there and write your questions")
+    try:
+        data = yaml.safe_load(v.read_text(path)) or []
+    except yaml.YAMLError as exc:
+        raise v.VaultError(f"{path} is not valid YAML: {exc}") from exc
+    if not isinstance(data, list):
+        raise v.VaultError(f"{path} must be a list of cases")
+    cases, seen = [], set()
+    for i, item in enumerate(data, start=1):
+        if not isinstance(item, dict) or not item.get("id") or not item.get("question"):
+            raise v.VaultError(f"{path}: case {i} needs an `id` and a `question`")
+        if item["id"] in seen:
+            raise v.VaultError(f"{path}: duplicate case id {item['id']}")
+        seen.add(item["id"])
+        tags = [str(t) for t in v.as_list(item.get("tags"))]
+        unknown = [t for t in tags if t not in TAGS]
+        if unknown:
+            raise v.VaultError(f"{path}: case {item['id']} has unknown tags {unknown}; known: {', '.join(TAGS)}")
+        expected = item.get("expected") or {}
+        if not isinstance(expected, dict):
+            raise v.VaultError(f"{path}: case {item['id']}: `expected` must be a mapping")
+        profile = item.get("profile")
+        if profile is not None and profile not in v.PROFILES:
+            raise v.VaultError(f"{path}: case {item['id']}: profile must be frontier or local")
+        cases.append(Case(str(item["id"]), str(item["question"]), tags, expected, profile))
+    return cases
+
+
+# ---------------------------------------------------------------------------- configuration
+
+def load_models(vault: Path) -> dict:
+    path = vault / v.MODELS_FILE
+    if path.is_file():
+        try:
+            return tomllib.loads(v.read_text(path))
+        except tomllib.TOMLDecodeError as exc:
+            raise v.VaultError(f"{v.MODELS_FILE} is not valid TOML: {exc}") from exc
+    return tomllib.loads(v.read_text(v.framework_root() / "templates" / "models.example.toml"))
+
+
+def eval_settings(models: dict) -> dict:
+    settings = dict(EVAL_DEFAULTS)
+    settings.update(models.get("eval") or {})
+    return settings
+
+
+def harness_command(models: dict, harness: str, prompt: str, profile: str, budget: float | None) -> list[str]:
+    """The `[harnesses.<name>] headless` template with the prompt, plus the adapter's machine-output flags."""
+    spec = (models.get("harnesses") or {}).get(harness) or {}
+    template = spec.get("headless")
+    if not template:
+        raise v.VaultError(f"no [harnesses.{harness}] headless command in {v.MODELS_FILE}")
+    words = shlex.split(template)
+    if not any("{prompt}" in w for w in words):
+        raise v.VaultError(f"[harnesses.{harness}] headless must contain {{prompt}}")
+    command = [prompt if w == "{prompt}" else w.replace("{prompt}", prompt) for w in words]
+    return command + tr.adapter_for(harness).output_args(profile, budget)
+
+
+def copy_vault(vault: Path, parent: Path) -> Path:
+    """A throwaway copy of the vault, without eval runs, traces and git data."""
+    target = parent / "vault"
+
+    def ignore(directory: str, names: list[str]) -> set[str]:
+        rel = Path(directory).resolve().relative_to(vault.resolve()).as_posix()
+        skipped = {".git"} & set(names)
+        if rel == ".harness":
+            skipped |= {"baseline", "traces"} & set(names)
+        return skipped
+
+    shutil.copytree(vault, target, symlinks=True, ignore=ignore)
+    return target
+
+
+def run_command(command: list[str], cwd: Path, profile: str, timeout: float) -> tuple[str, str, int]:
+    env = dict(os.environ, ANYBRAIN_PROFILE=profile)
+    env.pop("ANYBRAIN_VAULT", None)
+    try:
+        done = subprocess.run(command, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError as exc:
+        raise v.VaultError(f"harness command not found: {command[0]}") from exc
+    except subprocess.TimeoutExpired as exc:
+        return (exc.stdout or b"").decode() if isinstance(exc.stdout, bytes) else (exc.stdout or ""), "timeout", -1
+    return done.stdout, done.stderr, done.returncode
+
+
+# ---------------------------------------------------------------------------- graders (22.2)
+
+def cited_paths(answer: str) -> list[str]:
+    found = []
+    for match in PATH_RE.findall(answer or ""):
+        path = match.removeprefix("./")
+        if path not in found:
+            found.append(path)
+    return found
+
+
+def grade_cited(answer: str, expected: list[str]) -> dict:
+    cited = cited_paths(answer)
+    missing = [p for p in expected if p not in cited and p not in (answer or "")]
+    return {"pass": not missing, "detail": f"missing {', '.join(missing)}" if missing else "all cited"}
+
+
+def grade_includes(answer: str, must: list[str], must_not: list[str]) -> dict:
+    lower = (answer or "").lower()
+    absent = [s for s in must if s.lower() not in lower]
+    present = [s for s in must_not if s.lower() in lower]
+    problems = [f"missing {s!r}" for s in absent] + [f"contains {s!r}" for s in present]
+    return {"pass": not problems, "detail": "; ".join(problems) or "ok"}
+
+
+def rubric() -> str:
+    path = v.framework_root() / "evals" / "rubric.md"
+    return v.read_text(path) if path.is_file() else "Grade the answer against the expected behaviour only."
+
+
+def judge_payload(case: Case, answer: str) -> str:
+    """What the judge sees: the question, the expected behaviour, the answer and the cited files. Never the
+    worker's reasoning or tool calls (22.2: the judge runs in a fresh context)."""
+    return json.dumps({
+        "question": case.question,
+        "expected_behaviour": case.expected.get("behaviour"),
+        "answer": answer,
+        "cited_files": cited_paths(answer),
+    }, ensure_ascii=False, indent=2)
+
+
+def parse_verdict(text: str) -> dict:
+    match = re.search(r"\{.*\}", text or "", re.S)
+    if not match:
+        return {"pass": False, "detail": "judge gave no JSON verdict"}
+    try:
+        data = json.loads(match.group(0))
+    except ValueError:
+        return {"pass": False, "detail": "judge verdict is not valid JSON"}
+    return {"pass": bool(data.get("pass")), "detail": str(data.get("reason", ""))[:300]}
+
+
+class EndpointJudge:
+    """An OpenAI-compatible chat completion at temperature 0 (PRD 18.1 and 22.2)."""
+
+    def __init__(self, models: dict, profile_name: str, max_tokens: int):
+        profile = (models.get("profiles") or {}).get(profile_name) or {}
+        self.base_url = str(profile.get("base_url") or "").rstrip("/")
+        self.model = profile.get("model")
+        key_env = profile.get("api_key_env") or ""
+        self.api_key = os.environ.get(key_env, "") if key_env else ""
+        self.max_tokens = max_tokens
+        if not self.base_url or not self.model or "<" in str(self.model):
+            raise v.VaultError(f"judge profile {profile_name!r} needs base_url and a real model in {v.MODELS_FILE}")
+        self.cost_usd = 0.0
+
+    def __call__(self, case: Case, answer: str) -> dict:
+        body = json.dumps({
+            "model": self.model, "temperature": 0, "max_tokens": self.max_tokens,
+            "response_format": {"type": "json_object"},
+            "messages": [{"role": "system", "content": rubric()},
+                         {"role": "user", "content": judge_payload(case, answer)}],
+        }).encode()
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        request = urllib.request.Request(f"{self.base_url}/chat/completions", body, headers)
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                data = json.loads(response.read())
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            return {"pass": False, "detail": f"judge call failed: {exc}"}
+        text = ((data.get("choices") or [{}])[0].get("message") or {}).get("content", "")
+        return parse_verdict(text)
+
+
+class HarnessJudge:
+    """A harness run headless in an empty folder: it sees the payload only, never the vault."""
+
+    def __init__(self, models: dict, harness: str, timeout: float):
+        self.models, self.harness, self.timeout = models, harness, timeout
+        self.cost_usd = 0.0
+
+    def __call__(self, case: Case, answer: str) -> dict:
+        prompt = (rubric() + "\n\nGrade this. Reply with one JSON object only: "
+                  '{"pass": true or false, "reason": "one sentence"}.\n\n' + judge_payload(case, answer))
+        with tempfile.TemporaryDirectory(prefix="anybrain-judge-") as empty:
+            command = harness_command(self.models, self.harness, prompt, "frontier", 0.5)
+            out, err, code = run_command(command, Path(empty), "frontier", self.timeout)
+        run = tr.adapter_for(self.harness).parse(out, Path(empty))
+        self.cost_usd += run.cost_usd or 0.0
+        if not run.ok:
+            return {"pass": False, "detail": f"judge run failed: {run.error or err.strip()[:200]}"}
+        return parse_verdict(run.answer)
+
+
+def make_judge(models: dict, settings: dict):
+    kind, _, name = str(settings.get("judge", "endpoint:frontier")).partition(":")
+    if kind == "endpoint":
+        return EndpointJudge(models, name or "frontier", int(settings.get("max_tokens", 1024)))
+    if kind == "harness":
+        return HarnessJudge(models, name or "claude", float(settings.get("timeout_s", 600)))
+    raise v.VaultError(f"[eval] judge must be endpoint:<profile> or harness:<name>, not {settings.get('judge')!r}")
+
+
+# ---------------------------------------------------------------------------- one case
+
+@dataclass
+class Result:
+    case: Case
+    status: str  # pass, fail, error, skipped, not-run
+    graders: dict = field(default_factory=dict)
+    answer: str = ""
+    trace: dict | None = None
+    note: str = ""
+
+    def as_json(self) -> dict:
+        return {"id": self.case.id, "tags": self.case.tags, "profile": self.case.profile, "status": self.status,
+                "graders": self.graders, "note": self.note, "answer": self.answer, "trace": self.trace}
+
+
+def run_case(case: Case, vault: Path, models: dict, harness: str, profile: str, settings: dict,
+             judge, budget: float | None) -> Result:
+    for tag, reason in SKIPPED_PHASE.items():
+        if tag in case.tags:
+            return Result(case, "skipped", note=reason)
+    if case.profile and case.profile != profile:
+        return Result(case, "skipped", note=f"case runs on the {case.profile} profile only")
+    attempts = int(settings.get("retries", 2)) + 1
+    run, root, started = None, None, tr.now_iso()
+    with tempfile.TemporaryDirectory(prefix="anybrain-eval-") as tmp:
+        root = copy_vault(vault, Path(tmp))
+        command = harness_command(models, harness, case.question, profile, budget)
+        for attempt in range(attempts):
+            started = tr.now_iso()
+            out, err, code = run_command(command, root, profile, float(settings.get("timeout_s", 600)))
+            run = tr.adapter_for(harness).parse(out, root)
+            if run.ok:
+                break
+            run.error = run.error or (err.strip()[:300] or f"exit code {code}")
+            if attempt + 1 < attempts:
+                time.sleep(RETRY_DELAYS_S[min(attempt, len(RETRY_DELAYS_S) - 1)])
+        record = tr.build_record(run, root, profile, "eval", started, case_id=case.id)
+    if not run.ok:
+        return Result(case, "error", answer=run.answer, trace=record, note=run.error)
+    graders, expected = {}, case.expected
+    if expected.get("cited_files"):
+        graders["cited_files"] = grade_cited(run.answer, [str(p) for p in v.as_list(expected["cited_files"])])
+    if expected.get("must_include") or expected.get("must_not_include"):
+        graders["includes"] = grade_includes(run.answer, [str(s) for s in v.as_list(expected.get("must_include"))],
+                                             [str(s) for s in v.as_list(expected.get("must_not_include"))])
+    if expected.get("behaviour"):
+        graders["behaviour"] = judge(case, run.answer) if judge else {"pass": False, "detail": "no judge"}
+    measured = len(record["files_read"])
+    claimed = record["self_reported_files_opened"]
+    graders["files_opened"] = {"pass": True, "detail": f"measured {measured}, said {claimed}", "informational": True}
+    if record["local_only_read_on_frontier"]:
+        graders["local_only_reads"] = {"pass": False,
+                                       "detail": "read on frontier: " + ", ".join(record["local_only_read_on_frontier"])}
+    passed = all(g["pass"] for g in graders.values())
+    return Result(case, "pass" if passed else "fail", graders, run.answer, record)
+
+
+# ---------------------------------------------------------------------------- run, gates, baseline (17.3, 22.3)
+
+def rate(results: list[Result]) -> float | None:
+    scored = [r for r in results if r.status in ("pass", "fail", "error")]
+    return sum(r.status == "pass" for r in scored) / len(scored) if scored else None
+
+
+def index_weight(vault: Path) -> int | None:
+    from . import index
+
+    try:
+        files, _ = index.build(vault)
+    except Exception:  # an unbuildable vault has no weight to report; lint says why
+        return None
+    tokens = {k: len(c.split()) * 4 // 3 for k, c in files.items()}
+    domains = [n for k, n in tokens.items() if k != "index.md"]
+    return tokens.get("index.md", 0) + (max(domains) if domains else 0)
+
+
+def gates(results: list[Result], vault: Path) -> list[dict]:
+    scored = [r for r in results if r.status in ("pass", "fail", "error")]
+    nav = [r for r in scored if "navigation" in r.case.tags and "cited_files" in r.graders]
+    recall = sum(r.graders["cited_files"]["pass"] for r in nav) / len(nav) if nav else None
+    multi = rate([r for r in results if "multi-hop" in r.case.tags])
+    needle = [r for r in scored if "needle" in r.case.tags]
+    needle_share = len(needle) / len(scored) if scored else None
+    needle_pass = rate(needle)
+    reads = [len(r.trace["files_read"]) for r in scored if r.trace and r.trace.get("tool_calls_seen", True)]
+    median = statistics.median(reads) if reads else None
+    weight = index_weight(vault)
+
+    def gate(name, value, ok, shown):
+        return {"name": name, "value": value, "pass": ok, "shown": shown}
+
+    return [
+        gate("recall ≥ 0.90", recall, None if recall is None else recall >= 0.90,
+             "n/a" if recall is None else f"{recall:.2f}"),
+        gate("multi-hop ≥ 0.80", multi, None if multi is None else multi >= 0.80,
+             "n/a" if multi is None else f"{multi:.2f}"),
+        gate("index weight ≤ 5000 tok", weight, None if weight is None else weight <= 5000,
+             "n/a" if weight is None else str(weight)),
+        gate("needle share ≤ 20%", needle_share,
+             None if needle_share is None else (needle_share <= 0.20 and (needle_pass is None or needle_pass >= 0.70)),
+             "n/a" if needle_share is None else f"{needle_share:.0%}"),
+        gate("median files read ≤ 8", median, None if median is None else median <= 8,
+             "n/a" if median is None else f"{median:g}"),
+    ]
+
+
+def run_path(vault: Path, harness: str, profile: str) -> Path:
+    base = vault / BASELINE_DIR
+    day = v.today().isoformat()
+    path = base / f"run-{harness}-{profile}-{day}.json"
+    n = 2
+    while path.exists():
+        path = base / f"run-{harness}-{profile}-{day}-{n}.json"
+        n += 1
+    return path
+
+
+def frozen_baseline(vault: Path, harness: str, profile: str) -> dict | None:
+    pointer = vault / BASELINE_DIR / f"baseline-{harness}-{profile}.json"
+    if not pointer.is_file():
+        return None
+    try:
+        name = json.loads(v.read_text(pointer)).get("run")
+        return json.loads(v.read_text(vault / BASELINE_DIR / name))
+    except (ValueError, OSError, TypeError):
+        return None
+
+
+def summarise(results: list[Result], vault: Path, meta: dict) -> dict:
+    by_tag = {}
+    for tag in TAGS:
+        value = rate([r for r in results if tag in r.case.tags])
+        if value is not None:
+            by_tag[tag] = value
+    traces = [r.trace for r in results if r.trace]
+    return {
+        **meta,
+        "pass_rate": rate(results),
+        "passed": sum(r.status == "pass" for r in results),
+        "scored": sum(r.status in ("pass", "fail", "error") for r in results),
+        "by_tag": by_tag,
+        "gates": gates(results, vault),
+        "cost_usd": round(sum(t.get("cost_usd") or 0 for t in traces), 4),
+        "local_only_reads": sorted({p for t in traces for p in t.get("local_only_read_on_frontier") or []}),
+        "results": [r.as_json() for r in results],
+    }
+
+
+def print_summary(summary: dict, baseline: dict | None) -> None:
+    rate_now = summary["pass_rate"]
+    head = f"pass rate {rate_now:.2f} ({summary['passed']}/{summary['scored']})" if rate_now is not None else "pass rate n/a"
+    if baseline and baseline.get("pass_rate") is not None and rate_now is not None:
+        delta = rate_now - baseline["pass_rate"]
+        head += f"   baseline {baseline['pass_rate']:.2f}   Δ {delta:+.2f}"
+    print(head)
+    tags = "  ".join(f"{tag} {value:.2f}" for tag, value in summary["by_tag"].items())
+    if tags:
+        print("  " + tags)
+    if baseline:
+        deltas = [f"{tag} {value - baseline['by_tag'][tag]:+.2f}" for tag, value in summary["by_tag"].items()
+                  if tag in (baseline.get("by_tag") or {})]
+        if deltas:
+            print("  Δ per tag: " + "  ".join(deltas))
+    print("gates")
+    failed = []
+    for gate in summary["gates"]:
+        mark = "✓" if gate["pass"] else ("-" if gate["pass"] is None else "✗")
+        print(f"  {mark} {gate['name']:<28} {gate['shown']}")
+        if gate["pass"] is False:
+            failed.append(gate["name"])
+    if failed:
+        print(f"→ {len(failed)} gate(s) failed: see PRD §17.3 (install QMD, then raise neighbors depth)")
+    print(f"cost {summary['cost_usd']:.2f} USD")
+    if summary["local_only_reads"]:
+        print("LOCAL-ONLY FILES READ ON FRONTIER: " + ", ".join(summary["local_only_reads"]))
+
+
+def run(vault: Path, harness: str = "claude", profile: str = "frontier", tags: list[str] | None = None,
+        max_cost: float | None = None, freeze: bool = False, golden: str | None = None) -> int:
+    if harness == "claude" and profile == "local":
+        raise v.VaultError("Claude Code sessions in the vault run the frontier profile (its settings set "
+                           "ANYBRAIN_PROFILE=frontier); use --harness opencode for the local profile")
+    models = load_models(vault)
+    settings = eval_settings(models)
+    cases = load_golden(Path(golden) if golden else vault / GOLDEN)
+    if tags:
+        cases = [c for c in cases if set(c.tags) & set(tags)]
+    if not cases:
+        raise v.VaultError("no case to run")
+    judge = make_judge(models, settings) if any(c.expected.get("behaviour") for c in cases) else None
+    spent = {"usd": 0.0}
+    results: dict[str, Result] = {}
+
+    def task(case: Case) -> Result:
+        if max_cost is not None and spent["usd"] >= max_cost:
+            return Result(case, "not-run", note=f"cost cap of {max_cost} reached")
+        remaining = None if max_cost is None else max_cost - spent["usd"]
+        result = run_case(case, vault, models, harness, profile, settings, judge, remaining)
+        spent["usd"] += (result.trace or {}).get("cost_usd") or 0.0
+        return result
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, int(settings.get("jobs", 2)))) as pool:
+        futures = {pool.submit(task, case): case for case in cases}
+        for future in concurrent.futures.as_completed(futures):
+            result = future.result()
+            results[result.case.id] = result
+            cost = (result.trace or {}).get("cost_usd")
+            reads = len((result.trace or {}).get("files_read") or [])
+            extra = f" ({cost:.2f} USD, {reads} file(s) read)" if isinstance(cost, (int, float)) else ""
+            note = f": {result.note}" if result.note else ""
+            print(f"{result.case.id:<6} {result.status}{extra}{note}")
+    ordered = [results[c.id] for c in cases]
+    first = next((r.trace for r in ordered if r.trace), {}) or {}
+    meta = {"date": v.today().isoformat(), "harness": harness, "harness_version": first.get("harness_version"),
+            "model": first.get("model"), "profile": profile, "golden": str(golden or GOLDEN),
+            "judge": settings.get("judge"), "tags": tags or []}
+    summary = summarise(ordered, vault, meta)
+    summary["cost_usd"] = round(summary["cost_usd"] + (getattr(judge, "cost_usd", 0.0) or 0.0), 4)
+    path = run_path(vault, harness, profile)
+    v.write_text(path, json.dumps(summary, indent=1, ensure_ascii=False) + "\n")
+    print(f"wrote {v.rel_path(vault, path)}")
+    baseline = frozen_baseline(vault, harness, profile)
+    print_summary(summary, baseline)
+    if freeze:
+        pointer = vault / BASELINE_DIR / f"baseline-{harness}-{profile}.json"
+        v.write_text(pointer, json.dumps({"run": path.name, "frozen": v.today().isoformat()}, indent=1) + "\n")
+        print(f"wrote {v.rel_path(vault, pointer)} (frozen baseline)")
+    hard_fail = summary["local_only_reads"] or any(
+        r.status in ("fail", "error") and set(r.case.tags) & set(HARD_TAGS) for r in ordered)
+    return 1 if hard_fail else 0

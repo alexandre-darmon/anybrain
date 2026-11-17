@@ -26,6 +26,7 @@ packages = ["anybrain"]
 [tool.hatch.build.targets.wheel.force-include]
 "skills" = "anybrain/_framework/skills"
 "templates" = "anybrain/_framework/templates"
+"evals" = "anybrain/_framework/evals"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

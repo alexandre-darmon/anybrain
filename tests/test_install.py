@@ -168,8 +168,9 @@ def test_claude_rules_for_a_subfolder_exception():
 
 def test_models_template_is_valid():
     models = tomllib.loads((v.framework_root() / "templates" / "models.example.toml").read_text())
-    assert models["harnesses"]["claude"]["headless"] == "claude -p {prompt}"
-    assert models["harnesses"]["opencode"]["headless"] == "opencode run {prompt}"
+    assert models["harnesses"]["claude"]["headless"].startswith("claude -p {prompt} ")
+    assert models["harnesses"]["opencode"]["headless"] == "opencode run --standalone {prompt}"
+    assert models["eval"]["judge"] == "endpoint:frontier"
     assert models["skills"]["dirs"] == ["~/.agents/skills", "~/.claude/skills"]
     assert v.parse_routing(models["routing"]) == v.DEFAULT_ROUTING_OBJ
 
