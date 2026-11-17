@@ -27,7 +27,7 @@ v0.2 is published and used by a few strangers. The next step is a README section
 - 2026-10-15 · v0.1 published · [doc]
 
 ## Decisions
-- 2026-10-20 · choose the second feature from three user interviews, not from my own wish list · the interview method of [[discovery-interviews]] · [doc]
+- 2026-10-20 · choose the second feature from three user interviews, not from my own wish list · past behaviour beats stated intent, the method later filed as [[discovery-interviews]] · [said]
 - 2026-10-01 · standard library only · no dependency to maintain · [hunch]
 
 ## Next steps

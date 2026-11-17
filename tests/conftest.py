@@ -67,6 +67,7 @@ def example_vault(tmp_path):
     """A writable copy of vault.example/."""
     target = tmp_path / "example"
     shutil.copytree(EXAMPLE, target, symlinks=True)
+    (target / ".harness" / "protected.json").unlink(missing_ok=True)  # local state, not committed
     return target
 
 

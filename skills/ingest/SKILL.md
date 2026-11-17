@@ -37,6 +37,7 @@ One file under `raw/`. If none is given, list the files in `raw/` with no compil
    - A concept fits: link to it inside a sentence that gives the reason ("builds on [[category-design]]"), add this source under the concept's `## What the sources say` with an evidence tag (`[doc]`), add it to the concept's `sources`, and add a line at the top of its `## Timeline`: `YYYY-MM-DD · <what changed> · [doc]`.
    - No concept fits, but the idea now appears in a second source (look in `library/` and `wiki/notes/`): create the concept from both sources.
    - One source only: no concept.
+   - When a concept gains a source, check that its `## Summary` and `## Draft position` still match all its sources (for example "both sources" after a third one), and rewrite them if needed. Never touch `## My position`.
    - A book page links to the concepts its ideas support and to at most 5 related books, each with a reason. Never write a line that holds only a link.
 5. **Neighbours.** Run `anybrain neighbors . <page>` on the page. Check that every new link resolves, and look for an obvious missing relation to a page linked from the same concepts.
 6. **Close.** Complete the frontmatter (`description` at most 150 characters, saying what the page claims; `sources`; `created`; `updated`; `language` of the source; `tags`, reusing existing ones). Run `anybrain index .` and `anybrain lint . --schema --links --quotes --report-only`, and fix what concerns your pages. Append to `log.md`. Report in three lines.

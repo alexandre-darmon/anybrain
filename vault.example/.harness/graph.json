@@ -1,5 +1,5 @@
 {
-  "generated": "2026-11-17T08:07:56Z",
+  "generated": "2026-11-17T08:23:30Z",
   "pages": {
     "company/admin.md": {
       "title": "Company admin",
@@ -215,7 +215,7 @@
       "out": [
         {
           "to": "wiki/notes/discovery-interviews.md",
-          "context": "2026-10-20 · choose the second feature from three user interviews, not from my own wish list · the interview method of [[discovery-interviews]] · [doc]"
+          "context": "2026-10-20 · choose the second feature from three user interviews, not from my own wish list · past behaviour beats stated intent, the method later filed as [[…"
         }
       ],
       "in": [
@@ -354,7 +354,7 @@
         },
         {
           "from": "projects/example-tool.md",
-          "context": "2026-10-20 · choose the second feature from three user interviews, not from my own wish list · the interview method of [[discovery-interviews]] · [doc]"
+          "context": "2026-10-20 · choose the second feature from three user interviews, not from my own wish list · past behaviour beats stated intent, the method later filed as [[…"
         }
       ],
       "sources": [

@@ -20,7 +20,7 @@ Fix the mechanical, report the judgmental, delete nothing.
 
 ## Method
 
-1. **Checks.** Run `anybrain lint . --report-only --report journal/lint-YYYY-MM-DD.md` (today's date). It lists schema, link, graph, staleness, protected-section, quote, secret, feedback and iCloud findings.
+1. **Checks.** `journal/` is local-only by default. On the local profile, run `anybrain lint . --report-only --report journal/lint-YYYY-MM-DD.md` (today's date). On any other profile, run `anybrain lint . --report-only` and keep the output: the report goes into your answer instead (step 7). The checks cover schema, links, graph, staleness, protected sections, quotes, secrets, feedback and iCloud.
 2. **Mechanical fixes.** Repair links to renamed files; add a missing `updated`; give each naked link a reason phrase; merge tags that differ only by case or plural. Log each fix in `log.md`. Never touch a protected section, even for a typo.
 3. **Judgment pass, in a fresh context.** The worker never grades itself. Start a new session or a sub-agent, give it only the list of file paths below and these three questions, never your own summary, and let it read the files:
    - Which concepts updated or cited in the last 30 days have a `My position` that a newer source contradicts?
@@ -31,7 +31,7 @@ Fix the mechanical, report the judgmental, delete nothing.
 4. **Rules from corrections.** Run `anybrain feedback . proposals`. For each proposal, draft one rule in the owner's terms, ending with its topic: `Never use em dashes in any page or answer. (topic:no-em-dash)`. Do not write it anywhere yet: the owner approves it through the `feedback` skill.
 5. **Raw files waiting.** List the files in `raw/` with no compiled page, or newer than their page, as candidates for `ingest`.
 6. **Rebuild.** Run `anybrain index .`.
-7. **Report.** Add to the report written in step 1 four sections: fixed, needs the owner (contradictions, merges, stale projects, findings you could not fix), proposed rules, raw files waiting. At most 40 lines in total. Append to `log.md`.
+7. **Report.** Four sections: fixed, needs the owner (contradictions, merges, stale projects, findings you could not fix), proposed rules, raw files waiting. At most 40 lines in total. On the local profile, add them to the report file of step 1. On any other profile, give the report in your answer, never in a file outside the vault, and end with: "File this report from a local session: `anybrain lint . --report journal/lint-YYYY-MM-DD.md`". Append to `log.md` in both cases.
 
 ## Red lines
 
