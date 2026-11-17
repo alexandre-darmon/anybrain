@@ -47,6 +47,13 @@ DOMAINS = ["me", "library", "wiki", "projects", "company", "finance", "journal",
 COMPILED = ("library", "wiki", "projects")
 CONFIDENTIAL_FOLDERS = ("company", "finance")
 PROFILES = ("frontier", "local")
+# Always local, whatever models.toml says: confidential folders, API keys, the name lists used for masking,
+# and the eval runs and traces, which hold answers and paths (docs/decisions.md D033). Folders end with "/".
+ALWAYS_LOCAL = (
+    "company/", "finance/",
+    ".harness/.env", ".harness/clients.txt", ".harness/names.txt",
+    ".harness/traces/", ".harness/baseline/",
+)
 MODELS_FILE = ".harness/models.toml"
 
 # PRD 18.2 routing, the default when a vault has no models.toml. Folder keys end with "/"; file keys are
@@ -183,7 +190,7 @@ class Routing:
 
     def route(self, rel: str) -> str:
         rel = rel.strip().removeprefix("./")
-        if rel.split("/", 1)[0] in CONFIDENTIAL_FOLDERS:
+        if _always_local(rel):
             return "local"
         best_len, best = -1, self.default
         for key, profile in self.rules:
@@ -198,10 +205,17 @@ class Routing:
         return self.route(rel) == "local"
 
     def local_folders(self) -> list[str]:
-        """Folders routed local, confidential folders included, without nested duplicates."""
-        folders = {f"{name}/" for name in CONFIDENTIAL_FOLDERS}
+        """Folders routed local, the always-local ones included, without nested duplicates."""
+        folders = {key for key in ALWAYS_LOCAL if key.endswith("/")}
         folders |= {key for key, profile in self.rules if key.endswith("/") and profile == "local"}
         return sorted(f for f in folders if not any(f != other and f.startswith(other) for other in folders))
+
+    def local_files(self) -> list[str]:
+        """Single files routed local outside any local folder (`.harness/.env`, a page routed local)."""
+        files = {key for key in ALWAYS_LOCAL if not key.endswith("/")}
+        files |= {key for key, profile in self.rules if not key.endswith("/") and profile == "local"}
+        folders = self.local_folders()
+        return sorted(f for f in files if not any(f.startswith(folder) for folder in folders))
 
     def exceptions(self) -> list[str]:
         """Paths routed frontier that would be local without their own entry: what the harness must allow
@@ -234,11 +248,15 @@ def parse_routing(table: dict | None) -> Routing:
         if not key or key.startswith("/") or ".." in key.split("/"):
             ignored.append((raw_key, "not a vault-relative path"))
             continue
-        if profile == "frontier" and key.split("/", 1)[0] in CONFIDENTIAL_FOLDERS:
-            ignored.append((raw_key, "confidential folders stay on the local profile (PRD G6)"))
+        if profile == "frontier" and (_always_local(key) or any(a.startswith(key) for a in ALWAYS_LOCAL if key.endswith("/"))):
+            ignored.append((raw_key, "confidential folders and private .harness files stay on the local profile (PRD G6)"))
             continue
         rules.append((key, profile))
     return Routing(default, tuple(sorted(rules)), tuple(ignored))
+
+
+def _always_local(rel: str) -> bool:
+    return any(rel == key or (key.endswith("/") and rel.startswith(key)) for key in ALWAYS_LOCAL)
 
 
 DEFAULT_ROUTING_OBJ = parse_routing(None)
@@ -268,8 +286,10 @@ def load_routing(vault: Path | None) -> Routing:
 
 
 def is_local_only_path(vault: Path | None, rel: str) -> bool:
-    """A file whose content scripts must not show outside the local profile: routed local, or in .harness/."""
-    return rel.startswith(".harness/") or load_routing(vault).is_local(rel)
+    """A file whose content scripts must not show outside the local profile: routed local, or always local
+    (confidential folders, keys, name lists, eval runs and traces). Templates, graph.json and models.toml are
+    meant to be read by every agent (PRD 10.3)."""
+    return load_routing(vault).is_local(rel)
 
 
 # ---------------------------------------------------------------------------- frontmatter

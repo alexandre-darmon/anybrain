@@ -110,6 +110,18 @@ def _cmd_feedback(args: argparse.Namespace) -> int:
     return feedback.run_proposals(root)
 
 
+def _cmd_trace(args: argparse.Namespace) -> int:
+    from . import trace, vault
+
+    if len(args.args) == 1 and args.args[0] in ("show",):
+        root, action = vault_arg(None), args.args[0]
+    elif len(args.args) == 2 and args.args[1] in ("show",):
+        root, action = args.args
+    else:
+        raise UsageError("usage: anybrain trace [vault] show [--last N] [--skill NAME]")
+    return trace.show(vault.resolve_vault(root), last=args.last, skill=args.skill)
+
+
 def _cmd_stats(args: argparse.Namespace) -> int:
     from . import stats, vault
 
@@ -186,6 +198,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("vault", nargs="?")
     p.add_argument("--weeks", type=int, default=4, help="number of weeks to show (default 4)")
     p.set_defaults(func=_cmd_stats)
+
+    p = sub.add_parser("trace", help="Print recent run traces: files read and written, tokens, cost, local-only reads")
+    p.add_argument("args", nargs="+", metavar="[vault] show")
+    p.add_argument("--last", type=int, default=20, help="number of runs to show (default 20)")
+    p.add_argument("--skill", metavar="NAME", help="only runs of this skill")
+    p.set_defaults(func=_cmd_trace)
 
     for name, (summary, step) in PLANNED.items():
         p = sub.add_parser(name, help=f"{summary} (not built yet: {step})")

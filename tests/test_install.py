@@ -138,32 +138,32 @@ def test_rendered_harness_configs_follow_the_default_routing(brain):
     assert claude["env"]["ANYBRAIN_PROFILE"] == "frontier"
     assert claude["permissions"]["deny"] == install.claude_read_rules(v.DEFAULT_ROUTING_OBJ)
     opencode = json.loads((brain / "opencode.json").read_text())
-    assert opencode["permissions"] == [
-        {"action": "read", "resource": "company/**", "effect": "deny"},
-        {"action": "read", "resource": "finance/**", "effect": "deny"},
-        {"action": "read", "resource": "journal/**", "effect": "deny"},
-        {"action": "read", "resource": "me/**", "effect": "deny"},
-        {"action": "read", "resource": "raw/docs/**", "effect": "deny"},
-        {"action": "read", "resource": "journal/reports/**", "effect": "allow"},
-        {"action": "read", "resource": "me/preferences.md", "effect": "allow"},
-    ]
+    denied = [".harness/baseline/**", ".harness/traces/**", "company/**", "finance/**", "journal/**", "me/**",
+              "raw/docs/**", ".harness/.env", ".harness/clients.txt", ".harness/names.txt"]
+    assert opencode["permissions"] == (
+        [{"action": "read", "resource": r, "effect": "deny"} for r in denied]
+        + [{"action": "read", "resource": "journal/reports/**", "effect": "allow"},
+           {"action": "read", "resource": "me/preferences.md", "effect": "allow"}])
     local = opencode["agents"]["local"]
     assert local["model"].startswith("ollama/")
-    assert {r["resource"] for r in local["permissions"] if r["effect"] == "allow"} == {
-        "company/**", "finance/**", "journal/**", "me/**", "raw/docs/**"}
+    assert [r["resource"] for r in local["permissions"] if r["effect"] == "allow"] == denied
 
 
 def test_claude_rules_deny_every_local_folder_and_reopen_the_exceptions():
     rules = install.claude_read_rules(v.DEFAULT_ROUTING_OBJ)
-    assert rules == ["Read(./company/**)", "Read(./finance/**)", "Read(journal/*)", "Read(!journal/reports/**)",
-                     "Read(me/*)", "Read(!me/preferences.md)", "Read(./raw/docs/**)"]
+    assert rules == ["Read(./.harness/baseline/**)", "Read(./.harness/traces/**)", "Read(./company/**)",
+                     "Read(./finance/**)", "Read(journal/*)", "Read(!journal/reports/**)", "Read(me/*)",
+                     "Read(!me/preferences.md)", "Read(./raw/docs/**)", "Read(./.harness/.env)",
+                     "Read(./.harness/clients.txt)", "Read(./.harness/names.txt)"]
 
 
 def test_claude_rules_for_a_subfolder_exception():
     routing = v.parse_routing({"default": "frontier", "me/": "local", "me/preferences.md": "frontier",
                                "me/voice/": "frontier"})
-    assert install.claude_read_rules(routing) == ["Read(./company/**)", "Read(./finance/**)", "Read(me/*)",
-                                                  "Read(!me/preferences.md)", "Read(!me/voice/**)"]
+    assert install.claude_read_rules(routing)[2:] == ["Read(./company/**)", "Read(./finance/**)", "Read(me/*)",
+                                                      "Read(!me/preferences.md)", "Read(!me/voice/**)",
+                                                      "Read(./.harness/.env)", "Read(./.harness/clients.txt)",
+                                                      "Read(./.harness/names.txt)"]
 
 
 def test_models_template_is_valid():
