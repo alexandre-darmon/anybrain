@@ -11,8 +11,8 @@ isbn:
 tags: [offers, pricing, positioning]
 aliases: []
 language: en
-created: 2026-11-01
-updated: 2026-11-01
+created: 2026-11-02
+updated: 2026-11-02
 sources: [raw/highlights/100m-offers.md]
 sensitivity: public
 ---

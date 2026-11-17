@@ -233,3 +233,30 @@ def test_confidential_findings_are_masked_unless_local(fixture_vault, capsys, mo
 def test_lint_reads_vault_from_environment(monkeypatch, capsys):
     monkeypatch.setenv("ANYBRAIN_VAULT", str(EXAMPLE))
     assert cli.main(["lint", "--schema"]) == 0
+
+
+# ---------------------------------------------------------------- Q22: the destination of a report decides its masking
+
+@pytest.fixture
+def leaky_company(make_vault):
+    return make_vault({"company/plan.md": page("Plan", body="See [[project-falcon-acquisition]].")})
+
+
+def test_local_report_in_a_frontier_folder_is_masked(leaky_company, monkeypatch, capsys):
+    monkeypatch.setenv("ANYBRAIN_PROFILE", "local")
+    cli.main(["lint", str(leaky_company), "--links", "--report-only", "--report", "journal/reports/lint-2026-11-16.md"])
+    assert "project-falcon-acquisition" in capsys.readouterr().out  # the local session itself sees everything
+    report = (leaky_company / "journal" / "reports" / "lint-2026-11-16.md").read_text()
+    assert "project-falcon-acquisition" not in report
+    assert "company/plan.md: details hidden (confidential: local profile only)" in report
+
+
+def test_local_report_in_a_local_folder_is_complete(leaky_company, monkeypatch):
+    monkeypatch.setenv("ANYBRAIN_PROFILE", "local")
+    cli.main(["lint", str(leaky_company), "--links", "--report-only", "--report", "journal/lint-2026-11-16.md"])
+    assert "project-falcon-acquisition" in (leaky_company / "journal" / "lint-2026-11-16.md").read_text()
+
+
+def test_frontier_report_is_masked_wherever_it_goes(leaky_company):
+    cli.main(["lint", str(leaky_company), "--links", "--report-only", "--report", "journal/reports/lint-2026-11-16.md"])
+    assert "project-falcon-acquisition" not in (leaky_company / "journal" / "reports" / "lint-2026-11-16.md").read_text()

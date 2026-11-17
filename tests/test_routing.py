@@ -18,6 +18,7 @@ DEFAULT = v.DEFAULT_ROUTING_OBJ
     ("me/profile.md", "local"),
     ("me/sub/notes.md", "local"),
     ("journal/2026-11-03.md", "local"),
+    ("journal/reports/lint-2026-11-17.md", "frontier"),
     ("company/admin.md", "local"),
     ("finance/holdings.csv", "local"),
     ("raw/docs/report.pdf", "local"),
@@ -55,7 +56,7 @@ def test_bad_entries_are_ignored_with_a_reason():
 
 def test_local_folders_and_exceptions_of_the_default():
     assert DEFAULT.local_folders() == ["company/", "finance/", "journal/", "me/", "raw/docs/"]
-    assert DEFAULT.exceptions() == ["me/preferences.md"]
+    assert DEFAULT.exceptions() == ["journal/reports/", "me/preferences.md"]
 
 
 def test_routing_is_read_from_models_toml(make_vault):

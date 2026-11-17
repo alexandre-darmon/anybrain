@@ -314,3 +314,10 @@ Format: `D<number> · <title>`, with the build step and the PRD sections involve
 ## D031 · No command pre-approved in the harness configs (Q23)
 
 - **Decided by the owner on 2026-11-17.** The rendered harness configs pre-approve nothing. The owner approves `anybrain` commands and the profile check as they come, and the question is revisited after real use. When it is, `anybrain lint --accept` stays excluded: an agent that could run it unattended could accept its own edit of a protected section.
+
+## D032 · Lint reports, trace source and trace retention (Q20, Q21, Q22)
+
+- **Decided by the owner on 2026-11-17.**
+- **Q22, lint reports.** Each session writes its report where its profile can read it. A frontier session writes `journal/reports/lint-YYYY-MM-DD.md`; the default routing gains `"journal/reports/" = "frontier"`, an exception inside the local `journal/` rendered like `me/preferences.md` (D027). A local session keeps `journal/lint-YYYY-MM-DD.md`. `anybrain lint --report` masks the details of local-only findings according to the **destination** of the report, whatever the profile, so a local session that writes into `journal/reports/` cannot put local-only details there. The report of a frontier session is safe by construction: that session only read what the frontier may read, plus the masked lint output. The agent-written sections of a report written on the local profile into `journal/reports/` rely on the skill's instruction not to quote local-only content; that is why the local profile writes to `journal/` instead.
+- **Q20, trace source (P2).** `anybrain trace import` reads the transcripts the harnesses already keep, on demand or from the weekly `lint` skill. No daemon, no collector, nothing sent out.
+- **Q21, trace retention.** Raw session traces: 30 days rolling, deleted by `trace import` or the weekly `lint`. Traces of an eval run: kept with their run file in `.harness/baseline/`, because a frozen baseline is the reference for a model change months later. Weekly aggregates without paths: kept, so trends longer than a month stay visible. `.harness/traces/` is routed local.

@@ -144,6 +144,7 @@ def test_rendered_harness_configs_follow_the_default_routing(brain):
         {"action": "read", "resource": "journal/**", "effect": "deny"},
         {"action": "read", "resource": "me/**", "effect": "deny"},
         {"action": "read", "resource": "raw/docs/**", "effect": "deny"},
+        {"action": "read", "resource": "journal/reports/**", "effect": "allow"},
         {"action": "read", "resource": "me/preferences.md", "effect": "allow"},
     ]
     local = opencode["agents"]["local"]
@@ -154,7 +155,7 @@ def test_rendered_harness_configs_follow_the_default_routing(brain):
 
 def test_claude_rules_deny_every_local_folder_and_reopen_the_exceptions():
     rules = install.claude_read_rules(v.DEFAULT_ROUTING_OBJ)
-    assert rules == ["Read(./company/**)", "Read(./finance/**)", "Read(./journal/**)",
+    assert rules == ["Read(./company/**)", "Read(./finance/**)", "Read(journal/*)", "Read(!journal/reports/**)",
                      "Read(me/*)", "Read(!me/preferences.md)", "Read(./raw/docs/**)"]
 
 

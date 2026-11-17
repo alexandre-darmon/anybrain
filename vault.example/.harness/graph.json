@@ -1,5 +1,5 @@
 {
-  "generated": "2026-11-17T08:23:30Z",
+  "generated": "2026-11-17T21:37:17Z",
   "pages": {
     "company/admin.md": {
       "title": "Company admin",
@@ -145,7 +145,7 @@
         },
         {
           "from": "wiki/concepts/category-design.md",
-          "context": "[[snow-leopard]]: differentiation comes from a changed point of view, shown on 444 bestsellers. [doc]"
+          "context": "[[snow-leopard]]: differentiation comes from a changed point of view, not from being better in a crowd. [doc]"
         },
         {
           "from": "wiki/concepts/languaging.md",
@@ -254,7 +254,7 @@
       "out": [
         {
           "to": "library/snow-leopard.md",
-          "context": "[[snow-leopard]]: differentiation comes from a changed point of view, shown on 444 bestsellers. [doc]"
+          "context": "[[snow-leopard]]: differentiation comes from a changed point of view, not from being better in a crowd. [doc]"
         },
         {
           "to": "library/100m-offers.md",

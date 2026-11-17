@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import difflib
+import os
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -526,6 +527,17 @@ def masked(finding: Finding, ctx: Context, local: bool) -> Finding:
                    f"{finding.path}: details hidden (confidential: local profile only)", finding.path)
 
 
+def _report_is_local(ctx: Context, target: str) -> bool:
+    """True when the report lands somewhere only the local profile may read."""
+    path = Path(target).expanduser()
+    full = path if path.is_absolute() else ctx.vault / path
+    try:
+        rel = v.rel_path(ctx.vault.resolve(), Path(os.path.normpath(full)))
+    except ValueError:
+        return False  # outside the vault: assume anyone may read it
+    return v.is_local_only_path(ctx.vault, rel)
+
+
 def write_report(ctx: Context, target: str, findings: list[Finding]) -> str:
     """Write the findings as a `type: report` page.
 
@@ -581,19 +593,25 @@ def run(vault: Path, selected: list[str] | None = None, report_only: bool = Fals
             return 0
     ctx = Context(vault)
     local = ctx.local
-    findings: list[Finding] = []
+    raw_findings: list[Finding] = []
     seen = set()
     for name in selected or list(CHECKS):
         for finding in CHECKS[name](ctx):
             key = (finding.level, finding.check, finding.message)
             if key not in seen:
                 seen.add(key)
-                findings.append(masked(finding, ctx, local))
+                raw_findings.append(finding)
+    findings = [masked(f, ctx, local) for f in raw_findings]
     for finding in findings:
         print(finding)
     errors = sum(f.level == "error" for f in findings)
     warnings = len(findings) - errors
     if report:
-        print(f"wrote {write_report(ctx, report, findings)}")
+        # the destination decides the masking: a report that frontier sessions may read never holds
+        # local-only details, whichever profile wrote it (docs/decisions.md D032)
+        dest_local = ctx.local and _report_is_local(ctx, report)
+        unmasked = {(f.level, f.check, f.message): f for f in raw_findings}
+        to_write = [masked(unmasked.get((f.level, f.check, f.message), f), ctx, dest_local) for f in raw_findings]
+        print(f"wrote {write_report(ctx, report, to_write)}")
     print(f"lint: {errors} error(s), {warnings} warning(s)")
     return 1 if findings and not report_only else 0

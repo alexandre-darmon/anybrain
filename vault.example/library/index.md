@@ -3,8 +3,8 @@
 
 ## read
 
-- [The Snow Leopard](snow-leopard.md): Create a new content category by changing the point of view instead of competing inside an existing one. (Nicolas Cole · ★★★★★ · read · 2022-12)
 - [$100M Offers](100m-offers.md): Build an offer so valuable that price stops being the objection, using the value equation. (Alex Hormozi · ★★★★ · read · 2024-03)
+- [The Snow Leopard](snow-leopard.md): Create a new content category by changing the point of view instead of competing inside an existing one. (Nicolas Cole · ★★★★★ · read · 2022-12)
 
 ## reading
 

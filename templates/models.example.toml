@@ -24,6 +24,7 @@ default             = "frontier"
 "company/"          = "local"
 "finance/"          = "local"
 "raw/docs/"         = "local"
+"journal/reports/"  = "frontier"               # lint reports written by frontier sessions
 
 [skills]
 dirs = ["~/.agents/skills", "~/.claude/skills"] # where init and update link the skills

@@ -60,6 +60,7 @@ DEFAULT_ROUTING = {
     "company/": "local",
     "finance/": "local",
     "raw/docs/": "local",
+    "journal/reports/": "frontier",
 }
 GENERATED_NAMES = {"index.md"}
 ROOT_NON_PAGES = {"log.md", "AGENTS.md", "CLAUDE.md"}

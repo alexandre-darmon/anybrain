@@ -522,7 +522,7 @@ Rule for `kind: mission`: the page records what the owner learned and decided, *
 
 ### 11.7 Brief and report (`journal/*.md`)
 
-`type: brief` for daily briefs (section 15.7), `type: report` for lint, migration and retro reports. Filenames: `YYYY-MM-DD.md`, `lint-YYYY-MM-DD.md`, `migration-YYYY-MM-DD.md`.
+`type: brief` for daily briefs (section 15.7), `type: report` for lint, migration and retro reports. Filenames: `YYYY-MM-DD.md`, `lint-YYYY-MM-DD.md`, `migration-YYYY-MM-DD.md`. A lint report written in a frontier session goes to `journal/reports/lint-YYYY-MM-DD.md`, the one part of `journal/` routed frontier (Q22).
 
 ### 11.8 Evidence tags
 
@@ -780,7 +780,7 @@ Acceptance: on `vault.example/`, generated files are byte-identical to the commi
 
 **Trigger.** Weekly, or "lint the vault".
 **Method.**
-1. Run `anybrain lint <vault> --report-only --report journal/lint-YYYY-MM-DD.md`.
+1. Run `anybrain lint <vault> --report-only --report journal/lint-YYYY-MM-DD.md` on the local profile, or `--report journal/reports/lint-YYYY-MM-DD.md` on any other profile: each session writes its report where its profile can read it, and the command masks local-only details according to where the report goes (Q22).
 2. **Mechanical fixes** (agent): links to renamed files, missing `updated`, naked links (add a reason phrase), tags that only differ by case or plural. Log each fix.
 3. **Judgment pass in a fresh context.** The harness runs a separate session or subagent that receives only file paths, not the worker's summary. It reads concepts updated or cited in the last 30 days and lists: contradictions between `My position` and newer sources; concepts to merge; projects whose `Now` disagrees with their latest Timeline entry. It writes findings, it does not fix them.
 4. **Feedback.** Run `anybrain feedback proposals` and add proposals to the report (section 16).
@@ -996,6 +996,7 @@ default     = "frontier"
 "company/"  = "local"
 "finance/"  = "local"
 "raw/docs/" = "local"
+"journal/reports/" = "frontier"                 # lint reports written by frontier sessions (Q22)
 
 [skills]
 dirs = ["~/.agents/skills", "~/.claude/skills"] # where init links the skills
@@ -1257,7 +1258,8 @@ An answer can be right for the wrong reasons: the agent opened 30 files, or read
 - Traces stay in `.harness/traces/`, on the owner's machine and in the nightly backup. No command sends them anywhere. Any future viewer reads these files locally.
 - `local_only_read_on_frontier` lists every file read in a frontier run that the routing of `models.toml` keeps local. It is the measured form of the safety metric of section 6: a non-empty list fails the run and is printed first by `anybrain trace show` and `anybrain eval`.
 - The cost gate of 17.3 and the `files_opened` grader of 22.2 use `files_read` from the trace; the agent's `files opened: N` line is kept and compared with it.
-- Retention: traces older than 12 months are not deleted by anybrain; the owner decides (Q21).
+- Retention (Q21): raw session traces are kept for 30 days, then deleted by `anybrain trace import` or the weekly `lint`, never by a background process. Traces of an eval run are kept as long as the run file in `.harness/baseline/`. Weekly aggregates (counts, cost, median files read, local-only reads), which hold no path, are kept.
+- `.harness/traces/` is routed local, so harness configs deny it to frontier sessions.
 
 **Phase.** P1 (step 10): `anybrain eval` writes a trace for every case and reports per tag: median files read, tokens, cost, local-only reads. `anybrain trace show` prints them.
 
@@ -1353,9 +1355,9 @@ P2, P3, P4 are planned only after step 18 and the 4-week measure.
 | Q17 | `init` is described as creating the vault "from `vault.example/` structure". Should the fake example pages be copied too? | No: folders, templates, config and four empty `me/` pages only (`docs/decisions.md` D019) |
 | Q18 | Section 13.5 masks only confidential neighbours, while 18.4 denies reading `me/` and `journal/` in frontier sessions. Should scripts (`graph.json`, `neighbors`, `lint`) also hide `me/` and `journal/` content outside the local profile? | Yes: they are treated as local-only, like confidential pages (`docs/decisions.md` D025) |
 | Q19 | `init` builds the indexes, but 9.3 says it never overwrites existing files. What if the owner's folder already has a hand-written `index.md` (a home note, a MOC)? | `index` and `init` stop, write nothing, and ask the owner to rename that file (`docs/decisions.md` D026). The migration (section 21) may decide where such notes go |
-| Q20 | Continuous observability (22.6): import finished session transcripts, or receive harness OpenTelemetry on a local collector? | Import transcripts: no process to run; OpenTelemetry only to a collector on the same machine, never a hosted service |
-| Q21 | How long are run traces kept, and should paths of local-only files be hashed in traces read by frontier sessions? | Kept until the owner deletes them; from step 10, `.harness/traces/` is routed local, so harness configs deny it to frontier sessions |
-| Q22 | The `lint` skill writes `journal/lint-YYYY-MM-DD.md`, but `journal/` is local-only: a frontier session can neither read nor write it. Where does a frontier lint report go? | In the answer, with the command to file it from a local session; never in a file outside the vault (`docs/decisions.md` D029). Alternative to decide: route reports to a frontier-readable folder |
+| Q20 | Continuous observability (22.6): import finished session transcripts, or receive harness OpenTelemetry on a local collector? | **Decided by the owner (2026-11-17): import transcripts** with `anybrain trace import`, run on demand or by the weekly `lint`; no daemon, no collector, nothing sent out (`docs/decisions.md` D032) |
+| Q21 | How long are run traces kept? | **Decided by the owner (2026-11-17): 30 days rolling for raw session traces**; eval traces kept with their baseline run; weekly aggregates without paths kept (section 22.5, D032) |
+| Q22 | The `lint` skill wrote `journal/lint-YYYY-MM-DD.md`, but `journal/` is local-only: a frontier session can neither read nor write it. Where does a frontier lint report go? | **Decided by the owner (2026-11-17):** each session writes where its profile can read. Frontier sessions write `journal/reports/lint-YYYY-MM-DD.md` (`"journal/reports/" = "frontier"`), local sessions `journal/lint-YYYY-MM-DD.md`; `anybrain lint --report` masks local-only details by destination, not by profile (D032) |
 | Q23 | Shared rule 3 needs `ANYBRAIN_PROFILE`, but reading it takes a shell command the harness asks the owner to approve each time. Should the rendered harness configs pre-approve some commands (reading the profile, `anybrain index`, `anybrain neighbors`, `anybrain lint --report-only`)? | **Decided by the owner (2026-11-17): nothing pre-approved for now; revisit after real use.** An unread profile is treated as non-local. Never pre-approve `anybrain lint --accept`, which would let an agent accept its own edit of a protected section |
 | Q24 | Should `init` and `update` also render deny rules for harnesses beyond Claude Code and OpenCode? Research of 2026-11-17: Codex permission profiles (OS-level, so shell and scripts are covered too, but a read exception inside a denied folder is not guaranteed on Linux), Cursor `.cursorignore` with `me/*` then `!me/preferences.md` (not a security boundary for the terminal, per its own docs), Gemini CLI `.geminiignore` (built-in tools only, not the shell); Goose has no path deny anymore (`docs/decisions.md` D030) | No until step 9 runs the target harnesses; G5 names two. Each added harness needs a measured probe like D027 before its config ships |
 

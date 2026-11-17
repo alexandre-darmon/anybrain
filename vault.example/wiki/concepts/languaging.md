@@ -6,8 +6,8 @@ confidence: low
 tags: [writing, positioning]
 aliases: []
 language: en
-created: 2026-11-01
-updated: 2026-11-01
+created: 2026-11-02
+updated: 2026-11-02
 sources: [library/snow-leopard.md, library/100m-offers.md]
 sensitivity: public
 ---
@@ -26,6 +26,6 @@ A named thing can be wanted, searched and repeated. Both sources treat naming as
 Use it sparingly: a name without a real difference behind it reads as marketing. Naming is the visible half of [[category-design]].
 
 ## Timeline
-- 2026-11-01 · created from [[snow-leopard]] and [[100m-offers]]
+- 2026-11-02 · created from [[snow-leopard]] and [[100m-offers]] · [doc]
 
 ## Open questions
