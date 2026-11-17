@@ -114,9 +114,12 @@ def _glob(key: str) -> str:
 def claude_read_rules(routing: v.Routing) -> list[str]:
     """Claude Code `permissions.deny` rules for everything routed local, with the frontier exceptions.
 
-    An allow rule cannot win over a deny in Claude Code, so an exception inside a denied folder is written
-    as a gitignore negation in the deny list, and its folder is denied entry by entry (`me/*`) because a
-    negation cannot reopen a file inside a folder denied as a whole (`me/**`). See docs/decisions.md D027.
+    An allow rule never wins over a deny in Claude Code, so an exception is a gitignore negation in the deny
+    list. Measured with Claude Code 2.1.326 on 2026-11-17 (docs/decisions.md D027):
+    - `Read(./me/**)` or `Read(./me/*)` followed by `Read(!./me/preferences.md)` still denies the exception;
+    - `Read(me/*)` followed by `Read(!me/preferences.md)` (no `./`) opens it, and still denies files added
+      later and subfolders; `Read(!me/voice/**)` opens a subfolder the same way.
+    A folder without exceptions keeps the anchored form `Read(./folder/**)`.
     """
     exceptions = routing.exceptions()
     rules = []
@@ -125,9 +128,9 @@ def claude_read_rules(routing: v.Routing) -> list[str]:
         if not inner:
             rules.append(f"Read(./{folder}**)")
             continue
-        rules.append(f"Read(./{folder}*)")
+        rules.append(f"Read({folder}*)")
         for exception in inner:
-            rules.append(f"Read(!./{exception})")
+            rules.append(f"Read(!{_glob(exception)})")
     return rules
 
 

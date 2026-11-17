@@ -155,7 +155,14 @@ def test_rendered_harness_configs_follow_the_default_routing(brain):
 def test_claude_rules_deny_every_local_folder_and_reopen_the_exceptions():
     rules = install.claude_read_rules(v.DEFAULT_ROUTING_OBJ)
     assert rules == ["Read(./company/**)", "Read(./finance/**)", "Read(./journal/**)",
-                     "Read(./me/*)", "Read(!./me/preferences.md)", "Read(./raw/docs/**)"]
+                     "Read(me/*)", "Read(!me/preferences.md)", "Read(./raw/docs/**)"]
+
+
+def test_claude_rules_for_a_subfolder_exception():
+    routing = v.parse_routing({"default": "frontier", "me/": "local", "me/preferences.md": "frontier",
+                               "me/voice/": "frontier"})
+    assert install.claude_read_rules(routing) == ["Read(./company/**)", "Read(./finance/**)", "Read(me/*)",
+                                                  "Read(!me/preferences.md)", "Read(!me/voice/**)"]
 
 
 def test_models_template_is_valid():

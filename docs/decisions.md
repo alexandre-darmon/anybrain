@@ -258,16 +258,15 @@ Format: `D<number> · <title>`, with the build step and the PRD sections involve
   - `me/preferences.md` says in a comment at its top that every model reads it, so the owner writes rules there, never private facts.
   - To open another file: add one line, such as `"me/voice.md" = "frontier"`, then run `anybrain update`.
 - **OpenCode** (verified in D020): global `read` deny rules for the local folders, then `allow` rules for the exceptions; the last matching rule wins. The `local` agent allows every local folder.
-- **Claude Code: pending verification.** An allow rule never wins over a deny (D020). The rendered rules deny `./me/*` (the entries of the folder) and reopen the exception with a gitignore negation, `Read(!./me/preferences.md)`, because the docs say a negation cannot reopen a file inside a folder denied as a whole (`./me/**`). Whether `Read(./me/*)` plus the negation leaves `me/preferences.md` readable, and still denies files added later and subfolders, is being checked against the official docs; this entry will be updated with the result.
+- **Claude Code: measured, not only read.** An allow rule never wins over a deny (D020), so an exception is a gitignore negation inside the deny list. Probes with Claude Code 2.1.326 on 2026-11-17, in a vault built by `anybrain init`, each asking a headless session to read the files:
 
-## D028 · Observability: run traces in the vault, planned in P1 (evals) and P2 (every session)
+  | Deny rules | `me/preferences.md` | `me/profile.md` | file added later in `me/` | `me/sub/x.md` |
+  | --- | --- | --- | --- | --- |
+  | `Read(./me/*)`, `Read(!./me/preferences.md)` | denied | denied | | |
+  | `Read(!./me/preferences.md)`, `Read(./me/*)` | denied | denied | | |
+  | explicit list of the other files of `me/` | read | denied | **read** (not listed) | |
+  | `Read(me/*)`, `Read(!me/preferences.md)` | **read** | denied | denied | denied |
+  | same, plus `Read(!me/voice/**)` | read | denied | denied | denied; `me/voice/x.md` read |
 
-- **Step:** spec change requested by the owner on 2026-11-17. **PRD:** 3.1 (G10), 3.2, 6, 7, 9.1, 9.3, 10.2, 22.5, 22.6, 24 step 10, 26 Q20 and Q21.
-- **Context.** The owner wants to know what the agent did in each run, not only what it answered. Graders see the answer; a run that opens 30 files, or reads a confidential file without quoting it, can still pass.
-- **Decision.**
-  - A run trace is built from the harness's own machine output (`claude -p --output-format stream-json`, `opencode run --format json`), normalised by one adapter per harness in `anybrain/trace.py`. Nothing is added to the vault or the skills, so the harness stays swappable.
-  - A trace holds paths, tool calls, tokens, cost and the files read on local-only paths in a frontier run. It never holds file content, answers or prompts. It is stored in `.harness/traces/` and never sent anywhere: no hosted observability service (Langfuse, LangSmith and the like), which would receive vault content and contradict principle 6 and the non-goals.
-  - P1 (step 10): every eval case gets a trace; the cost gate and the files-opened grader use measured reads instead of the agent's own count; a frontier run that reads a local-only file fails.
-  - P2: every session is traced, by importing the transcripts the harnesses already keep (no daemon, no hook). OpenTelemetry towards a collector on the same machine is left open (Q20).
-- **Why.** It turns two metrics of section 6 that were self-reported or limited to safety evals into measured ones, and it is the evidence an owner needs before trusting a cheaper model or another harness.
-- **Not built yet.** This entry changes the PRD only. The code comes with step 10.
+  So a folder with exceptions is rendered as `Read(me/*)` plus one `Read(!<exception>)` per exception, without the `./` prefix (the prefixed negation does not reopen anything). A folder without exceptions keeps `Read(./folder/**)`, also measured as denied. Known side effect: per the docs, a rule without `./` and with one folder segment may also match a folder of that name deeper in the vault (`library/me/...`), which only denies more. The first version of this entry shipped the prefixed form, which denied `me/preferences.md` too; it was replaced the same day.
+- **Instruction layer.** In the last probe, the session read `me/preferences.md` and did not even try `me/profile.md` or `company/admin.md`: rule 3 of `AGENTS.md` stopped it before the harness had to. The deny rules are the second layer, as 18.4 intends.
