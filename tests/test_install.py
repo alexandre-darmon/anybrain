@@ -133,23 +133,58 @@ def test_init_from_the_cli(tmp_path, home, capsys):
 
 # ---------------------------------------------------------------- framework templates (Q6, docs/decisions.md D020)
 
-def test_harness_templates_are_valid_and_deny_confidential_reads():
-    root = v.framework_root() / "templates"
-    claude = json.loads((root / "harness" / "claude-settings.json").read_text())
+def test_rendered_harness_configs_follow_the_default_routing(brain):
+    claude = json.loads((brain / ".claude" / "settings.json").read_text())
     assert claude["env"]["ANYBRAIN_PROFILE"] == "frontier"
-    assert claude["permissions"]["deny"] == ["Read(./company/**)", "Read(./finance/**)",
-                                             "Read(./me/**)", "Read(./journal/**)"]
-    opencode = json.loads((root / "harness" / "opencode.json").read_text())
-    denied = {r["resource"] for r in opencode["permissions"] if r["effect"] == "deny" and r["action"] == "read"}
-    assert denied == {"company/**", "finance/**", "me/**", "journal/**"}
+    assert claude["permissions"]["deny"] == install.claude_read_rules(v.DEFAULT_ROUTING_OBJ)
+    opencode = json.loads((brain / "opencode.json").read_text())
+    assert opencode["permissions"] == [
+        {"action": "read", "resource": "company/**", "effect": "deny"},
+        {"action": "read", "resource": "finance/**", "effect": "deny"},
+        {"action": "read", "resource": "journal/**", "effect": "deny"},
+        {"action": "read", "resource": "me/**", "effect": "deny"},
+        {"action": "read", "resource": "raw/docs/**", "effect": "deny"},
+        {"action": "read", "resource": "me/preferences.md", "effect": "allow"},
+    ]
     local = opencode["agents"]["local"]
     assert local["model"].startswith("ollama/")
-    assert {r["resource"] for r in local["permissions"] if r["effect"] == "allow"} == denied
-    models = tomllib.loads((root / "models.example.toml").read_text())
+    assert {r["resource"] for r in local["permissions"] if r["effect"] == "allow"} == {
+        "company/**", "finance/**", "journal/**", "me/**", "raw/docs/**"}
+
+
+def test_claude_rules_deny_every_local_folder_and_reopen_the_exceptions():
+    rules = install.claude_read_rules(v.DEFAULT_ROUTING_OBJ)
+    assert rules == ["Read(./company/**)", "Read(./finance/**)", "Read(./journal/**)",
+                     "Read(./me/*)", "Read(!./me/preferences.md)", "Read(./raw/docs/**)"]
+
+
+def test_models_template_is_valid():
+    models = tomllib.loads((v.framework_root() / "templates" / "models.example.toml").read_text())
     assert models["harnesses"]["claude"]["headless"] == "claude -p {prompt}"
     assert models["harnesses"]["opencode"]["headless"] == "opencode run {prompt}"
     assert models["skills"]["dirs"] == ["~/.agents/skills", "~/.claude/skills"]
-    assert models["routing"]["company/"] == "local"
+    assert v.parse_routing(models["routing"]) == v.DEFAULT_ROUTING_OBJ
+
+
+def test_update_follows_a_routing_change(brain, capsys):
+    models = brain / ".harness" / "models.toml"
+    models.write_text(models.read_text().replace('"journal/"          = "local"\n', ""))
+    assert install.doctor(str(brain), timeout=0.2) == 1
+    assert "does not match the routing" in capsys.readouterr().out
+    assert install.update(str(brain), yes=True) == 0
+    out = capsys.readouterr().out
+    assert "updated .claude/settings.json" in out and "updated opencode.json" in out
+    assert "journal" not in (brain / "opencode.json").read_text()
+    assert "company/**" in (brain / "opencode.json").read_text()
+
+
+def test_update_reports_ignored_routing_entries(brain, capsys):
+    models = brain / ".harness" / "models.toml"
+    line = '"raw/docs/"         = "local"'
+    models.write_text(models.read_text().replace(line, line + '\n"company/plan.md" = "frontier"', 1))
+    assert install.update(str(brain), yes=True) == 0
+    assert "routing entry 'company/plan.md' ignored" in capsys.readouterr().out
+    assert "company/**" in (brain / "opencode.json").read_text()
 
 
 def test_agents_template_names_no_harness_or_model():
@@ -163,9 +198,9 @@ def test_agents_template_names_no_harness_or_model():
 def test_update_replaces_an_untouched_file_when_the_repo_changes(brain, monkeypatch, capsys):
     original = install.framework_files
 
-    def newer(params):
+    def newer(params, routing=None):
         return [install.Rendered(f.rel, f.content + "\nNew rule.\n") if f.rel == "AGENTS.md" else f
-                for f in original(params)]
+                for f in original(params, routing)]
 
     monkeypatch.setattr(install, "framework_files", newer)
     assert install.update(str(brain), yes=True) == 0

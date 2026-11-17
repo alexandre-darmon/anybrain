@@ -404,7 +404,7 @@ brain/
 
 | Folder | Who writes | Default `sensitivity` | Model route | Notes |
 | --- | --- | --- | --- | --- |
-| `me/` | Owner; agent appends to `preferences.md` "Learned rules" only after approval | personal | local | |
+| `me/` | Owner; agent appends to `preferences.md` "Learned rules" only after approval | personal | local, except `me/preferences.md` → frontier (Q15) | `preferences.md` holds rules for the agent, never private facts: every model reads it |
 | `raw/` | Owner and capture tools; **agent never edits** | personal | frontier, except `raw/docs/` → local | Agent may create new files only in `raw/inbox/` when asked to save something |
 | `library/` | Agent (except protected sections) | public | frontier | |
 | `wiki/` | Agent (except protected sections) | public | frontier | |
@@ -980,9 +980,10 @@ base_url    = "http://localhost:11434/v1"       # Ollama
 model       = "<local model id>"                # chosen by: anybrain eval --profile local
 api_key_env = ""
 
-[routing]                                       # folder → profile
+[routing]                                       # folder or file → profile; a file wins over its folder
 default     = "frontier"
 "me/"       = "local"
+"me/preferences.md" = "frontier"                # rules for the agent, read by every model (Q15)
 "journal/"  = "local"
 "company/"  = "local"
 "finance/"  = "local"
@@ -1006,9 +1007,9 @@ Harnesses look for skills in different places. `init` and `update` symlink every
 ### 18.4 Enforcing local-only folders (defense in depth)
 
 1. **Instruction layer.** AGENTS.md rule and shared skill rule 3.
-2. **Harness layer.** `init` writes harness configs that deny reading confidential folders in the frontier session:
-   - Claude Code: `<vault>/.claude/settings.json` with `permissions.deny` for `Read(./company/**)`, `Read(./finance/**)`, `Read(./me/**)`, `Read(./journal/**)` (verify syntax against current docs during the build).
-   - OpenCode: a `local` agent with the Ollama model as the only agent allowed those paths (verify config keys during the build).
+2. **Harness layer.** `init` and `update` render harness configs from `[routing]` in `models.toml`: every path routed `local` is denied in the frontier session, and a path routed `frontier` inside a local folder (by default `me/preferences.md`) stays readable. `company/` and `finance/` can never be routed `frontier`. `doctor` reports a config that no longer matches the routing (`docs/decisions.md` D027).
+   - Claude Code: `<vault>/.claude/settings.json` with `permissions.deny` rules; an exception is a gitignore negation in the deny list, because an allow rule never wins over a deny (syntax verified against the docs, D027).
+   - OpenCode: global `read` deny rules followed by `allow` rules for the exceptions (the last matching rule wins), and a `local` agent with the Ollama model as the only agent allowed the local paths.
    - The owner opens a separate session with the local profile (`ANYBRAIN_PROFILE=local`) for those folders.
 3. **Test layer.** Safety-tagged golden questions ask for confidential content in the frontier profile; pass = refusal with no file content. A mock endpoint test asserts that no request carrying a confidential file's content reaches a non-localhost URL.
 
@@ -1300,7 +1301,7 @@ P2, P3, P4 are planned only after step 18 and the 4-week measure.
 | Q12 | `graph.json` is readable in frontier sessions. Should it hold the description and link context of confidential pages? | No: title and link structure only; `neighbors` rebuilds the graph and masks per profile (`docs/decisions.md` D012) |
 | Q13 | `lint --stale` compares `## Now` with the newest Timeline entry, but `Now` has no date. Which date does `Now` carry? | The latest date written in the section, else the page's `updated` (`docs/decisions.md` D015) |
 | Q14 | Does "outside `company/`, `finance/`, `raw/`" in `lint --secrets` apply to API keys too? | No: API keys are reported everywhere; personal data only outside those folders (`docs/decisions.md` D017) |
-| Q15 | Section 18.4 denies `Read(./me/**)` in frontier sessions, but 16.3 asks every agent to read `me/preferences.md` at session start. Should `me/preferences.md` be readable on the frontier profile? | Keep the deny of 18.4; `AGENTS.md` tells the agent to say once that it cannot read `me/` and continue. Learned rules then only apply on the local profile until decided |
+| Q15 | Section 18.4 denied `Read(./me/**)` in frontier sessions, but 16.3 asks every agent to read `me/preferences.md` at session start. Should `me/preferences.md` be readable on the frontier profile? | **Decided by the owner (2026-11-17): yes.** `me/preferences.md` is routed `frontier`; the rest of `me/` stays local. More files may be opened later with one routing line and `anybrain update` (sections 10.3, 18.2, 18.4; `docs/decisions.md` D027) |
 | Q16 | OpenCode's config cannot set environment variables, so `ANYBRAIN_PROFILE` cannot come from `opencode.json`. How is the local profile selected? | Launch with `ANYBRAIN_PROFILE=local opencode` (or `opencode run --standalone --agent local`); documented in D020, to write into the README in step 12 |
 | Q17 | `init` is described as creating the vault "from `vault.example/` structure". Should the fake example pages be copied too? | No: folders, templates, config and four empty `me/` pages only (`docs/decisions.md` D019) |
 | Q18 | Section 13.5 masks only confidential neighbours, while 18.4 denies reading `me/` and `journal/` in frontier sessions. Should scripts (`graph.json`, `neighbors`, `lint`) also hide `me/` and `journal/` content outside the local profile? | Yes: they are treated as local-only, like confidential pages (`docs/decisions.md` D025) |

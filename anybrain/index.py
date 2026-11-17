@@ -55,11 +55,11 @@ def _text(value) -> str | None:
 def page_line(page: v.Page, link: str, graph: g.Graph, domain: str = "") -> str:
     """One index line in the formats of 14.2.
 
-    A confidential page listed outside a local-only folder (a mission project, a page that declares
-    `sensitivity: confidential`) shows its title only, as `neighbors` does (13.5, D025).
+    A local-only page (confidential, or routed to the local profile) listed in an index that frontier sessions
+    may read shows its title only, as `neighbors` does (13.5, D025, D027).
     """
     fm = page.meta
-    if page.sensitivity == "confidential" and domain not in v.LOCAL_ONLY_FOLDERS:
+    if page.local_only and not v.is_local_only_path(page.vault, f"{domain}/index.md"):
         return f"- [{page.title}]({link}): {g.CONFIDENTIAL_MARK}"
     head = f"- [{page.title}]({link}): {page.description}"
     if page.type == "book":

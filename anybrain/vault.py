@@ -46,9 +46,21 @@ class VaultError(Exception):
 DOMAINS = ["me", "library", "wiki", "projects", "company", "finance", "journal", "content"]
 COMPILED = ("library", "wiki", "projects")
 CONFIDENTIAL_FOLDERS = ("company", "finance")
-# Folders the frontier harness may not read (PRD 18.4). Scripts never show their content outside the
-# local profile either (docs/decisions.md D025).
-LOCAL_ONLY_FOLDERS = ("company", "finance", "me", "journal")
+PROFILES = ("frontier", "local")
+MODELS_FILE = ".harness/models.toml"
+
+# PRD 18.2 routing, the default when a vault has no models.toml. Folder keys end with "/"; file keys are
+# exact paths and win over folders. Everything routed `local` is denied to frontier sessions by the
+# harness configs and hidden by the scripts outside the local profile (docs/decisions.md D025, D027).
+DEFAULT_ROUTING = {
+    "default": "frontier",
+    "me/": "local",
+    "me/preferences.md": "frontier",
+    "journal/": "local",
+    "company/": "local",
+    "finance/": "local",
+    "raw/docs/": "local",
+}
 GENERATED_NAMES = {"index.md"}
 ROOT_NON_PAGES = {"log.md", "AGENTS.md", "CLAUDE.md"}
 APPEND_ONLY_FILES = ("log.md", "content/ideas.md")
@@ -158,6 +170,107 @@ def write_text(path: Path, text: str) -> None:
         handle.write(text)
 
 
+# ---------------------------------------------------------------------------- routing (PRD 18.2)
+
+@dataclass(frozen=True)
+class Routing:
+    """Which profile may read a path. Confidential folders are always local, whatever the file says (G6)."""
+
+    default: str
+    rules: tuple[tuple[str, str], ...]  # (normalised key, profile), folder keys end with "/"
+    ignored: tuple[tuple[str, str], ...] = ()  # entries refused, with the reason
+
+    def route(self, rel: str) -> str:
+        rel = rel.strip().removeprefix("./")
+        if rel.split("/", 1)[0] in CONFIDENTIAL_FOLDERS:
+            return "local"
+        best_len, best = -1, self.default
+        for key, profile in self.rules:
+            if not key.endswith("/"):
+                if rel == key:
+                    return profile
+            elif rel.startswith(key) and len(key) > best_len:
+                best_len, best = len(key), profile
+        return best
+
+    def is_local(self, rel: str) -> bool:
+        return self.route(rel) == "local"
+
+    def local_folders(self) -> list[str]:
+        """Folders routed local, confidential folders included, without nested duplicates."""
+        folders = {f"{name}/" for name in CONFIDENTIAL_FOLDERS}
+        folders |= {key for key, profile in self.rules if key.endswith("/") and profile == "local"}
+        return sorted(f for f in folders if not any(f != other and f.startswith(other) for other in folders))
+
+    def exceptions(self) -> list[str]:
+        """Paths routed frontier that would be local without their own entry: what the harness must allow
+        inside a denied folder (`me/preferences.md` inside `me/`)."""
+        found = []
+        for key, profile in self.rules:
+            if profile != "frontier":
+                continue
+            without = Routing(self.default, tuple(rule for rule in self.rules if rule[0] != key))
+            probe = key + "x" if key.endswith("/") else key
+            if without.route(probe) == "local":
+                found.append(key)
+        return sorted(found)
+
+
+def parse_routing(table: dict | None) -> Routing:
+    """A `[routing]` table as a Routing. Entries that would open a confidential folder are ignored."""
+    table = dict(DEFAULT_ROUTING if table is None else table)
+    default = table.pop("default", "frontier")
+    ignored: list[tuple[str, str]] = []
+    if default not in PROFILES:
+        ignored.append(("default", f"unknown profile {default!r}; using frontier"))
+        default = "frontier"
+    rules = []
+    for raw_key, profile in table.items():
+        key = str(raw_key).strip().removeprefix("./")
+        if profile not in PROFILES:
+            ignored.append((raw_key, f"unknown profile {profile!r}"))
+            continue
+        if not key or key.startswith("/") or ".." in key.split("/"):
+            ignored.append((raw_key, "not a vault-relative path"))
+            continue
+        if profile == "frontier" and key.split("/", 1)[0] in CONFIDENTIAL_FOLDERS:
+            ignored.append((raw_key, "confidential folders stay on the local profile (PRD G6)"))
+            continue
+        rules.append((key, profile))
+    return Routing(default, tuple(sorted(rules)), tuple(ignored))
+
+
+DEFAULT_ROUTING_OBJ = parse_routing(None)
+_ROUTING_CACHE: dict[str, tuple[float, Routing]] = {}
+
+
+def load_routing(vault: Path | None) -> Routing:
+    """The vault's routing from `.harness/models.toml`, or the default of PRD 18.2 when there is none."""
+    if vault is None:
+        return DEFAULT_ROUTING_OBJ
+    path = Path(vault) / MODELS_FILE
+    if not path.is_file():
+        return DEFAULT_ROUTING_OBJ
+    key, mtime = str(path), path.stat().st_mtime_ns
+    cached = _ROUTING_CACHE.get(key)
+    if cached and cached[0] == mtime:
+        return cached[1]
+    import tomllib
+
+    try:
+        data = tomllib.loads(read_text(path))
+    except tomllib.TOMLDecodeError as exc:
+        raise VaultError(f"{MODELS_FILE} is not valid TOML: {exc}") from exc
+    routing = parse_routing(data.get("routing")) if "routing" in data else DEFAULT_ROUTING_OBJ
+    _ROUTING_CACHE[key] = (mtime, routing)
+    return routing
+
+
+def is_local_only_path(vault: Path | None, rel: str) -> bool:
+    """A file whose content scripts must not show outside the local profile: routed local, or in .harness/."""
+    return rel.startswith(".harness/") or load_routing(vault).is_local(rel)
+
+
 # ---------------------------------------------------------------------------- frontmatter
 
 def split_frontmatter(text: str) -> tuple[str | None, str, int]:
@@ -262,6 +375,7 @@ class Page:
     body: str
     body_offset: int  # number of file lines before the body (for line numbers in findings)
     error: str | None = None
+    vault: Path | None = None  # to read the vault's routing
 
     @property
     def stem(self) -> str:
@@ -302,8 +416,9 @@ class Page:
 
     @property
     def local_only(self) -> bool:
-        """True when scripts must not show this page's content outside the local profile (D012, D025)."""
-        return self.sensitivity == "confidential" or self.folder in LOCAL_ONLY_FOLDERS
+        """True when scripts must not show this page's content outside the local profile: a confidential
+        page, or a page the vault's routing sends to the local profile (D012, D025, D027)."""
+        return self.sensitivity == "confidential" or is_local_only_path(self.vault, self.rel)
 
     @property
     def is_compiled(self) -> bool:
@@ -321,9 +436,9 @@ def load_page(vault: Path, path: Path) -> Page:
     try:
         text = read_text(path)
     except (OSError, UnicodeDecodeError) as exc:
-        return Page(path, rel, "", None, "", 0, f"unreadable: {exc.__class__.__name__}")
+        return Page(path, rel, "", None, "", 0, f"unreadable: {exc.__class__.__name__}", vault)
     fm, body, offset, error = parse_frontmatter(text)
-    return Page(path, rel, text, fm, body, offset, error)
+    return Page(path, rel, text, fm, body, offset, error, vault)
 
 
 def is_page_path(rel: str) -> bool:

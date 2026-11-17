@@ -32,6 +32,7 @@ DEFAULT_LANG = "en"
 ICLOUD_ROOT = "~/Library/Mobile Documents"
 ICLOUD_HINT = "Right-click the vault folder in Finder and choose Keep Downloaded."
 DEFAULT_SKILL_DIRS = ["~/.agents/skills", "~/.claude/skills"]
+HARNESS_CONFIGS = (".claude/settings.json", "opencode.json")
 
 # PRD 10.2, phase P0. content/ and .harness/drafts/ arrive with P1b (docs/decisions.md D019).
 LAYOUT_DIRS = [
@@ -48,6 +49,8 @@ STARTER_ME = {
     "me/principles.md": ("Principles", "How the owner decides; rules the agent applies when weighing options.",
                          "<!-- Fully protected. Write the rules you want applied to you. -->\n"),
     "me/preferences.md": ("Preferences", "How the agent should work: owner rules first, then rules learned from corrections.",
+                          "<!-- Read by every model, frontier models included (.harness/models.toml routing). "
+                          "Write rules for the agent here, never private facts. -->\n\n"
                           "## Owner rules\n<!-- owner only. Protected. -->\n\n## Learned rules\n"
                           "<!-- append-only. The agent appends a rule here only after the owner approves it. -->\n"),
 }
@@ -97,14 +100,63 @@ def render_agents(params: dict) -> str:
                 .replace("{{LANGUAGE}}", params.get("lang") or DEFAULT_LANG))
 
 
-def framework_files(params: dict) -> list[Rendered]:
-    """Every file `update` manages, with its current content in the repo."""
+# ---------------------------------------------------------------------------- harness configs from routing
+
+def routing_warnings(routing: v.Routing) -> list[str]:
+    return [f"{MODELS}: routing entry {key!r} ignored: {reason}" for key, reason in routing.ignored]
+
+
+def _glob(key: str) -> str:
+    """A routing key as a glob: a folder covers everything below it."""
+    return key + "**" if key.endswith("/") else key
+
+
+def claude_read_rules(routing: v.Routing) -> list[str]:
+    """Claude Code `permissions.deny` rules for everything routed local, with the frontier exceptions.
+
+    An allow rule cannot win over a deny in Claude Code, so an exception inside a denied folder is written
+    as a gitignore negation in the deny list, and its folder is denied entry by entry (`me/*`) because a
+    negation cannot reopen a file inside a folder denied as a whole (`me/**`). See docs/decisions.md D027.
+    """
+    exceptions = routing.exceptions()
+    rules = []
+    for folder in routing.local_folders():
+        inner = [e for e in exceptions if e.startswith(folder)]
+        if not inner:
+            rules.append(f"Read(./{folder}**)")
+            continue
+        rules.append(f"Read(./{folder}*)")
+        for exception in inner:
+            rules.append(f"Read(!./{exception})")
+    return rules
+
+
+def claude_settings(routing: v.Routing) -> str:
+    data = json.loads(v.read_text(v.framework_root() / "templates" / "harness" / "claude-settings.json"))
+    data.setdefault("permissions", {})["deny"] = claude_read_rules(routing)
+    return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+
+
+def opencode_config(routing: v.Routing) -> str:
+    """OpenCode V2 rules: the last matching rule wins, and agent rules come after the global ones (D020)."""
+    data = json.loads(v.read_text(v.framework_root() / "templates" / "harness" / "opencode.json"))
+    folders = routing.local_folders()
+    rules = [{"action": "read", "resource": _glob(f), "effect": "deny"} for f in folders]
+    rules += [{"action": "read", "resource": _glob(e), "effect": "allow"} for e in routing.exceptions()]
+    data["permissions"] = rules
+    data["agents"]["local"]["permissions"] = [{"action": "read", "resource": _glob(f), "effect": "allow"} for f in folders]
+    return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+
+
+def framework_files(params: dict, routing: v.Routing | None = None) -> list[Rendered]:
+    """Every file `update` manages, as rendered from the repo and the vault's routing."""
+    routing = routing or v.DEFAULT_ROUTING_OBJ
     root = v.framework_root() / "templates"
     files = [Rendered("AGENTS.md", render_agents(params))]
     for page in sorted((root / "pages").glob("*.md")):
         files.append(Rendered(f".harness/templates/{page.name}", v.read_text(page)))
-    files.append(Rendered(".claude/settings.json", v.read_text(root / "harness" / "claude-settings.json")))
-    files.append(Rendered("opencode.json", v.read_text(root / "harness" / "opencode.json")))
+    files.append(Rendered(".claude/settings.json", claude_settings(routing)))
+    files.append(Rendered("opencode.json", opencode_config(routing)))
     return files
 
 
@@ -238,7 +290,11 @@ def init(target: str, owner: str | None = None, role: str | None = None, lang: s
               "lang": lang or render["params"].get("lang") or DEFAULT_LANG}
     if not render["params"]:
         render["params"] = params
-    for item in framework_files(params):
+    models = vault / MODELS
+    if not models.exists():
+        v.write_text(models, v.read_text(v.framework_root() / "templates" / "models.example.toml"))
+        say(f"wrote {MODELS}")
+    for item in framework_files(params, v.load_routing(vault)):
         path = vault / item.rel
         if path.exists():
             if v.read_text(path) == item.content and item.rel not in render["files"]:
@@ -250,7 +306,6 @@ def init(target: str, owner: str | None = None, role: str | None = None, lang: s
     link_claude_md(vault, say)
 
     config = {
-        MODELS: v.read_text(v.framework_root() / "templates" / "models.example.toml"),
         ".harness/clients.txt": "# Client names, one per line. lint --secrets reports them outside mission pages.\n",
         ".harness/names.txt": "# Names to mask with anybrain anonymize, one per line.\n",
         "log.md": f"{v.today().isoformat()} · init · created vault from anybrain\n",
@@ -319,7 +374,10 @@ def update(target: str | None, yes: bool = False, out: Callable[[str], None] = p
     render = load_render(vault)
     params = render["params"] or {"owner": DEFAULT_OWNER, "role": DEFAULT_ROLE, "lang": DEFAULT_LANG}
     render["params"] = params
-    for item in framework_files(params):
+    routing = v.load_routing(vault)
+    for message in routing_warnings(routing):
+        out(f"note: {message}")
+    for item in framework_files(params, routing):
         path = vault / item.rel
         new_hash = sha(item.content)
         if not path.exists():
@@ -420,6 +478,28 @@ def doctor(target: str | None, out: Callable[[str], None] = print, timeout: floa
         report("ok", "CLAUDE.md is a symlink to AGENTS.md")
     else:
         report("fail", "CLAUDE.md is not a symlink to AGENTS.md. Run anybrain update")
+
+    try:
+        routing = v.load_routing(vault)
+    except v.VaultError as exc:
+        routing = None
+        report("fail", str(exc))
+    if routing is not None:
+        for message in routing_warnings(routing):
+            report("warn", message)
+        params = render["params"] or {"owner": DEFAULT_OWNER, "role": DEFAULT_ROLE, "lang": DEFAULT_LANG}
+        for item in framework_files(params, routing):
+            if item.rel not in HARNESS_CONFIGS:
+                continue
+            path = vault / item.rel
+            if not path.is_file():
+                report("fail", f"{item.rel} is missing, so nothing denies local-only files. Run anybrain update")
+            elif v.read_text(path) == item.content:
+                report("ok", f"{item.rel} denies what the routing keeps local")
+            elif render["files"].get(item.rel) == sha(v.read_text(path)):
+                report("fail", f"{item.rel} does not match the routing of {MODELS}. Run anybrain update")
+            else:
+                report("warn", f"{item.rel} was modified by you; check that it still denies what the routing keeps local")
 
     try:
         local = (load_models(vault).get("profiles") or {}).get("local") or {}

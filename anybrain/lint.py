@@ -511,9 +511,8 @@ CHECKS = {
 
 
 def _local_only_path(ctx: Context, rel: str) -> bool:
-    """Local-only by folder (D025), by page sensitivity, or because it is raw/docs/ or .harness/ (10.3)."""
-    top = rel.split("/", 1)[0]
-    if top in v.LOCAL_ONLY_FOLDERS or rel.startswith(("raw/docs/", ".harness/")):
+    """Local-only by routing (D025, D027), by page sensitivity, or because it is in .harness/."""
+    if v.is_local_only_path(ctx.vault, rel):
         return True
     node = ctx.graph.nodes.get(rel)
     return bool(node and node.local_only)

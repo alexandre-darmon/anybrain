@@ -10,6 +10,8 @@ sources: []
 sensitivity: personal
 ---
 
+<!-- Read by every model, frontier models included (.harness/models.toml routing). Write rules for the agent here, never private facts. -->
+
 ## Owner rules
 <!-- owner only. Protected. -->
 - Answer in the language of the question.

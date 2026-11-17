@@ -6,7 +6,7 @@ You maintain a personal knowledge vault in plain Markdown. You write and link pa
 
 - {{OWNER_NAME}}, {{OWNER_ROLE}}. Stable facts: `me/profile.md`. Goals: `me/aspirations.md`. How they decide: `me/principles.md`. How you should work: `me/preferences.md`.
 - Answer in the language of the question. Compiled pages keep the language of their source and set `language` accordingly. Default language for new pages: `{{LANGUAGE}}`.
-- If your session cannot read `me/` (the harness denies it outside the local profile), say so once and continue.
+- `me/preferences.md` is readable in every session. The rest of `me/` is local-only: if your session cannot read a file there, say so once and continue.
 
 ## Where things live
 
@@ -37,7 +37,7 @@ You maintain a personal knowledge vault in plain Markdown. You write and link pa
 
 1. **Protected sections are the owner's voice.** Never edit inside `## My take` (library), `## Why` (projects), `## My position` (concepts), `## Owner rules` (`me/preferences.md`), any heading listed in a page's `protected:` field, or the files `me/profile.md`, `me/aspirations.md`, `me/principles.md`. You may add a dated paragraph below such a section: `> Agent note YYYY-MM-DD: ...`.
 2. **Append-only sections stay append-only.** In `## Timeline`, `## Decisions` and `## Learned rules`, and in `log.md`, never change or remove a line. Add new Timeline and Decisions lines at the top, new log lines at the bottom.
-3. **Sensitivity decides the model.** Before reading `company/`, `finance/`, `me/`, `journal/`, `raw/docs/` or a project with `kind: mission`, check `ANYBRAIN_PROFILE`. If it is not `local`, stop and tell the owner.
+3. **Sensitivity decides the model.** `[routing]` in `.harness/models.toml` lists what only the local profile may read: by default `company/`, `finance/`, `journal/`, `raw/docs/` and `me/` except `me/preferences.md`. Before reading such a file, a page with `sensitivity: confidential` or a project with `kind: mission`, check `ANYBRAIN_PROFILE`. If it is not `local`, stop and tell the owner.
 4. **Every link carries a reason.** Write the link inside a sentence that says why: "builds on [[category-design]]", "contradicts [[100m-offers]] on pricing". A line that holds only a link is a naked link. At most 20 outgoing links per page. Prefer existing pages: check `wiki/index.md` and aliases before creating one. Never link from a public or personal page to a confidential one.
 5. **Create a concept from two sources, never one.** A single source stays a note or a bullet.
 6. **No invented quotes, ratings, dates read or opinions.** Quotes are verbatim from a file in `sources`. If the owner has not written a take, leave the placeholder.

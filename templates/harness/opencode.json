@@ -1,22 +1,12 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "permissions": [
-    { "action": "read", "resource": "company/**", "effect": "deny" },
-    { "action": "read", "resource": "finance/**", "effect": "deny" },
-    { "action": "read", "resource": "me/**", "effect": "deny" },
-    { "action": "read", "resource": "journal/**", "effect": "deny" }
-  ],
+  "permissions": [],
   "agents": {
     "local": {
-      "description": "Local profile: the only agent allowed to read company/, finance/, me/ and journal/. Start OpenCode with ANYBRAIN_PROFILE=local to use it.",
+      "description": "Local profile: the only agent allowed to read what .harness/models.toml routes to the local profile. Start OpenCode with ANYBRAIN_PROFILE=local to use it.",
       "mode": "primary",
       "model": "ollama/<local model id>",
-      "permissions": [
-        { "action": "read", "resource": "company/**", "effect": "allow" },
-        { "action": "read", "resource": "finance/**", "effect": "allow" },
-        { "action": "read", "resource": "me/**", "effect": "allow" },
-        { "action": "read", "resource": "journal/**", "effect": "allow" }
-      ]
+      "permissions": []
     }
   }
 }

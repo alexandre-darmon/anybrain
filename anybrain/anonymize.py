@@ -215,7 +215,7 @@ def local_only_file(vault: Path, path: Path) -> str | None:
         rel = v.rel_path(vault, path.resolve())
     except ValueError:
         return None
-    if rel.split("/", 1)[0] in v.LOCAL_ONLY_FOLDERS or rel.startswith(("raw/docs/", ".harness/", ".")):
+    if rel.startswith(".") or v.is_local_only_path(vault, rel):
         return rel
     if v.is_page_path(rel) and v.load_page(vault, path.resolve()).local_only:
         return rel
@@ -224,8 +224,11 @@ def local_only_file(vault: Path, path: Path) -> str | None:
 
 def local_only_outside_vault(path: Path) -> str | None:
     """No vault found: judge by the folder names on the path and by the file's own frontmatter."""
-    parts = path.resolve().parts[:-1]
-    if any(part in v.LOCAL_ONLY_FOLDERS or part == ".harness" for part in parts) or "/raw/docs/" in path.resolve().as_posix():
+    parts = path.resolve().parts
+    if ".harness" in parts[:-1]:
+        return str(path)
+    # every tail of the path is read as a possible vault path: .../me/profile.md is local, .../me/preferences.md is not
+    if any(v.DEFAULT_ROUTING_OBJ.is_local("/".join(parts[k:])) for k in range(1, len(parts) - 1)):
         return str(path)
     if path.suffix == ".md":
         try:
