@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import os
 import re
 import shlex
 from dataclasses import dataclass, field
@@ -18,9 +19,17 @@ from . import vault as v
 TRACES_DIR = ".harness/traces"
 BASELINE_DIR = ".harness/baseline"
 FILES_OPENED_RE = re.compile(r"files opened:\s*(\d+)", re.I)
-READ_COMMANDS = {"cat", "head", "tail", "less", "more", "sed", "awk", "grep", "rg", "wc", "nl", "bat", "cut", "sort"}
-REDIRECT_RE = re.compile(r"(?<![<>&\d])>{1,2}\s*([^\s;&|<>]+)")
-DENIED_HINTS = ("denied", "not allowed", "permission")
+# Commands that do not show a file's content. Every other command is taken to read the files it names, in
+# any word, even inside quoted code (`python3 -c "open('x.md')"`): conservative, so a read is not missed.
+NO_READ_COMMANDS = {"ls", "stat", "find", "du", "test", "[", "[[", "echo", "printf", "mkdir", "touch", "rm",
+                    "rmdir", "chmod", "chown", "ln", "cd", "pwd", "which", "type", "command", "true", "false",
+                    "sleep", "date", "realpath", "readlink", "basename", "dirname", "anybrain"}
+RECURSIVE_COMMANDS = {"rg", "ag", "ack"}  # search a folder tree; grep does with -r or -R
+SHELL_PUNCTUATION = ";&|()<>\n"
+PATHISH_RE = re.compile(r"[\w~./@+-]+")
+# Texts of a refused tool call (Claude Code 2.1.326: "This command requires approval", "A variable in this
+# command can't be checked before it runs", "File is in a directory that is denied by your permission settings").
+DENIED_HINTS = ("denied", "not allowed", "permission", "approval", "can't be checked", "cannot be checked")
 
 
 @dataclass
@@ -28,6 +37,7 @@ class ToolCall:
     tool: str
     target: str
     result: str = "ok"  # "ok", "denied" or "error"
+    ran: bool = True  # False when the harness refused the call or the tool failed before doing anything
 
     def as_json(self) -> dict:
         return {"tool": self.tool, "target": self.target, "result": self.result}
@@ -44,6 +54,7 @@ class Run:
     tool_calls: list[ToolCall] = field(default_factory=list)
     files_read: list[str] = field(default_factory=list)
     files_written: list[str] = field(default_factory=list)
+    files_searched: list[str] = field(default_factory=list)  # folders a recursive search went through
     tokens: dict = field(default_factory=lambda: {"input": 0, "output": 0, "cached": 0})
     cost_usd: float | None = None
     duration_ms: int | None = None
@@ -54,20 +65,56 @@ class Run:
 
 # ---------------------------------------------------------------------------- paths
 
-def relative(target: str, root: Path) -> str:
-    """A path from a tool call, relative to the run's vault when it is inside it."""
-    if not target:
+def _inside(path: str, base: str) -> str | None:
+    rel = os.path.relpath(path, base)
+    if rel == ".." or rel.startswith("../") or os.path.isabs(rel):
+        return None
+    return "" if rel == "." else Path(rel).as_posix()
+
+
+def _bases(root: Path, origin: Path | None) -> list[str]:
+    bases = []
+    for base in (root, origin):
+        if base is None:
+            continue
+        for form in (os.path.normpath(os.path.abspath(base)), os.path.realpath(base)):
+            if form not in bases:
+                bases.append(form)
+    return bases
+
+
+def relative(target: str, root: Path, origin: Path | None = None, cwd: str | None = None) -> str:
+    """A path from a tool call, relative to the vault when it points inside it.
+
+    `..` is folded, `~` is expanded, and a path into the owner's real vault (`origin`, during an eval) maps to
+    the same vault-relative path as one into the run's copy. Symlinks are followed only when the plain path
+    lands outside the vault; `local_only_reads` checks both forms. A path outside the vault is kept as given.
+    """
+    raw = os.path.expanduser((target or "").strip())
+    if not raw:
         return ""
-    path = Path(target)
-    if path.is_absolute():
-        try:
-            return v.rel_path(root.resolve(), Path(path).resolve() if path.exists() else path)
-        except ValueError:
-            try:
-                return v.rel_path(root, path)
-            except ValueError:
-                return target
-    return target.strip().removeprefix("./")
+    full = os.path.normpath(raw if os.path.isabs(raw) else os.path.join(cwd or str(root), raw))
+    bases = _bases(root, origin)
+    for base in bases:
+        rel = _inside(full, base)
+        if rel is not None:
+            return rel
+    real = os.path.realpath(full)
+    for base in bases:
+        rel = _inside(real, base)
+        if rel is not None:
+            return rel
+    return full if os.path.isabs(raw) else os.path.normpath(raw)
+
+
+def resolved_rel(rel: str, root: Path, origin: Path | None = None) -> str | None:
+    """Where a vault-relative path really lands after symlinks, as a vault-relative path (None if outside)."""
+    real = os.path.realpath(os.path.join(root, rel))
+    for base in _bases(root, origin):
+        found = _inside(real, base)
+        if found is not None:
+            return found
+    return None
 
 
 def _add(items: list[str], value: str) -> None:
@@ -75,31 +122,107 @@ def _add(items: list[str], value: str) -> None:
         items.append(value)
 
 
-def files_from_shell(command: str, root: Path) -> tuple[list[str], list[str]]:
-    """Files a shell command reads (with a common reading command) and writes (with a redirection).
+def _shell_words(command: str) -> list[str]:
+    """Shell tokens with quotes honoured; operators and newlines come back as separate tokens."""
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=SHELL_PUNCTUATION)
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    try:
+        return list(lexer)
+    except ValueError:  # unbalanced quotes: fall back to a plain split
+        return re.findall(r"[;&|()<>\n]+|[^\s;&|()<>]+", command)
 
-    Best effort: commands that read files without naming them (`grep -r`, a script) are not seen here.
+
+def _segments(command: str) -> list[tuple[list[str], list[str], list[str]]]:
+    """(words, input redirections, output redirections) of each simple command."""
+    segments, words, inputs, outputs = [], [], [], []
+    tokens = _shell_words(command)
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token and all(c in SHELL_PUNCTUATION for c in token):
+            if "<" in token or ">" in token:
+                target = tokens[i + 1] if i + 1 < len(tokens) else ""
+                if target and not all(c in SHELL_PUNCTUATION for c in target):
+                    if words and words[-1].isdigit():
+                        words.pop()  # the fd number of `2>`
+                    (inputs if "<" in token else outputs).append(target)
+                    i += 2
+                    continue
+            if words or inputs or outputs:
+                segments.append((words, inputs, outputs))
+            words, inputs, outputs = [], [], []
+        else:
+            words.append(token)
+        i += 1
+    if words or inputs or outputs:
+        segments.append((words, inputs, outputs))
+    return segments
+
+
+def _is_file(rel: str, root: Path, origin: Path | None) -> bool:
+    if not rel:
+        return False
+    if os.path.isabs(rel):
+        return os.path.isfile(rel)
+    return (root / rel).is_file() or bool(origin and (origin / rel).is_file())
+
+
+def _is_dir(rel: str, root: Path) -> bool:
+    return (root / rel).is_dir() if rel and not os.path.isabs(rel) else rel == ""
+
+
+def files_from_shell(command: str, root: Path, origin: Path | None = None) -> tuple[list[str], list[str], list[str]]:
+    """Files a shell command reads, files it writes, and folders it searches recursively.
+
+    Best effort, and conservative: any command outside NO_READ_COMMANDS reads every file it names, in any word
+    or inside quoted code; `cd` is followed; a recursive search (`grep -r`, `rg`) reads the folders it names,
+    or the current folder. A script that builds a path at run time is not seen (docs/decisions.md D036).
     """
-    read, written = [], []
-    for target in REDIRECT_RE.findall(command):
-        _add(written, relative(target, root))
-    for segment in re.split(r"&&|\|\||;|\||\n", command):
-        segment = REDIRECT_RE.sub(" ", segment).strip()
-        if not segment:
-            continue
-        try:
-            words = shlex.split(segment)
-        except ValueError:
-            words = segment.split()
-        if not words or Path(words[0]).name not in READ_COMMANDS:
-            continue
-        for word in words[1:]:
-            if word.startswith("-"):
+    read, written, searched = [], [], []
+    cwd = str(root)
+    for words, inputs, outputs in _segments(command):
+        for target in outputs:
+            if target.isdigit() or target.startswith(("&", "/dev/")):
                 continue
-            candidate = relative(word, root)
-            if candidate and (root / candidate).is_file():
-                _add(read, candidate)
-    return read, written
+            _add(written, relative(target, root, origin, cwd))
+        for target in inputs:
+            rel = relative(target, root, origin, cwd)
+            if _is_file(rel, root, origin):
+                _add(read, rel)
+        if not words:
+            continue
+        name = Path(words[0]).name
+        if name == "cd":
+            dest = words[1] if len(words) > 1 else str(root)
+            cwd = os.path.normpath(os.path.join(cwd, os.path.expanduser(dest)))
+            continue
+        if name == "tee":
+            for word in words[1:]:
+                if not word.startswith("-"):
+                    _add(written, relative(word, root, origin, cwd))
+            continue
+        if name in NO_READ_COMMANDS:
+            continue
+        options = [w for w in words[1:] if w.startswith("-")]
+        recursive = name in RECURSIVE_COMMANDS or (
+            name in ("grep", "egrep", "fgrep")
+            and any(o == "--recursive" or (not o.startswith("--") and ("r" in o or "R" in o)) for o in options))
+        folders = []
+        for word in words[1:]:
+            for candidate in [word] + [m for m in PATHISH_RE.findall(word) if m != word]:
+                rel = relative(candidate, root, origin, cwd)
+                if _is_file(rel, root, origin):
+                    _add(read, rel)
+                elif recursive and not candidate.startswith("-") and _is_dir(rel, root):
+                    folders.append(rel)
+        if recursive:
+            if not folders:
+                folders.append(relative(".", root, origin, cwd))
+            for folder in folders:
+                _add(searched, folder if folder else ".")
+    return read, written, searched
 
 
 # ---------------------------------------------------------------------------- adapters
@@ -110,7 +233,7 @@ class Adapter:
     def output_args(self, profile: str, budget_usd: float | None) -> list[str]:
         return []
 
-    def parse(self, output: str, root: Path) -> Run:  # pragma: no cover - interface
+    def parse(self, output: str, root: Path, origin: Path | None = None) -> Run:  # pragma: no cover
         raise NotImplementedError
 
 
@@ -133,7 +256,7 @@ class ClaudeAdapter(Adapter):
             args += ["--max-budget-usd", f"{max(budget_usd, 0.01):.2f}"]
         return args
 
-    def parse(self, output: str, root: Path) -> Run:
+    def parse(self, output: str, root: Path, origin: Path | None = None) -> Run:
         run = Run("claude")
         calls: dict[str, ToolCall] = {}
         order: list[str] = []
@@ -154,7 +277,8 @@ class ClaudeAdapter(Adapter):
                     tool = item.get("name", "")
                     target = data.get("file_path") or data.get("command") or data.get("path") or \
                         data.get("pattern") or data.get("skill") or data.get("description") or ""
-                    call = ToolCall(tool, relative(str(target), root) if tool in ("Read", "Write", "Edit") else str(target))
+                    call = ToolCall(tool, relative(str(target), root, origin)
+                                    if tool in ("Read", "Write", "Edit", "NotebookEdit") else str(target))
                     calls[item.get("id", str(len(order)))] = call
                     order.append(item.get("id", str(len(order) - 1)))
             elif kind == "user":
@@ -163,13 +287,19 @@ class ClaudeAdapter(Adapter):
                     if item.get("type") != "tool_result" or item.get("tool_use_id") not in calls:
                         continue
                     if item.get("is_error"):
-                        text = _result_text(item.get("content")).lower()
-                        denied = any(hint in text for hint in DENIED_HINTS)
-                        calls[item["tool_use_id"]].result = "denied" if denied else "error"
+                        call = calls[item["tool_use_id"]]
+                        text = _result_text(item.get("content")).strip().lower()
+                        if call.tool == "Bash" and text.startswith("exit code"):
+                            call.result = "error"  # the command ran; its output reached the model
+                        elif any(hint in text for hint in DENIED_HINTS):
+                            call.result, call.ran = "denied", False
+                        else:
+                            # A failed shell command may still have printed a file: count its reads.
+                            call.result, call.ran = "error", call.tool == "Bash"
             elif kind == "system" and event.get("subtype") == "permission_denied":
                 call = calls.get(event.get("tool_use_id", ""))
                 if call:
-                    call.result = "denied"
+                    call.result, call.ran = "denied", False
             elif kind == "result":
                 run.ok = event.get("subtype") == "success" and not event.get("is_error")
                 run.answer = event.get("result") or ""
@@ -186,18 +316,20 @@ class ClaudeAdapter(Adapter):
                     run.error = event.get("subtype", "error")
         run.tool_calls = [calls[i] for i in order if i in calls]
         for call in run.tool_calls:
-            if call.result != "ok":
-                continue
-            if call.tool == "Read":
-                _add(run.files_read, call.target)
-            elif call.tool in ("Write", "Edit", "NotebookEdit"):
-                _add(run.files_written, call.target)
-            elif call.tool == "Bash":
-                read, written = files_from_shell(call.target, root)
+            if call.tool == "Bash" and call.ran:
+                read, written, searched = files_from_shell(call.target, root, origin)
                 for item in read:
                     _add(run.files_read, item)
                 for item in written:
                     _add(run.files_written, item)
+                for item in searched:
+                    _add(run.files_searched, item)
+            elif call.result != "ok":
+                continue
+            elif call.tool == "Read":
+                _add(run.files_read, call.target)
+            elif call.tool in ("Write", "Edit", "NotebookEdit"):
+                _add(run.files_written, call.target)
         return run
 
 
@@ -216,7 +348,7 @@ class OpenCodeAdapter(Adapter):
             args += ["--agent", "local"]
         return args
 
-    def parse(self, output: str, root: Path) -> Run:
+    def parse(self, output: str, root: Path, origin: Path | None = None) -> Run:
         run = Run("opencode", parsed_tool_calls=False)
         texts = []
         for line in output.splitlines():
@@ -233,7 +365,7 @@ class OpenCodeAdapter(Adapter):
                 data = state.get("input") or part.get("input") or {}
                 target = data.get("filePath") or data.get("path") or data.get("command") or ""
                 status = str(state.get("status") or "")
-                call = ToolCall(str(part.get("tool")), relative(str(target), root),
+                call = ToolCall(str(part.get("tool")), relative(str(target), root, origin),
                                 "error" if status == "error" else "ok")
                 run.tool_calls.append(call)
                 run.parsed_tool_calls = True
@@ -263,14 +395,35 @@ def adapter_for(harness: str) -> Adapter:
 
 # ---------------------------------------------------------------------------- records (22.5)
 
-def local_only_reads(root: Path, files: list[str]) -> list[str]:
-    """Files read that the routing of the vault keeps local, or that are confidential pages."""
+def _is_local_only(root: Path, rel: str) -> bool:
+    if not rel or os.path.isabs(rel) or rel.startswith(".."):
+        return False
+    if v.is_local_only_path(root, rel):
+        return True
+    return v.is_page_path(rel) and (root / rel).is_file() and v.load_page(root, root / rel).local_only
+
+
+def local_only_reads(root: Path, files: list[str], origin: Path | None = None,
+                     searched: list[str] | None = None) -> list[str]:
+    """Files read that the routing of the vault keeps local, or that are confidential pages.
+
+    A path counts when its own form or the form it resolves to through symlinks is local-only. A folder that
+    a recursive search went through counts for every local-only file under it.
+    """
     found = []
     for rel in files:
-        if v.is_local_only_path(root, rel):
-            found.append(rel)
-        elif v.is_page_path(rel) and (root / rel).is_file() and v.load_page(root, root / rel).local_only:
-            found.append(rel)
+        real = resolved_rel(rel, root, origin) if not os.path.isabs(rel) else None
+        if _is_local_only(root, rel) or (real is not None and _is_local_only(root, real)):
+            _add(found, rel)
+    for folder in searched or []:
+        base = root if folder in ("", ".") else root / folder
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob("*")):
+            if path.is_file():
+                rel = v.rel_path(root, path) if path.is_relative_to(root) else ""
+                if rel and _is_local_only(root, rel):
+                    _add(found, rel)
     return found
 
 
@@ -280,9 +433,9 @@ def self_reported_files(answer: str) -> int | None:
 
 
 def build_record(run: Run, root: Path, profile: str, trigger: str, started: str,
-                 case_id: str | None = None, skill: str | None = None) -> dict:
+                 case_id: str | None = None, skill: str | None = None, origin: Path | None = None) -> dict:
     denied = [c.as_json() for c in run.tool_calls if c.result == "denied"]
-    local_reads = local_only_reads(root, run.files_read) if profile != "local" else []
+    local_reads = local_only_reads(root, run.files_read, origin, run.files_searched) if profile != "local" else []
     return {
         "run_id": f"{started}-{trigger}-{case_id or skill or 'session'}",
         "started": started,
@@ -300,10 +453,41 @@ def build_record(run: Run, root: Path, profile: str, trigger: str, started: str,
         "tool_calls_seen": run.parsed_tool_calls,
         "files_read": run.files_read,
         "files_written": run.files_written,
+        "files_searched": run.files_searched,
         "denied": denied,
         "local_only_read_on_frontier": local_reads,
         "self_reported_files_opened": self_reported_files(run.answer),
+        "attempts": 1,
     }
+
+
+def merge_records(records: list[dict]) -> dict:
+    """One record for a case run several times (retries): every attempt's reads, writes, cost and tokens count.
+
+    A local-only read in a failed attempt still fails the case, and the cost cap sees the full spend.
+    """
+    if len(records) == 1:
+        return records[0]
+    first, last = records[0], records[-1]
+    merged = dict(last)
+    merged["run_id"], merged["started"] = first["run_id"], first["started"]
+    durations = [r.get("duration_ms") for r in records]
+    merged["duration_ms"] = sum(durations) if all(isinstance(d, int) for d in durations) else None
+    merged["tokens"] = {key: sum(int((r.get("tokens") or {}).get(key) or 0) for r in records)
+                        for key in ("input", "output", "cached")}
+    costs = [r.get("cost_usd") for r in records if isinstance(r.get("cost_usd"), (int, float))]
+    merged["cost_usd"] = round(sum(costs), 4) if costs else None
+    merged["tool_calls"] = [c for r in records for c in r.get("tool_calls") or []]
+    merged["tool_calls_seen"] = all(r.get("tool_calls_seen", True) for r in records)
+    merged["denied"] = [c for r in records for c in r.get("denied") or []]
+    for key in ("files_read", "files_written", "files_searched", "local_only_read_on_frontier"):
+        items: list[str] = []
+        for record in records:
+            for item in record.get(key) or []:
+                _add(items, item)
+        merged[key] = items
+    merged["attempts"] = len(records)
+    return merged
 
 
 def now_iso() -> str:

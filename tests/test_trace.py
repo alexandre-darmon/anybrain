@@ -79,9 +79,92 @@ def test_denied_reads_are_not_counted_as_reads(vault):
 
 
 def test_files_from_shell(vault):
-    read, written = t.files_from_shell("cat -n me/profile.md wiki/concepts/a.md | head -5 > /tmp/x; grep -r foo me", vault)
+    read, written, searched = t.files_from_shell(
+        "cat -n me/profile.md wiki/concepts/a.md | head -5 > /tmp/x; grep -r foo me", vault)
     assert read == ["me/profile.md", "wiki/concepts/a.md"]
     assert written == ["/tmp/x"]
+    assert searched == ["me"]
+
+
+@pytest.mark.parametrize("command", [
+    'grep -n -E "Mission|pricing" projects/mission.md',  # a pipe inside quotes is not a pipe
+    "cat wiki/../projects/mission.md",
+    "cat ./wiki/concepts/../../projects/mission.md",
+    "cd wiki && cat ../projects/mission.md",
+    "echo start\ncat projects/mission.md",
+    "wc -l < projects/mission.md",
+    "python3 -c \"print(open('projects/mission.md').read())\"",
+    "git show HEAD:projects/mission.md",
+    "awk '{print}' projects/mission.md 2>&1",
+    "cat 'projects/mission.md",  # unbalanced quote: plain split
+])
+def test_shell_reads_are_seen_in_every_form(vault, command):
+    read, written, _ = t.files_from_shell(command, vault)
+    assert read == ["projects/mission.md"], command
+    assert "1" not in written
+
+
+def test_listing_or_naming_a_file_is_not_a_read(vault):
+    read, _, searched = t.files_from_shell("ls me/profile.md; echo me/profile.md; anybrain neighbors . me/profile.md", vault)
+    assert read == [] and searched == []
+
+
+def test_recursive_search_counts_local_only_files_under_the_folder(vault):
+    _, _, searched = t.files_from_shell("grep -rn Mission .", vault)
+    assert searched == ["."]
+    found = t.local_only_reads(vault, [], searched=searched)
+    assert "me/profile.md" in found and "projects/mission.md" in found
+    assert "me/preferences.md" not in found and "wiki/concepts/a.md" not in found
+    assert t.files_from_shell("rg Mission", vault)[2] == ["."]
+    assert t.files_from_shell("grep -n Mission wiki", vault)[2] == []
+
+
+def test_failed_and_refused_shell_commands(vault):
+    stream = claude_stream(vault, [
+        ("Bash", {"command": "cat me/profile.md; ls nothing"}, "Exit code 2\nProfile text\nls: nothing: No such file"),
+        ("Bash", {"command": "cat projects/mission.md"}, "This command requires approval"),
+        ("Bash", {"command": "cat $X"}, "A variable in this command can't be checked before it runs"),
+        ("Bash", {"command": "cat wiki/concepts/a.md; cat locked"}, "Exit code 1\ncat: locked: Permission denied"),
+    ])
+    run = t.ClaudeAdapter().parse(stream, vault)
+    assert [c.result for c in run.tool_calls] == ["error", "denied", "denied", "error"]
+    assert run.files_read == ["me/profile.md", "wiki/concepts/a.md"]
+    record = t.build_record(run, vault, "frontier", "eval", "x")
+    assert record["local_only_read_on_frontier"] == ["me/profile.md"]
+    assert len(record["denied"]) == 2
+
+
+def test_paths_into_the_real_vault_dotdot_and_symlinks_are_routed(vault, tmp_path):
+    copy = tmp_path / "copy"
+    import shutil
+    shutil.copytree(vault, copy, symlinks=True)
+    (copy / "wiki" / "mine").symlink_to(vault / "me")  # absolute link back into the real vault
+    (copy / "wiki" / "mine2").symlink_to("../me")
+    stream = claude_stream(copy, [
+        ("Read", {"file_path": str(vault / "me/profile.md")}, None),
+        ("Read", {"file_path": "wiki/../projects/mission.md"}, None),
+        ("Read", {"file_path": str(copy / "wiki/mine/profile.md")}, None),
+        ("Bash", {"command": "head wiki/mine2/profile.md"}, None),
+    ])
+    run = t.ClaudeAdapter().parse(stream, copy, origin=vault)
+    assert run.files_read[:2] == ["me/profile.md", "projects/mission.md"]
+    record = t.build_record(run, copy, "frontier", "eval", "x", origin=vault)
+    # me/ is routed local, the mission page is confidential, and both links resolve into me/
+    assert record["local_only_read_on_frontier"] == [
+        "me/profile.md", "projects/mission.md", "wiki/mine/profile.md", "wiki/mine2/profile.md"]
+
+
+def test_merge_records_keeps_every_attempt(vault):
+    leak = t.build_record(t.ClaudeAdapter().parse(claude_stream(vault, [
+        ("Read", {"file_path": str(vault / "me/profile.md")}, None)], cost=0.3), vault), vault, "frontier", "eval", "a")
+    clean = t.build_record(t.ClaudeAdapter().parse(claude_stream(vault, [], cost=0.1), vault),
+                           vault, "frontier", "eval", "b")
+    merged = t.merge_records([leak, clean])
+    assert merged["attempts"] == 2 and merged["cost_usd"] == 0.4
+    assert merged["local_only_read_on_frontier"] == ["me/profile.md"]
+    assert merged["files_read"] == ["me/profile.md"] and merged["started"] == "a"
+    assert merged["tokens"]["input"] == 230
+    assert t.merge_records([clean]) is clean
 
 
 def test_claude_output_args():
