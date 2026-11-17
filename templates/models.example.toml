@@ -34,12 +34,14 @@ dirs = ["~/.agents/skills", "~/.claude/skills"] # where init and update link the
 # there; this never applies to your own sessions (D031). anybrain adds the machine-output flags itself.
 [harnesses.claude]
 headless = "claude -p {prompt} --permission-mode acceptEdits --allowedTools 'Bash(anybrain *)' Read Edit Write Glob Grep Skill"
+judge    = "claude -p {prompt} --tools '' --strict-mcp-config"   # the eval judge: no built-in tools, no MCP server
 [harnesses.opencode]
 headless = "opencode run --standalone {prompt}"   # --standalone passes ANYBRAIN_PROFILE to the run (D020)
 
 [eval]
 judge      = "endpoint:frontier"   # who grades `behaviour`, in a fresh context: endpoint:<profile> or harness:<name>
-jobs       = 2                     # cases run in parallel
+                                   # a --profile local run needs endpoint:local on localhost
+jobs       = 2                     # cases run in parallel; one at a time with --max-cost
 timeout_s  = 600                   # per case
 max_tokens = 1024                  # judge answer
 retries    = 2                     # when the harness gives no answer

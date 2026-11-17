@@ -1003,6 +1003,7 @@ dirs = ["~/.agents/skills", "~/.claude/skills"] # where init links the skills
 
 [harnesses.claude]
 headless = "claude -p {prompt}"                  # verify against current CLI during build
+judge    = "claude -p {prompt} --tools '' --strict-mcp-config"   # eval judge, no tools (D036)
 [harnesses.opencode]
 headless = "opencode run {prompt}"               # verify against current CLI during build
 ```
@@ -1364,6 +1365,8 @@ P2, P3, P4 are planned only after step 18 and the 4-week measure.
 | Q26 | A run filtered with `--tags` is compared with the full frozen baseline. Should the overall delta use only the baseline's cases with the same tags? | Per-tag deltas only are meaningful today; the overall delta of a filtered run is not comparable (D034) |
 | Q27 | 21.1 maps `Inbox`, `Readwise`, `Pièces jointes` and `Archive` to folders of `raw/`, but agents never write in `raw/`, and 21.2 step 6 looks for owner text "outside `raw/`". Who moves those files, and where does owner text in an Inbox or Archive note count as kept? | The snapshot already sits in `raw/legacy/<date>/`: pages are compiled from it and link to it, nothing is copied; new captures go to the 21.1 folders once step 7 repoints them. `migrate check` accepts a page or a file of `raw/` outside the snapshot, and reports text from a file the owner chose not to migrate as "kept only in the snapshot" (D035) |
 | Q28 | Orphans < 10% (sections 6 and 21.3) is measured with `lint --graph`, which exempts pages younger than 7 days, so it reads 0 right after a migration. Measured without the exemption, the legacy fixture gives 3 orphans of 7 pages (43%), because its notes have no links between them. Should the target compare with the orphan rate of the legacy vault (a migration must not raise it), apply only to vaults above a minimum size, or stay as written? | Left as written. The skill measures with `index --stats`, links only real relations and lists the other orphans for the owner; on the fixture the line fails (D035) |
+| Q29 | `anybrain eval --max-cost` with `jobs` > 1: cases in parallel cannot know what the others spend, so the cap can be passed several times over. Split the budget, or run one at a time? | One at a time when a cap is given; parallel otherwise (D036) |
+| Q30 | What counts as a file read in a shell command, for `files_read` and `local_only_read_on_frontier` (22.5)? | Conservative: every file a command names, in any word or quoted code, except for a short list of commands that show no content; a recursive search reads the local-only files under its folders; a failed command that ran counts. Records also carry `files_searched` and `attempts` (D036) |
 
 ---
 

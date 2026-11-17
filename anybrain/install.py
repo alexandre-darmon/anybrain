@@ -274,6 +274,7 @@ def init(target: str, owner: str | None = None, role: str | None = None, lang: s
     vault = Path(target).expanduser().resolve()
     if vault.exists() and not vault.is_dir():
         raise v.VaultError(f"not a folder: {vault}")
+    v.check_eval_copy(vault)
     refuse_if_evicted(vault)
     written = 0
 

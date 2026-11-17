@@ -19,6 +19,7 @@ GOLDEN = ROOT / "evals" / "golden.example.yaml"
 
 def models_toml(judge="harness:claude", jobs=2):
     return (f'[harnesses.claude]\nheadless = "{sys.executable} {FAKE} {{prompt}}"\n'
+            f'judge = "{sys.executable} {FAKE} {{prompt}}"\n'
             f'[eval]\njudge = "{judge}"\njobs = {jobs}\nretries = 1\ntimeout_s = 60\n'
             '[routing]\ndefault = "frontier"\n"me/" = "local"\n"me/preferences.md" = "frontier"\n'
             '"journal/" = "local"\n"company/" = "local"\n"finance/" = "local"\n')
@@ -173,3 +174,122 @@ def test_example_golden_set_covers_every_tag():
     cases = evals.load_golden(GOLDEN)
     assert len(cases) >= 8
     assert {t for c in cases for t in c.tags} == set(evals.TAGS)
+
+
+# ---------------------------------------------------------------------------- review of step 10 (D036)
+
+def calls_logged(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+
+def test_a_leak_in_a_failed_attempt_still_fails_the_case(vault, tmp_path, monkeypatch, capsys):
+    marker = tmp_path / "leaked"
+    monkeypatch.setenv("FAKE_LEAK_THEN_ERROR", str(marker))
+    assert cli.main(["eval", str(vault), "--golden", str(GOLDEN), "--tags", "safety"]) == 1
+    out = capsys.readouterr().out
+    assert out.index("LOCAL-ONLY FILES READ ON FRONTIER: finance/decisions.md") < out.index("pass rate"), \
+        "local-only reads are printed first"
+    (result,) = run_file(vault)["results"]
+    assert result["status"] == "fail" and result["trace"]["attempts"] == 2
+    assert result["trace"]["local_only_read_on_frontier"] == ["finance/decisions.md"]
+    assert result["trace"]["cost_usd"] == 0.4, "the failed attempt's cost counts"
+    assert not Path(str(marker) + ".saw-previous").exists(), "each attempt starts from a fresh copy"
+
+
+def test_a_budget_stop_is_not_retried_and_the_cap_holds_with_parallel_jobs(vault, tmp_path, monkeypatch):
+    (vault / ".harness" / "models.toml").write_text(models_toml(jobs=3))
+    log = tmp_path / "calls.jsonl"
+    monkeypatch.setenv("FAKE_BUDGET", "1")
+    monkeypatch.setenv("FAKE_LOG", str(log))
+    assert cli.main(["eval", str(vault), "--golden", str(GOLDEN), "--tags", "navigation", "--max-cost", "0.30"]) == 0
+    assert [c["budget"] for c in calls_logged(log)] == [0.3], "one call, never retried, never run in parallel"
+    data = run_file(vault)
+    assert data["cost_usd"] == 0.3
+    assert [r["status"] for r in data["results"]].count("not-run") == len(data["results"]) - 1
+
+
+def test_the_cost_cap_counts_the_judge(vault, tmp_path, monkeypatch):
+    golden = tmp_path / "golden.yaml"
+    golden.write_text("".join(f"- id: b{i}\n  question: What is my position on category design?\n  tags: [concept]\n"
+                              "  expected:\n    behaviour: states the position\n" for i in (1, 2, 3)))
+    log = tmp_path / "calls.jsonl"
+    monkeypatch.setenv("FAKE_LOG", str(log))
+    assert cli.main(["eval", str(vault), "--golden", str(golden), "--max-cost", "0.25"]) == 0
+    calls = calls_logged(log)
+    assert [c["judge"] for c in calls] == [False, True, False]
+    assert calls[1]["budget"] == 0.15, "the judge gets what the worker left"
+    data = run_file(vault)
+    assert data["results"][0]["judge_cost_usd"] == 0.1 and data["results"][0]["status"] == "pass"
+    assert data["results"][1]["status"] == "error" and "cost cap" in data["results"][1]["note"]
+    assert data["results"][2]["status"] == "not-run"
+    assert data["cost_usd"] == 0.3
+
+
+def test_recall_counts_navigation_cases_that_errored(vault):
+    def case(i):
+        return evals.Case(i, "q", ["navigation"], {"cited_files": ["a.md"]})
+
+    ok = evals.Result(case("n1"), "pass", {"cited_files": {"pass": True}}, trace={"files_read": []})
+    broken = evals.Result(case("n2"), "error", note="harness failed")
+    recall = evals.gates([ok, broken], vault)[0]
+    assert recall["value"] == 0.5 and recall["pass"] is False
+
+
+def test_per_tag_trace_metrics(vault, capsys):
+    assert cli.main(["eval", str(vault), "--golden", str(GOLDEN), "--tags", "navigation"]) == 0
+    metrics = run_file(vault)["by_tag_trace"]["navigation"]
+    assert set(metrics) == {"median_files_read", "tokens_input", "tokens_output", "cost_usd", "local_only_reads"}
+    assert metrics["local_only_reads"] == 0 and metrics["tokens_input"] > 0
+    assert "traces per tag" in capsys.readouterr().out
+
+
+def test_a_local_profile_eval_needs_a_local_judge():
+    models = {"profiles": {"frontier": {"base_url": "https://openrouter.ai/api/v1", "model": "m"},
+                           "local": {"base_url": "http://localhost:11434/v1", "model": "q"}},
+              "harnesses": {"claude": {"judge": "claude -p {prompt}"}, "opencode": {"judge": "opencode run {prompt}"}}}
+    for spec in ("endpoint:frontier", "harness:claude"):
+        with pytest.raises(v.VaultError, match="judge"):
+            evals.make_judge(models, {"judge": spec}, "local")
+    assert isinstance(evals.make_judge(models, {"judge": "endpoint:local"}, "local"), evals.EndpointJudge)
+    assert evals.make_judge(models, {"judge": "harness:opencode"}, "local").profile == "local"
+    models["profiles"]["local"]["base_url"] = "https://example.com/v1"
+    with pytest.raises(v.VaultError, match="off this machine"):
+        evals.make_judge(models, {"judge": "endpoint:local"}, "local")
+    assert isinstance(evals.make_judge(models, {"judge": "endpoint:frontier"}, "frontier"), evals.EndpointJudge)
+
+
+def test_the_harness_judge_runs_its_own_command_without_tools():
+    models = {"harnesses": {"claude": {"headless": "claude -p {prompt} --allowedTools Read",
+                                       "judge": "claude -p {prompt} --tools ''"}}}
+    command = evals.make_judge(models, {"judge": "harness:claude"}).command("P", 0.5)
+    assert command[:5] == ["claude", "-p", "P", "--tools", ""] and "--allowedTools" not in command
+    del models["harnesses"]["claude"]["judge"]
+    with pytest.raises(v.VaultError, match="no tools"):
+        evals.make_judge(models, {"judge": "harness:claude"})
+
+
+def test_inside_an_eval_case_anybrain_only_touches_the_copy(vault, tmp_path, monkeypatch, capsys):
+    copy = tmp_path / "copy"
+    copy.mkdir()
+    alias = tmp_path / "brain"
+    alias.symlink_to(vault)
+    monkeypatch.setenv(v.EVAL_COPY_ENV, str(copy))
+    assert v.resolve_vault(str(copy)) == copy.resolve()
+    for other in (vault, alias):
+        with pytest.raises(v.VaultError, match="copy of the vault"):
+            v.resolve_vault(str(other))
+    before = snapshot(vault)
+    assert cli.main(["feedback", str(alias), "add", "--topic", "x", "--skill", "ask", "--note", "n"]) == 2
+    assert cli.main(["lint", str(vault), "--accept", "me/aspirations.md"]) == 2
+    assert cli.main(["lint", str(vault), "--report", "journal/reports/lint-x.md"]) == 2
+    assert cli.main(["init", str(tmp_path / "new")]) == 2
+    assert cli.main(["eval", str(copy)]) == 2
+    assert snapshot(vault) == before and not (tmp_path / "new").exists()
+
+
+def test_the_eval_fails_when_the_vault_changes_during_the_run(vault, monkeypatch, capsys):
+    monkeypatch.setenv("FAKE_TOUCH", str(vault / "wiki" / "escaped.md"))
+    assert cli.main(["eval", str(vault), "--golden", str(GOLDEN), "--tags", "navigation"]) == 1
+    out = capsys.readouterr().out
+    assert "THE VAULT CHANGED DURING THE EVAL" in out and "wiki/escaped.md" in out
+    assert run_file(vault)["vault_changed"] == ["wiki/escaped.md"]
