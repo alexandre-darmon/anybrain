@@ -54,7 +54,8 @@ def test_shared_rules_are_repeated_at_the_top(path):
 def test_p1_skills_exist():
     names = {p.parent.name for p in SKILLS}
     assert {"ingest", "ask", "lint", "recommend", "feedback", "daily-brief"} <= names
-    assert not names & {"draft", "publish", "migrate"}  # later steps (docs/decisions.md D004)
+    assert not names & {"draft", "publish"}  # P1b (docs/decisions.md D004)
+    assert "migrate" in names
 
 
 def test_commands_named_in_skills_exist():

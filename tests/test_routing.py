@@ -44,7 +44,7 @@ def test_confidential_folders_cannot_be_opened():
     assert routing.route("company/plan.md") == "local"
     assert routing.route("finance/x.csv") == "local"
     assert [key for key, _ in routing.ignored] == ["company/plan.md", "finance/"]
-    assert routing.local_folders() == ["company/", "finance/"]
+    assert routing.local_folders() == [".harness/baseline/", ".harness/traces/", "company/", "finance/"]
 
 
 def test_bad_entries_are_ignored_with_a_reason():
@@ -55,7 +55,9 @@ def test_bad_entries_are_ignored_with_a_reason():
 
 
 def test_local_folders_and_exceptions_of_the_default():
-    assert DEFAULT.local_folders() == ["company/", "finance/", "journal/", "me/", "raw/docs/"]
+    assert DEFAULT.local_folders() == [".harness/baseline/", ".harness/traces/", "company/", "finance/", "journal/",
+                                       "me/", "raw/docs/"]
+    assert DEFAULT.local_files() == [".harness/.env", ".harness/clients.txt", ".harness/names.txt"]
     assert DEFAULT.exceptions() == ["journal/reports/", "me/preferences.md"]
 
 
@@ -118,3 +120,13 @@ def test_example_vault_shows_its_preferences():
     data = json.loads((EXAMPLE / ".harness" / "graph.json").read_text())["pages"]
     assert data["me/preferences.md"]["description"]
     assert data["me/profile.md"]["description"] == ""
+
+
+def test_private_harness_files_are_always_local_and_the_rest_of_harness_is_readable():
+    routing = v.parse_routing({"default": "frontier", ".harness/.env": "frontier", ".harness/traces/": "frontier"})
+    for rel in (".harness/.env", ".harness/clients.txt", ".harness/names.txt", ".harness/traces/2026-11.jsonl",
+                ".harness/baseline/run-claude-frontier-2026-11-17.json"):
+        assert routing.route(rel) == "local", rel
+    assert {key for key, _ in routing.ignored} == {".harness/.env", ".harness/traces/"}
+    for rel in (".harness/templates/book.md", ".harness/graph.json", ".harness/models.toml", ".harness/feedback.log"):
+        assert DEFAULT.route(rel) == "frontier", rel

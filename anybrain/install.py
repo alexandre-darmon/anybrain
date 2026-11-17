@@ -131,6 +131,7 @@ def claude_read_rules(routing: v.Routing) -> list[str]:
         rules.append(f"Read({folder}*)")
         for exception in inner:
             rules.append(f"Read(!{_glob(exception)})")
+    rules += [f"Read(./{path})" for path in routing.local_files()]
     return rules
 
 
@@ -144,10 +145,11 @@ def opencode_config(routing: v.Routing) -> str:
     """OpenCode V2 rules: the last matching rule wins, and agent rules come after the global ones (D020)."""
     data = json.loads(v.read_text(v.framework_root() / "templates" / "harness" / "opencode.json"))
     folders = routing.local_folders()
-    rules = [{"action": "read", "resource": _glob(f), "effect": "deny"} for f in folders]
+    rules = [{"action": "read", "resource": _glob(f), "effect": "deny"} for f in folders + routing.local_files()]
     rules += [{"action": "read", "resource": _glob(e), "effect": "allow"} for e in routing.exceptions()]
     data["permissions"] = rules
-    data["agents"]["local"]["permissions"] = [{"action": "read", "resource": _glob(f), "effect": "allow"} for f in folders]
+    data["agents"]["local"]["permissions"] = [{"action": "read", "resource": _glob(f), "effect": "allow"}
+                                              for f in folders + routing.local_files()]
     return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
 
 

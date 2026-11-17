@@ -29,8 +29,17 @@ default             = "frontier"
 [skills]
 dirs = ["~/.agents/skills", "~/.claude/skills"] # where init and update link the skills
 
-# Headless commands, checked against the official docs on 2026-11-16 (docs/decisions.md D020).
+# Headless commands used by `anybrain eval`, checked against the official docs on 2026-11-16 (D020).
+# Each case runs in a throwaway copy of the vault, so the eval pre-approves the tools a skill needs
+# there; this never applies to your own sessions (D031). anybrain adds the machine-output flags itself.
 [harnesses.claude]
-headless = "claude -p {prompt}"
+headless = "claude -p {prompt} --permission-mode acceptEdits --allowedTools 'Bash(anybrain *)' Read Edit Write Glob Grep Skill"
 [harnesses.opencode]
-headless = "opencode run {prompt}"
+headless = "opencode run --standalone {prompt}"   # --standalone passes ANYBRAIN_PROFILE to the run (D020)
+
+[eval]
+judge      = "endpoint:frontier"   # who grades `behaviour`, in a fresh context: endpoint:<profile> or harness:<name>
+jobs       = 2                     # cases run in parallel
+timeout_s  = 600                   # per case
+max_tokens = 1024                  # judge answer
+retries    = 2                     # when the harness gives no answer
