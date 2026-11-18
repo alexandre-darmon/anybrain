@@ -639,7 +639,7 @@ Acceptance: fixture tests for an agent edit inside `## My take` (finding), an ow
 3. **≤ 20 outgoing links per page.** Above that, the page should be split.
 4. **Prefer existing pages.** Before creating a concept, check `wiki/index.md` and aliases.
 5. **Never link to confidential pages from public or personal pages.** Links from `library/` or `wiki/` to `company/` or `finance/` are reported by `lint --graph`.
-6. **No orphan** (owner decision, 2026-11-18). A page is connected to its source (`sources`), its author, its theme and similar pages. At least one of these is an incoming link from another page of `library/`, `wiki/` or `projects/`: the concept its ideas support lists it, a book by the same author says "same author as [[x]]", a similar page says how it relates, or a page it links to states the relation back. Links from `journal/`, `me/`, `content/` and generated indexes do not count. Only real relations: when none exists, the agent asks the owner and writes the relation the owner states, ending with `[said]`. There are no author or theme pages (D039).
+6. **No orphan** (owner decision, 2026-11-18). A page is connected to its source (`sources`), its author, its theme and similar pages. At least one of these is an incoming link from another page of `library/`, `wiki/` or `projects/`: the concept its ideas support lists it, a book by the same author says "same author as [[x]]", a similar page says how it relates, or a page it links to states the relation back. Links from `journal/`, `me/`, `content/` and generated indexes do not count. A confidential or local-only page may also be connected from `company/` or `finance/`, and never from a public or personal page (rule 5). Only real relations: when none exists, the agent asks the owner and writes the relation the owner states, ending with `[said]`. There are no author or theme pages (D039).
 
 ### 13.4 `graph.json`
 
@@ -692,7 +692,7 @@ The Snow Leopard (book, public)
 | Broken link | error | Unresolvable link |
 | Duplicate filename | error | Same stem in two folders |
 | Confidential leak | error | Link from public/personal page to confidential page |
-| Orphan | warning, then error | Compiled page (`library/`, `wiki/`, `projects/`) that no other compiled page links to (13.3 rule 6). A warning for the 7 days after `created`, an error after. The finding lists candidates found by code: pages by the same author, pages it links to, pages sharing a tag that most pages do not carry. Code never writes the link |
+| Orphan | warning, then error | Compiled page (`library/`, `wiki/`, `projects/`) that no other compiled page links to (13.3 rule 6). A warning for the 7 days after `created`, an error after. The finding lists candidates found by code: pages by the same author, pages it links to, pages sharing a tag that most pages do not carry. A local-only page only gets local-only candidates, and an output the frontier may read names none. Code never writes the link |
 | Naked link | warning | List item or line whose only content is a link |
 | Over-linked | warning | > 20 outgoing links |
 | Near-duplicate concepts | warning | Two concept titles or slugs with `difflib` ratio ≥ 0.85 |

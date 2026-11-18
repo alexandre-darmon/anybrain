@@ -198,6 +198,20 @@ def review_date(fm: dict | None, body: str) -> tuple[str, str] | None:
     return value, where
 
 
+FRONTMATTER_LINE_RE = re.compile(r"^\s*([^:#\n]{1,40}):\s*(.*?)\s*$")
+
+
+def _frontmatter_lines(text: str) -> dict:
+    """The `key: value` lines of a frontmatter that is not valid YAML, values as written (quotes removed)."""
+    fm_text, _, _ = v.split_frontmatter(text)
+    found = {}
+    for line in (fm_text or "").split("\n"):
+        match = FRONTMATTER_LINE_RE.match(line)
+        if match and match.group(1).strip() not in found:
+            found[match.group(1).strip()] = match.group(2).strip().strip("'\"")
+    return found
+
+
 def default_review(day: str) -> str:
     return (_dt.date.fromisoformat(day) + _dt.timedelta(days=DEFAULT_REVIEW_DAYS)).isoformat()
 
@@ -210,7 +224,9 @@ def _snapshot_entries(snapshot: Path) -> list[Entry]:
         rel = v.rel_path(snapshot, path)
         is_md = rel.endswith(".md")
         text = v.read_text(path) if is_md else ""
-        fm, body, _, _ = v.parse_frontmatter(text) if is_md else (None, "", 0, None)
+        fm, body, _, error = v.parse_frontmatter(text) if is_md else (None, "", 0, None)
+        if is_md and fm is None and error and error != "no frontmatter":
+            fm = _frontmatter_lines(text)  # invalid YAML: read `key: value` lines, so a review date is not lost
         entries.append(Entry(rel, path.stat().st_size, is_md, owner_paragraphs(rel, text) if is_md else [],
                              len(LINK_RE.findall(body)) if is_md else 0, sorted(str(k) for k in (fm or {}).keys()),
                              review_date(fm, body) if is_md else None))

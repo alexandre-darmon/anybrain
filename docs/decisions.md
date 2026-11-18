@@ -388,6 +388,7 @@ Format: `D<number> · <title>`, with the build step and the PRD sections involve
 - **Copying.** The migrate skill copies the date into the project page and never chooses one. When several legacy files make one page, it takes the earliest of their dates, so that the project is reviewed sooner rather than later.
 - **Check.** `anybrain migrate check` recomputes the expected date for every project page that the report maps a legacy file to. A different or missing `next_review` fails the check, with the expected date and its origin. A page made from a note whose value needed the owner is not checked.
 - **Forms and ranking (review of 2026-11-18).** Keys are ranked: a note's own next-review date (`next_review`, `prochaine_revue`) wins over a review date (`review`, `revue`), which wins over a due date (`due`, `deadline`, `échéance`); within a rank, the frontmatter wins. Dataview fields are read in all three forms (`key:: value` on its line, `[key:: value]` and `(key:: value)` inside a line), with bold or italic keys. A value must be a real calendar date: `2026-02-30` goes to the owner. When any legacy note of a page needs the owner's date, `migrate check` does not check that page. Every `projects/` path named in a status counts, with or without `.md` or brackets.
+- **Broken frontmatter.** When a legacy note's frontmatter is not valid YAML, its `key: value` lines are still read for a review date (review of 2026-11-18).
 - **Scope.** This applies to migration only. A project created by `ingest` still gets its date from the owner or from the agent, as before.
 
 ## D038 · Editing the vault during an eval
@@ -398,6 +399,14 @@ Format: `D<number> · <title>`, with the build step and the PRD sections involve
 - **Relaunch.** After the cases, the runner compares each case's digest with the vault as it is now. If any differ, it waits until the vault has had no change for `[eval] quiet_minutes` (default 15). It counts from when it saw the vault, never from file dates, checks every 30 seconds, and gives up after 8 quiet periods. Then it runs again exactly the cases whose digest differs from the quiet vault. It repeats at most `[eval] relaunches` times (default 2). It does not wait when the cost cap is already reached. Cases still on older content at the end fail the run.
 - **Nothing is erased.** A replaced result is kept in the run file under `superseded`. Its local-only reads, escapes and failed safety or injection cases still fail the run: a confidential file sent to the frontier provider is not forgiven by a clean rerun. A rerun that the cost cap stops leaves the earlier graded result in place, marked stale.
 - **Cost and time.** The run file's `cost_usd` counts every run, including replaced ones. Each relaunch records the changed files, the cases run again, `waited_s` and `cost_usd`. `--max-cost` covers the whole run, reruns included. One edit at a random moment makes about half the cases stale on average: about half the cost again, plus 15 minutes of waiting.
+- **Second review, 2026-11-18.** These fixes are covered by regression tests.
+  - **Heredocs.** A here-document body is skipped only when `cat` or `tee` writes it to a file. When an interpreter may run it (`python3 - <<EOF`, `cat <<EOF | sh`), its paths count.
+  - **Paths with spaces.** The real vault's path is also searched as text in the whole command, so an iCloud path with a space, inside quoted code, is seen.
+  - **Links.** A folder of the vault that is a link is copied as content, so a case cannot write through it into notes kept elsewhere. The fingerprint follows links, with loop protection.
+  - **Failed copies.** A copy that fails after an attempt already ran keeps that attempt's trace.
+  - **Reruns that do not finish.** A rerun stopped by the cost cap, or unable to copy the vault, keeps the earlier graded result in place, marked stale.
+  - **`anybrain trace show`** lists replaced runs, marked "(replaced)".
+  - **The relaunch loop** does not wait when less than 0.01 is left under the cap, and counts a relaunch that had nothing to rerun.
 - **Review, 2026-11-18.** An adversarial review confirmed 31 findings on the first version of this mechanism and of D037. The main ones: a rerun erased a local-only read; file dates decided which cases to rerun, so a synced edit was missed and a future date could make the runner wait forever; Obsidian's window saves triggered paid reruns; most shell writes and every OpenCode write into the real vault passed as owner edits. All are fixed as described above, with regression tests.
 
 ## D039 · No orphan page (Q28)
@@ -430,6 +439,12 @@ Format: `D<number> · <title>`, with the build step and the PRD sections involve
   - Code never writes a link.
   - Local-only candidates are left out on non-local profiles. The finding about a local-only page is masked as before (D016).
 - **Skills.** Ingest, migrate and lint write a link only for a real relation, with its reason. Otherwise they ask the owner in one message and write the owner's answer on both pages, ending with `[said]`. The vault's `AGENTS.md` states the rule.
+- **Review, 2026-11-18.** A final adversarial review confirmed these defects, all now fixed with regression tests.
+  - **A leak through a report.** A local session writing its report where the frontier may read (`journal/reports/`) named confidential pages among the candidates. An orphan finding is now rebuilt for each output, so an output the frontier may read names no local-only page, whatever profile runs.
+  - **Confidential pages.** A lone confidential page could never be connected, because rule 5 forbids a link to it from a public or personal page, and its candidates invited such a link. A local-only page is now also connected from `company/` or `finance/`, and only gets local-only candidates.
+  - **Placeholder authors.** An author with a placeholder word is no author: unknown, inconnu, anonymous, collectif, various, divers, none, null, tbd. So are `n/a`, `author` and `auteur` on their own.
+  - **Future dates.** A `created` date in the future no longer keeps an old orphan a warning.
+  - **Speed.** The candidate facts are indexed once per run. On 2,000 pages and 1,209 orphans, lint went from about 40 to 70 s back to 0.8 s (PRD 9.2 asks for under 3 s).
 - **Metrics.** The target is 0 orphans (section 6), and 21.3 asks for 0 once the owner has answered the migration's questions. On the migrated fixture (D035), 3 pages need the owner: `deep-work` (Cal Newport, no other page of his), `this-book-will-make-you-dangerous` (author "Unknown") and `coaching-lab`.
 
 ## D040 · Seeing the vault's figures and its observability

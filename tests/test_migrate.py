@@ -232,3 +232,11 @@ def test_check_reads_every_project_named_in_a_status(vault, tmp_path, capsys):
     cli.main(["migrate", str(vault), "check"])
     out = capsys.readouterr().out
     assert "next_review of projects/alpha.md: 2026-12-31, expected 2027-01-15 (from the legacy note)" in out
+
+
+def test_a_review_date_survives_a_frontmatter_that_is_not_valid_yaml(vault, tmp_path):
+    root = tmp_path / "old"
+    (root / "Projets").mkdir(parents=True)
+    (root / "Projets" / "Eta.md").write_text("---\ntitle: Eta: the sequel\nnext_review: \"2027-02-02\"\n---\nEta notes, written by me.\n")
+    cli.main(["migrate", str(vault), "inventory", str(root)])
+    assert "review date: 2027-02-02 (from `next_review`)" in report(vault).read_text()
