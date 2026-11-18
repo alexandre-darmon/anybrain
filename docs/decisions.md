@@ -534,3 +534,31 @@ Format: `D<number> · <title>`, with the build step and the PRD sections involve
   - Whether to route `me/voice.md` to frontier is the owner's decision.
 - **Finding: same-day file names (Q36).** A draft published the day it was written gave the published piece the same file name as the draft. 13.2 forbids that, and lint reported a duplicate. The publish skill now adds `-published` to the published piece's name in that case only.
 - **Total cost of these runs:** 1.72 USD.
+
+## D046 · Review of P1b and of the init guard
+
+- **Process.** An adversarial review of steps 15 to 17 and of D043 raised about 40 findings. They were verified by reproduction, or were clear enough to fix on sight. Every code fix has a regression test.
+- **Content safety (19.4, 19.4b).**
+  - **Client names.** They are matched in every written form, with one matcher shared with `lint --secrets`: line-wrapped, a non-breaking space, unaccented, a curly apostrophe, decomposed accents, emphasis stars. The title, description and angle are searched too. Before, all of these passed at `ready`.
+  - **Sources resolve the way links resolve** (13.2): `[[wikilink]]`, a path without `.md`, `#anchor`, `|alias`, `[text](path)`, quotes, a title or alias. A `..` path is folded, and one that leaves the vault is refused. A source that cannot be resolved is an error at `ready`, so the check fails closed.
+  - **What counts as a source.** `src` comments are read in every case (`SRC:`, `source:`) and across lines, and so is the "Sources used" line of the notes. A link in the body to a confidential page is an error in the content check too.
+  - **`content/ideas.md`**, which frontier models read, is checked for client names and local-only sources.
+  - **Local-only drafts.** `content check` masks a local-only draft outside the local profile, and `content diff` hides its changed passages there.
+- **Checks that could be bypassed.**
+  - **Folders decide types.** A page in `content/drafts/`, `content/published/` or `content/channels/` must have the matching type, and these folders hold no subfolders.
+  - **Placeholders** are matched in any case, with or without a colon: `[YOUR STORY]`, `[Your story: ...]`.
+  - **The banned list** accepts numbered and `+` bullets and quoted or backticked entries. A regex that matches an empty text, or one that is invalid, is reported and skipped. A missing `me/voice.md` or `## Banned` section is reported when drafts exist.
+- **Published pieces.** Banned patterns and placeholders are no longer reported on published pieces. They are the owner's final, fully protected text, and a finding nobody can act on would make `lint` exit 1 for good. The safety checks still apply: confidential sources, client names, the channel guide.
+- **Edit ratio.** Texts are aligned word by word, each word with its following spaces, then refined letter by letter inside changed passages. The ratios equal the character-level ones on the fixtures, and an article now takes a fraction of a second instead of 13 to 21 seconds. A `.nan` or `.inf` ratio is a `--schema` error instead of a crash.
+- **Stats** suggest reviewing the voice only when the ratio did not go down and is still above the 30% target.
+- **The init guard (D043).** In a folder `anybrain` never initialised, every visible file counts, including attachments and files in folders named like the layout (a legacy `library/`). Exceptions: the vault's own root files and hand-written `index.md` files, which `init` keeps (Q19). Obsidian's sample `Welcome.md` gets its own message: delete it, then run `init` again. `update` refuses such a folder, so it can never mark it as initialised.
+- **Skills.**
+  - **draft:**
+    - fix warnings as well as errors;
+    - voice samples go to `raw/inbox/voice-samples/` only;
+    - a draft in progress counts for repetition, not only published pieces;
+    - a mission page the owner names is used for its learning only, never cited (Q37);
+    - a past mission is described at the level of detail of `me/cv.md` (19.4b).
+  - **lint:** it never edits a fully protected file, and takes content ideas only from pages that are not local-only.
+  - **The vault's `AGENTS.md`** says how `content/published/` is written.
+- **Docs.** The judge rubric says the judge sees the draft of a content case (Q38). D043 is now in section 26 (Q39). D045's mention of 15.10 step 3 is completed here: the agent also checked drafts in progress, which the draft skill now asks for.

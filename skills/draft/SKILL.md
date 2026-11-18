@@ -24,7 +24,7 @@ A topic or a brief, and a channel (`linkedin`, `article`, `newsletter`, `site`, 
 
 ## Setup mode ("set up my voice")
 
-1. The owner drops 10 to 20 pieces they wrote into `raw/inbox/voice-samples/` or `content/published/`. Read them.
+1. The owner drops 10 to 20 pieces they wrote into `raw/inbox/voice-samples/`. Read them, and the pieces already in `content/published/`. Past pieces never go into `content/published/` directly: that folder only holds pieces recorded by the `publish` skill.
 2. Write `journal/voice-draft-YYYY-MM-DD.md` (type `report`) with proposed traits, each backed by a sentence quoted verbatim from a piece, signature moves, and a proposed banned list (one pattern per line).
 3. Tell the owner to copy what they accept into `me/voice.md`. Never write `me/voice.md` yourself.
 
@@ -32,15 +32,15 @@ A topic or a brief, and a channel (`linkedin`, `article`, `newsletter`, `site`, 
 
 1. **Load the voice.** Read `me/voice.md`, `me/preferences.md` (its learned rules apply to every draft) and `content/channels/<channel>.md`. Without a channel guide, stop and ask the owner to write one from `.harness/templates/channel.md`. If your profile may not read `me/voice.md` (shared rule 3), do not stop: write from the channel guide and `me/preferences.md`, and say so in the notes for the owner. `anybrain content check` still applies its banned list.
 2. **Gather material** with the `ask` procedure (index seeds, then `anybrain neighbors . <page>`), at most 10 files. Prefer the owner's own words: `My position`, `My take`, `Why`, `Decisions`, published pieces; then concept summaries; then book key ideas; then external sources. If the only material is summaries of other people's ideas, say so and ask the owner for their angle before writing.
-3. **Avoid repetition.** Read `content/index.md`. If a published piece already makes the same point, say so and propose another angle, or a follow-up that links to it.
+3. **Avoid repetition.** Read `content/index.md`. If a published piece, or a draft still in progress, already makes the same point, say so and propose another angle, a follow-up that links to it, or finishing that draft.
 4. **Pick the angle**: one claim for one audience, the strongest one the owner's own words support. Keep two alternatives for the notes.
 5. **Write** `content/drafts/YYYY-MM-DD-<slug>.md` from `.harness/templates/draft.md`, in the channel's format and length.
    - After each paragraph that carries a claim, add an HTML comment `<!-- src: path -->` naming the vault page it comes from. List every source page in `sources`, the owner's own pages first.
    - Stories, numbers, names and results come only from vault pages: `Timeline`, `My take`, `Decisions`, published pieces, `me/cv.md`. Anything missing becomes `[YOUR STORY: what is needed]` or `[YOUR NUMBER: what is needed]`.
    - Fill `## Notes for the owner`: the number of placeholders, two alternative angles, the sources used, and for a tailored document the unmatched needs.
-6. **Tailored documents** (`application`, `bio`, `email`): read the brief, write down the reader's 3 main needs, map each to evidence in `me/cv.md`, `me/profile.md` and non-confidential project pages, then write. List any need the vault cannot support under unmatched needs. Never stretch evidence to cover a need.
+6. **Tailored documents** (`application`, `bio`, `email`): read the brief, write down the reader's 3 main needs, map each to evidence in `me/cv.md`, `me/profile.md` and non-confidential project pages, then write. Describe a past mission only at the level of detail `me/cv.md` already gives. List any need the vault cannot support under unmatched needs. Never stretch evidence to cover a need.
 7. **Check and save.**
-   - Run `anybrain content . check content/drafts/<file>` and fix every error: a banned pattern, a confidential source, a missing guide.
+   - Run `anybrain content . check content/drafts/<file>` and fix every finding, warnings included: a banned pattern, a confidential source, a missing guide. A warning now is an error at `ready`.
    - Set `status: drafting`. Only the owner sets `ready`.
    - Run `anybrain content . snapshot content/drafts/<file>` once, on this first version.
    - Run `anybrain index .`, append to `log.md`, and report: the path, the angle, the number of placeholders, and the two alternatives.
@@ -48,6 +48,6 @@ A topic or a brief, and a channel (`linkedin`, `article`, `newsletter`, `site`, 
 ## Red lines
 
 - No invented anecdote, quote, number, client, title or result: a placeholder instead.
-- Sources never include a confidential page, a mission page, `company/` or `finance/`, unless the owner names the page in the request. Even then, only the learning, in general terms, never the client or its figures.
+- Sources never include a confidential page, a mission page, `company/` or `finance/`. When the owner names such a page in the request, use only the learning, in general terms, never the client or its figures, and never cite it: not in `sources`, not in a `src` comment, not in the notes. Write in the notes "one learning from a page you named, not cited".
 - A public channel uses public pages, the owner's personal pages they name, and published pieces.
 - Never publish or post anywhere. Never write in `me/voice.md`, `content/published/` or `content/channels/`.

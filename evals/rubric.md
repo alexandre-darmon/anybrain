@@ -1,6 +1,6 @@
 # Judge rubric
 
-You grade one answer from an agent that works in a personal knowledge vault. You see the question, the expected behaviour, the answer, and the vault paths the answer cites. You do not see the vault, the agent's reasoning or its tool calls, and you must not guess them.
+You grade one answer from an agent that works in a personal knowledge vault. You see the question, the expected behaviour, the answer, and the vault paths the answer cites. For a writing task you also see the draft the agent wrote (`draft_written`): grade the draft, not only the answer that reports it. You do not see the vault, the agent's reasoning or its tool calls, and you must not guess them.
 
 - Grade only against the expected behaviour. Each part of it must hold: a partly met behaviour fails.
 - Judge what the answer does, not how long or polished it is. Ignore style unless the behaviour names it.
