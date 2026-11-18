@@ -3,12 +3,13 @@
 
 Navigate: this file, then a domain index, then a page. Never scan the whole vault.
 
-- [me](me/index.md): 5 pages; last updated 2026-11-10
+- [me](me/index.md): 6 pages; last updated 2026-11-10
 - [library](library/index.md): 2 read, 1 reading, 1 to-read; last updated 2026-11-04
 - [wiki](wiki/index.md): 3 pages; last updated 2026-11-05
 - [projects](projects/index.md): 1 active, 1 paused; last updated 2026-11-02
 - [company](company/index.md): 1 page; confidential, local profile only
 - [finance](finance/index.md): 1 page; confidential, local profile only
 - [journal](journal/index.md): 1 page; last updated 2026-11-03
+- [content](content/index.md): 2 drafts (0 ready), 1 published; last updated 2026-11-15
 
 - [log](log.md): changelog, newest at the bottom

@@ -18,7 +18,8 @@ This page explains the diagram of PRD section 8: what each block does, why it is
             ▼                                   ▼                                    ▼
    SCRIPTS (deterministic)              SKILLS (Agent Skills)               HARNESS (swappable)
    anybrain index · lint · neighbors    ingest · ask · lint · recommend     Claude Code · OpenCode ·
-   feedback · migrate · eval · trace    migrate · feedback · daily-brief    any AGENTS.md reader
+   feedback · migrate · eval · trace    migrate · feedback · draft ·        any AGENTS.md reader
+   content                              publish · daily-brief
                                                                                      │
                                                                           MODELS (by sensitivity)
                                                                           frontier ←→ local
@@ -63,6 +64,7 @@ Pages follow typed contracts (11): a book has `## My take` (the owner's), key id
 | `feedback.py`, `stats.py` | Correction log and rule proposals; usage counts per week and per skill | 16, 6 |
 | `migrate.py` | Legacy snapshot, inventory, review dates, check that owner text survived | 21 |
 | `evals.py`, `trace.py` | Golden-set runner, graders, judge, gates, baselines; run traces per harness | 17.3, 22 |
+| `content.py` | Draft snapshots, edit ratio and changed passages, content checks on one file | 11.10, 11.11, 15.10, 15.11 |
 
 **Indexes and the graph** (13, 14). `anybrain index` writes one `index.md` per domain, one line per page built from its `description`, and a root index with one line per domain. It also writes `.harness/graph.json`, where each link keeps the sentence that carries it, so the agent can judge a relation without opening the page. `anybrain neighbors <page>` prints the links in and out of a page with those sentences.
 
@@ -99,6 +101,21 @@ If the owner edits the vault during a run, the runner waits until the vault has 
 ## Migration
 
 `anybrain migrate inventory` copies a legacy vault read-only into `raw/legacy/<date>/` and lists every file with a suggested target (21.1). The `migrate` skill interviews the owner, migrates a 5-book pilot for review, then works in batches. `anybrain migrate check` verifies that every paragraph the owner wrote survives verbatim, that no file is still pending, and that each project's review date is the one code computed: the date already on the legacy note, or 30 days after the migration (D035, D037).
+
+## Content
+
+Drafts turn the vault into writing in the owner's voice (15.10). The `draft` skill builds a piece from the owner's own pages: `My position`, `My take` and decisions first. It puts a source comment after each claim, and a `[YOUR STORY: ...]` placeholder for anything the vault does not hold.
+
+`anybrain content check` blocks `ready` on any of these:
+- a banned pattern from `me/voice.md`;
+- a placeholder left in;
+- a confidential, mission, `company/` or `finance/` source;
+- a client name;
+- a missing source or channel guide.
+
+When the owner publishes, the `publish` skill keeps the final text verbatim. `anybrain content diff` measures the share the owner changed against the agent's first version, saved by `content snapshot`. The owner's edits are logged as corrections, which become rules only once the owner approves them (16.5).
+
+`anybrain stats` follows the edit ratio. The target is at most 30% by the 8th published piece, and lower over time (D044, D045).
 
 ## Testing
 

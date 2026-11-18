@@ -20,6 +20,7 @@ api_key_env = ""
 default             = "frontier"
 "me/"               = "local"
 "me/preferences.md" = "frontier"               # rules for the agent; read by every model
+"me/voice.md" = "frontier"                     # how the owner writes; read by every model (Q35)
 "journal/"          = "local"
 "company/"          = "local"
 "finance/"          = "local"

@@ -34,12 +34,14 @@ ICLOUD_HINT = "Right-click the vault folder in Finder and choose Keep Downloaded
 DEFAULT_SKILL_DIRS = ["~/.agents/skills", "~/.claude/skills"]
 HARNESS_CONFIGS = (".claude/settings.json", "opencode.json")
 
-# PRD 10.2, phase P0. content/ and .harness/drafts/ arrive with P1b (docs/decisions.md D019).
+# PRD 10.2. content/ and .harness/drafts/ came with P1b (docs/decisions.md D019, D044).
 LAYOUT_DIRS = [
     "me", "raw/inbox", "raw/highlights", "raw/articles", "raw/voice", "raw/docs", "raw/attachments",
     "raw/archive", "raw/legacy", "library", "wiki/concepts", "wiki/notes", "projects", "company", "finance",
-    "journal", ".harness/templates",
+    "journal", "content/channels", "content/drafts", "content/published", ".harness/templates", ".harness/drafts",
 ]
+IDEAS_STARTER = ("# Content ideas\n\n<!-- Append-only. The weekly lint adds ideas here: one line each, with the angle "
+                 "and its source paths. -->\n")
 
 STARTER_ME = {
     "me/profile.md": ("Profile", "Who the owner is, in stable facts that stay true for a year. Owner-written.",
@@ -269,6 +271,68 @@ def link_skills(vault: Path, out: Callable[[str], None], ask: Callable[[str], bo
 
 # ---------------------------------------------------------------------------- init
 
+def _anybrain_page(vault: Path, rel: str) -> bool:
+    """A file in the vault layout that anybrain could have made: a page with its frontmatter and a known type,
+    or any file under raw/ next to such pages."""
+    top = rel.split("/", 1)[0]
+    if "/" not in rel or top not in {d.split("/")[0] for d in LAYOUT_DIRS} | {"content"}:
+        return False
+    if top == "raw" or (top in v.CONFIDENTIAL_FOLDERS and rel.endswith(".csv")):
+        return True  # raw inputs; numbers kept as CSV next to the notes (10.2)
+    if not rel.endswith(".md"):
+        return False
+    from . import lint
+
+    try:
+        fm, *_ = v.parse_frontmatter(v.read_text(vault / rel))
+    except (OSError, UnicodeDecodeError):
+        return False
+    return isinstance(fm, dict) and fm.get("type") in lint.TYPES and bool(fm.get("title"))
+
+
+VAULT_ENTRIES = {d.split("/")[0] for d in LAYOUT_DIRS} | {
+    "content", "index.md", "log.md", "AGENTS.md", "CLAUDE.md", "opencode.json"}
+
+
+def refuse_foreign_notes(vault: Path) -> None:
+    """Refuse to create a vault in a folder that already holds notes anybrain did not create.
+
+    A legacy vault pasted into the target folder would be mixed with the new one: its folders next to
+    `library/` and `wiki/`, and no way to snapshot it, because a snapshot of a folder inside the vault is
+    refused (21.2). The notes go to a separate folder and come in through the migration (docs/decisions.md D043).
+    """
+    if not vault.is_dir() or (vault / RENDER).exists():
+        return
+    # In a folder anybrain never initialised, every visible file is someone else's: notes, canvases and
+    # attachments, even inside folders named like the vault layout.
+    found = []
+    domains = {f"{d}/index.md" for d in v.DOMAINS}
+    for directory, dirs, files in os.walk(vault):
+        for name in sorted(d for d in dirs if not d.startswith(".")):
+            if os.path.islink(os.path.join(directory, name)):  # a link to a folder elsewhere: someone's files
+                found.append(v.rel_path(vault, Path(directory) / name))
+        dirs[:] = sorted(d for d in dirs if not d.startswith(".") and not os.path.islink(os.path.join(directory, d)))
+        for name in sorted(files):
+            rel = v.rel_path(vault, Path(directory) / name)
+            if name.startswith(".") or rel in VAULT_ENTRIES or rel in v.APPEND_ONLY_FILES:
+                continue
+            if rel == "index.md" or rel in domains:
+                continue  # a hand-written index, which init keeps as the owner wrote it (Q19)
+            if _anybrain_page(vault, rel):
+                continue  # a page anybrain could have made: a copy of vault.example, a vault restored from backup
+            found.append(rel)
+    if found == ["Welcome.md"]:
+        raise v.VaultError(f"{vault} holds Obsidian's sample page Welcome.md: delete it, then run init again")
+    if found:
+        legacy = vault.parent / f"{vault.name}-legacy"
+        raise v.VaultError(
+            f"{vault} already holds {len(found)} file(s) that anybrain did not create (for example "
+            f"{', '.join(found[:3])}). init does not mix them with a new vault. Move them to a separate folder, "
+            f"for example {legacy}, run init again on the empty folder, then migrate them: "
+            f"anybrain migrate \"{vault}\" inventory \"{legacy}\"")
+
+
+
 def init(target: str, owner: str | None = None, role: str | None = None, lang: str | None = None,
          out: Callable[[str], None] = print) -> int:
     vault = Path(target).expanduser().resolve()
@@ -276,6 +340,7 @@ def init(target: str, owner: str | None = None, role: str | None = None, lang: s
         raise v.VaultError(f"not a folder: {vault}")
     v.check_eval_copy(vault)
     refuse_if_evicted(vault)
+    refuse_foreign_notes(vault)
     written = 0
 
     def say(line: str) -> None:
@@ -341,6 +406,17 @@ def init(target: str, owner: str | None = None, role: str | None = None, lang: s
         v.write_text(vault / rel, page + "\n" + body)
         say(f"wrote {rel}")
 
+    voice = vault / "me" / "voice.md"
+    if not voice.exists():
+        text = v.read_text(v.framework_root() / "templates" / "pages" / "voice.md")
+        v.write_text(voice, text.replace("{{language}}", params["lang"]).replace("{{created}}", day)
+                     .replace("{{updated}}", day))
+        say("wrote me/voice.md")
+    ideas = vault / "content" / "ideas.md"
+    if not ideas.exists():
+        v.write_text(ideas, IDEAS_STARTER)
+        say("wrote content/ideas.md")
+
     merge_obsidian(vault, say)
     link_skills(vault, say)
     save_render(vault, render, say)
@@ -376,6 +452,8 @@ def update(target: str | None, yes: bool = False, out: Callable[[str], None] = p
            ask: Callable[[str], bool] | None = None) -> int:
     vault = v.resolve_vault(target)
     refuse_if_evicted(vault)
+    if not (vault / RENDER).exists():
+        refuse_foreign_notes(vault)  # update never makes a folder look initialised (D043)
     ask = ask or _ask_tty
     render = load_render(vault)
     params = render["params"] or {"owner": DEFAULT_OWNER, "role": DEFAULT_ROLE, "lang": DEFAULT_LANG}

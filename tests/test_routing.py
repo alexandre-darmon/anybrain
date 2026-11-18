@@ -58,7 +58,7 @@ def test_local_folders_and_exceptions_of_the_default():
     assert DEFAULT.local_folders() == [".harness/baseline/", ".harness/traces/", "company/", "finance/", "journal/",
                                        "me/", "raw/docs/"]
     assert DEFAULT.local_files() == [".harness/.env", ".harness/clients.txt", ".harness/names.txt"]
-    assert DEFAULT.exceptions() == ["journal/reports/", "me/preferences.md"]
+    assert DEFAULT.exceptions() == ["journal/reports/", "me/preferences.md", "me/voice.md"]  # Q35
 
 
 def test_routing_is_read_from_models_toml(make_vault):

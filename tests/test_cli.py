@@ -9,8 +9,9 @@ import pytest
 
 from anybrain import cli
 
-P0_COMMANDS = ["init", "update", "doctor", "index", "neighbors", "lint", "anonymize", "feedback", "stats", "eval", "trace", "migrate"]
-LATER_COMMANDS = ["content", "transcribe"]
+P0_COMMANDS = ["init", "update", "doctor", "index", "neighbors", "lint", "anonymize", "feedback", "stats", "eval", "trace",
+               "migrate", "content"]
+LATER_COMMANDS = ["transcribe"]
 
 
 def test_help_lists_every_command(capsys):

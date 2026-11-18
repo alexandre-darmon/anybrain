@@ -17,15 +17,21 @@ CONTRACT_SECTIONS = {
     "project": ["Why", "Now", "Timeline", "Decisions", "Next steps"],
     "brief": ["Today", "Needs a reply", "Projects"],
     "profile": [],
+    "draft": ["Notes for the owner"],
+    "published": [],
+    "channel": ["Audience", "Goal", "Format", "Rules", "Examples"],
 }
 FOLDER = {
     "book": "library", "concept": "wiki/concepts", "note": "wiki/notes",
     "project": "projects", "brief": "journal", "profile": "me",
+    "draft": "content/drafts", "published": "content/published", "channel": "content/channels",
 }
 VALUES = {
     "title": "Example title", "description": "Says one thing.", "author": "A. Author",
     "status": "read", "kind": "portfolio", "language": "en", "created": "2026-11-16",
     "updated": "2026-11-16", "date": "2026-11-16", "next_review": "2026-12-01",
+    "channel": "linkedin", "audience": "Product managers who run interviews.", "angle": "Interviews fail on hypotheticals.",
+    "url": "https://example.com/post", "published": "2026-11-16", "draft": "content/drafts/2026-11-16-example-title.md",
 }
 
 
@@ -33,6 +39,10 @@ def render(name: str) -> str:
     text = (TEMPLATES / f"{name}.md").read_text(encoding="utf-8")
     if name == "project":
         text = text.replace('"{{status}}"', '"active"')
+    if name == "draft":
+        text = text.replace('"{{status}}"', '"drafting"').replace("sources: []", "sources: [library/example.md]")
+    if name == "published":
+        text = text.replace("edit_ratio:  #", "edit_ratio: 0.4  #")
     return re.sub(r"\{\{(\w+)\}\}", lambda m: VALUES[m.group(1)], text)
 
 
@@ -47,7 +57,8 @@ def test_template_has_contract_sections_in_order(name):
 
 @pytest.mark.parametrize("name", sorted(CONTRACT_SECTIONS))
 def test_rendered_template_passes_schema(name, make_vault):
-    slug = "2026-11-16" if name == "brief" else "example-title"
+    slug = {"brief": "2026-11-16", "draft": "2026-11-16-example-title", "published": "2026-11-16-example-title",
+            "channel": "linkedin"}.get(name, "example-title")
     root = make_vault({f"{FOLDER[name]}/{slug}.md": render(name)})
     ctx = lint.Context(root)
     assert lint.check_schema(ctx) == []
@@ -71,3 +82,16 @@ def test_placeholders_are_quoted_so_templates_stay_valid_yaml():
     for path in TEMPLATES.glob("*.md"):
         fm, _, _, error = v.parse_frontmatter(path.read_text(encoding="utf-8"))
         assert error is None, path.name
+
+
+def test_voice_template_is_a_profile_with_a_banned_list(make_vault):
+    text = (TEMPLATES / "voice.md").read_text(encoding="utf-8").replace("{{language}}", "en")
+    text = text.replace("{{created}}", "2026-11-16").replace("{{updated}}", "2026-11-16")
+    fm, body, _, error = v.parse_frontmatter(text)
+    assert error is None and fm["type"] == "profile"
+    assert [s.title for s in v.sections(body) if s.level == 2] == ["How I sound", "Signature moves", "Banned", "Examples"]
+    root = make_vault({"me/voice.md": text})
+    patterns, problems = lint.banned_patterns(root)
+    assert problems == [] and len(patterns) == 9
+    assert any(p.search("a " + chr(0x2014) + " b") for _, p in patterns), "the em dash is banned by default"
+    assert lint.check_schema(lint.Context(root)) == []

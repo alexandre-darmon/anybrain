@@ -458,3 +458,135 @@ Format: `D<number> · <title>`, with the build step and the PRD sections involve
     - An Obsidian plugin: TypeScript, a second stack, its own release path, breakage on Obsidian updates, it duplicates Dataview, and it ties observability to one editor.
     - Either can come later, if a need appears that a Markdown page cannot meet, such as interactive drill-down over months. It would then read the same local files.
 - **When.** P2, with continuous observability (22.6), because the daily traces only exist from P2. The owner did not give a date; an earlier version fed by eval runs only is Q32.
+
+## D041 · Claude Code only, for now
+
+- **Owner decision, 2026-11-18:** "We stay on Claude Code for now, so no OpenCode."
+- **Effect.**
+  - Step 9 (the skills in OpenCode with the local profile) is deferred.
+  - The OpenCode half of step 10's acceptance is deferred with it.
+  - G5 (two harnesses) remains a goal, not a gate for the release.
+  - The code stays as it is, because removing it would cost more than keeping it:
+    - `init` and `update` still render `opencode.json` from the routing table;
+    - `anybrain eval --harness opencode` and its trace adapter still exist, unverified (D033).
+- **What this leaves open.**
+  - The local profile is not exercised by any real run. Claude Code always runs the frontier profile, and confidential folders are kept from it by the deny rules (D027).
+  - The `local` judge path is tested with stand-ins only.
+- **Release.** Step 13 no longer waits for step 9. Its criterion "init on a clean macOS user works" is checked in CI by a job on a fresh macOS runner with an empty home folder. It installs the package as an owner would, not in editable mode, runs `init` twice in an iCloud-style path, then `doctor`, `index --check` and `lint`.
+
+## D043 · init refuses a folder that already holds someone's notes
+
+- **What happened, 2026-11-18.** The owner pasted a copy of the legacy Obsidian vault into `Documents/brain`, the folder meant for the new vault.
+- **Why it is a problem.** `init` would have created `library/`, `wiki/` and the rest next to `Readwise/`, `summaries/` and the other legacy folders. The migration could not snapshot them either, because a legacy folder inside the vault is refused (D035).
+- **Decision.** `init` refuses a folder that `anybrain` never initialised (no `.harness/render.json`) when it holds Markdown notes outside the vault layout. Hidden folders such as `.obsidian/` are allowed, and so is an empty Obsidian vault. The message says what to do instead:
+  1. move the notes to a separate folder, for example `brain-legacy` next to it;
+  2. run `init` on the empty folder;
+  3. bring the notes in with `anybrain migrate <vault> inventory <legacy folder>`.
+- **Scope.** A vault `anybrain` already initialised is never refused, whatever it holds.
+
+## D044 · Content, phase P1b (step 15)
+
+- **When.** The owner asked on 2026-11-18 to move on while the real migration (step 14) waits for them. The P1b code is built now. Its exit criteria still need real use after step 14: 4 pieces published, the edit ratio measured, content evals passing (Q33).
+- **Pages.** Three types join `type` (11.1): `draft` in `content/drafts/`, `published` in `content/published/`, `channel` in `content/channels/`. The voice profile is `me/voice.md`, `type: profile`. `--schema` checks the fields of 11.10 and 11.11:
+  - a channel from the list;
+  - `audience`, `angle` and `status`;
+  - a `brief` in `raw/inbox/` for an application, bio or email;
+  - `url`, `published`, `draft` and an `edit_ratio` from 0 to 1 on a published piece.
+  `content/ideas.md` is an append-only file, like `log.md`, not a page.
+- **init.** It creates `content/channels/`, `content/drafts/`, `content/published/`, `.harness/drafts/`, `content/ideas.md`, and `me/voice.md` with the default banned list of 11.13. The em dash is written `regex:\u2014`, a Python escape, so no file holds the character itself. A vault made before P1b gets the folders by running `init` again, which changes nothing else.
+- **`lint --content`** (15.4, 19.4b) reads the text a reader sees: the body without HTML comments, and for a draft without `## Notes for the owner`.
+  - **Banned patterns.** An error on a draft at `ready`, the status the checks gate. A warning on a draft still in progress.
+  - **Placeholders.** An error on a draft at `ready`.
+  - **Published pieces.** Banned patterns and placeholders are only warnings there, because a published piece is the owner's final text and fully protected (Q34).
+  - **Drafts already published or dropped** are history, and these two checks skip them.
+  - **Sources.** A source in `company/` or `finance/`, or a confidential or mission page, is an error. Sources are `sources` plus every `<!-- src: path -->`.
+  - **Other errors.** A client name from `.harness/clients.txt`, a draft without sources, and a channel without a guide.
+  - **Exit code.** `anybrain content check` exits 1 only on errors, since an error blocks `ready` and a warning does not.
+- **Edit ratio** (section 6, Q34). The characters inserted, deleted or replaced (a replacement counts as its longer side), over the length of the longer text. 0 is unchanged and 1 is rewritten. Additions count, so a draft the owner had to lengthen is not scored as close.
+  - Both texts are compared as a reader sees them, with whitespace normalised so that reflowing a paragraph is not an edit.
+  - `content diff` compares the snapshot with the published piece whose `draft` field names the draft, or else with the current draft.
+  - It prints the changed passages word by word, for the `publish` skill's summary of corrections.
+  - `content snapshot` keeps the first version saved: the ratio measures the owner's edits against what the agent first wrote.
+- **Index and stats** (14.2, 16.5).
+  - `content/index.md` lists drafts by status, then published pieces by date, then the rest, in the line formats of 14.2.
+  - `anybrain stats` prints each published piece's edit ratio and totals per channel.
+  - It also prints whether the 8th piece meets the 30% target, and whether the ratio went down over the last 8 pieces: the newer half's mean must be below the older half's.
+- **A reference fixed.** 10.3 pointed to a section 19.7 that does not exist; the rule it meant is 19.4b.
+
+## D045 · Steps 16 and 17: first real runs of the content skills
+
+- **Setup.** Claude Code 2.1.326, frontier profile, on a copy of `vault.example/` set up by `anybrain init`. The stand-in owner edited the draft between the two skills.
+- **Draft, run 1 (0.28 USD).** Asked for a post on naming a category, the agent wrote nothing. A draft on that topic already exists (`content/drafts/2026-11-15-name-the-category.md`), so it offered to finish that one or take one of its alternative angles. This is the repetition check of 15.10 step 3 working.
+- **Draft, run 2 (0.44 USD).** Asked for a post on niching until price stops being the comparison, it wrote `content/drafts/2026-11-18-niche-until-price-stops.md`. The step 16 criterion is met:
+  - 2 sources and 4 `src` comments;
+  - 1 placeholder in place of a story;
+  - the owner's position from the category design page used, and the overlap with the other draft named;
+  - `content check` clean, and the first version saved.
+- **Publish (0.26 USD).** After the owner's edits, the agent wrote the published piece verbatim, set the draft to `published`, stored `edit_ratio: 0.30` from `content diff`, and logged 4 voice corrections with `feedback add`: cut the framework label, shorter sentences, a real story, a plainer closing question.
+- **Eval, case `g010` (0.30 USD, then 0.44 USD).**
+  - **First run.** It failed because the agent rightly refused to repeat the existing draft. The example golden case asked for that same topic, so it now asks for the niche topic.
+  - **Second run.** It passed: `content_check` clean, and the judge, who now sees the draft written, confirmed the owner's position, 4 `src` comments and a placeholder instead of an invented story.
+  - **Cost gate.** Content cases no longer count in the "median files read" gate. That gate measures answers (17.3, the `ask` cap of 8 files), and a draft reads its guide, template and voice on top of up to 10 material files.
+- **Finding: the voice is local (Q35).** `me/voice.md` is in `me/`, routed local, so a frontier session cannot read it.
+  - The agent behaved inconsistently: it wrote without the voice in one run, and stopped to ask in another.
+  - The draft skill now says: when the profile may not read `me/voice.md`, write from the channel guide and the learned rules, and say so in the notes.
+  - The banned list is still enforced by `anybrain content check`, which reads the file itself.
+  - Whether to route `me/voice.md` to frontier is the owner's decision.
+- **Finding: same-day file names (Q36).** A draft published the day it was written gave the published piece the same file name as the draft. 13.2 forbids that, and lint reported a duplicate. The publish skill now adds `-published` to the published piece's name in that case only.
+- **Total cost of these runs:** 1.72 USD.
+
+## D046 · Review of P1b and of the init guard
+
+- **Process.** An adversarial review of steps 15 to 17 and of D043 raised about 40 findings. They were verified by reproduction, or were clear enough to fix on sight. Every code fix has a regression test.
+- **Content safety (19.4, 19.4b).**
+  - **Client names.** They are matched in every written form, with one matcher shared with `lint --secrets`: line-wrapped, a non-breaking space, unaccented, a curly apostrophe, decomposed accents, emphasis stars. The title, description and angle are searched too. Before, all of these passed at `ready`.
+  - **Sources resolve the way links resolve** (13.2): `[[wikilink]]`, a path without `.md`, `#anchor`, `|alias`, `[text](path)`, quotes, a title or alias. A `..` path is folded, and one that leaves the vault is refused. A source that cannot be resolved is an error at `ready`, so the check fails closed.
+  - **What counts as a source.** `src` comments are read in every case (`SRC:`, `source:`) and across lines, and so is the "Sources used" line of the notes. A link in the body to a confidential page is an error in the content check too.
+  - **`content/ideas.md`**, which frontier models read, is checked for client names and local-only sources.
+  - **Local-only drafts.** `content check` masks a local-only draft outside the local profile, and `content diff` hides its changed passages there.
+- **Checks that could be bypassed.**
+  - **Folders decide types.** A page in `content/drafts/`, `content/published/` or `content/channels/` must have the matching type, and these folders hold no subfolders.
+  - **Placeholders** are matched in any case, with or without a colon: `[YOUR STORY]`, `[Your story: ...]`.
+  - **The banned list** accepts numbered and `+` bullets and quoted or backticked entries. A regex that matches an empty text, or one that is invalid, is reported and skipped. A missing `me/voice.md` or `## Banned` section is reported when drafts exist.
+- **Published pieces.** Banned patterns and placeholders are no longer reported on published pieces. They are the owner's final, fully protected text, and a finding nobody can act on would make `lint` exit 1 for good. The safety checks still apply: confidential sources, client names, the channel guide.
+- **Edit ratio.** Texts are aligned word by word, each word with its following spaces, then refined letter by letter inside changed passages. The ratios equal the character-level ones on the fixtures, and an article now takes a fraction of a second instead of 13 to 21 seconds. A `.nan` or `.inf` ratio is a `--schema` error instead of a crash.
+- **Stats** suggest reviewing the voice only when the ratio did not go down and is still above the 30% target.
+- **The init guard (D043).** In a folder `anybrain` never initialised, every visible file counts, including attachments and files in folders named like the layout (a legacy `library/`). Exceptions: the vault's own root files and hand-written `index.md` files, which `init` keeps (Q19). Obsidian's sample `Welcome.md` gets its own message: delete it, then run `init` again. `update` refuses such a folder, so it can never mark it as initialised.
+- **Skills.**
+  - **draft:**
+    - fix warnings as well as errors;
+    - voice samples go to `raw/inbox/voice-samples/` only;
+    - a draft in progress counts for repetition, not only published pieces;
+    - a mission page the owner names is used for its learning only, never cited (Q37);
+    - a past mission is described at the level of detail of `me/cv.md` (19.4b).
+  - **lint:** it never edits a fully protected file, and takes content ideas only from pages that are not local-only.
+  - **The vault's `AGENTS.md`** says how `content/published/` is written.
+- **Docs.** The judge rubric says the judge sees the draft of a content case (Q38). D043 is now in section 26 (Q39). D045's mention of 15.10 step 3 is completed here: the agent also checked drafts in progress, which the draft skill now asks for.
+
+## D047 · The voice is readable by every model (Q35), and the last fixes before 0.1.0
+
+- **Owner decision, 2026-11-18:** "Yes for Q35, make voice.md readable by Claude."
+  - The default routing gains `"me/voice.md" = "frontier"`, like `me/preferences.md` (Q15). The file holds writing traits and sentences already published, no private facts.
+  - `AGENTS.md`, the shared rule 3 of every skill and PRD 10.3 and 18.2 say so.
+  - The draft skill keeps its fallback for a vault whose owner routes the file local again.
+  - A vault made before this decision keeps its own `models.toml`: its owner adds the line and runs `anybrain update`.
+- **Measured live** with Claude Code 2.1.326 (0.23 USD). With the rendered rules `Read(me/*)`, `Read(!me/preferences.md)`, `Read(!me/voice.md)`, a session read `me/voice.md` and was refused `me/profile.md` ("File is in a directory that is denied by your permission settings"). A second file exception in the same folder works like the first (D027).
+- **Final review before the release.** A last adversarial review tried to break the fixes of D046. It confirmed 6 regressions, and its unverified findings held up when read. All are fixed with regression tests.
+  - **A client name with a star** (`E*Trade`) was no longer found, because stars were removed from the text but not from the name. The name is now normalised the same way.
+  - **The notes' "Sources used" line** turned every word into a source, so ordinary prose blocked `ready`. Only links and path-like tokens are read now, including under a bold label and in a nested list.
+  - **Source forms.**
+    - Paths in `src` comments may hold spaces: items are split on commas, semicolons and lines only.
+    - Markdown links accept `<...>` targets, vault-root and relative paths.
+    - A URL link is an external source and is skipped.
+    - A source moved after publication is a warning on a published piece, which nobody may edit.
+  - **Client names** are also searched in every frontmatter text (tags and audience included) and in the file name.
+  - **`content/ideas.md`** catches a name split across lines, and references to local-only paths such as `raw/docs/`.
+  - **Placeholders.** `[YOUR NUMBERS: ...]` counts, the text of a link such as `[your story](url)` does not.
+  - **The banned list** removes only one pair of matching quotes around an entry, so inner spaces and apostrophes in a regex stay.
+  - **Edit ratio.** The common beginning and end of a changed passage are set aside, so a one-letter fix in a long word or link counts one letter. A long passage is refined by finer words.
+  - **Stats** state every time the ratio did not go down over 8 pieces (16.5). They advise a review only above the 30% target.
+  - **The init guard**:
+    - accepts pages `anybrain` could have made: a copy of `vault.example`, or a vault restored from a backup without `render.json`;
+    - accepts CSV files in `company/` and `finance/`;
+    - refuses a linked folder;
+    - exempts hand-written `index.md` files only at the root and in domain folders.

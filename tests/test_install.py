@@ -143,7 +143,8 @@ def test_rendered_harness_configs_follow_the_default_routing(brain):
     assert opencode["permissions"] == (
         [{"action": "read", "resource": r, "effect": "deny"} for r in denied]
         + [{"action": "read", "resource": "journal/reports/**", "effect": "allow"},
-           {"action": "read", "resource": "me/preferences.md", "effect": "allow"}])
+           {"action": "read", "resource": "me/preferences.md", "effect": "allow"},
+           {"action": "read", "resource": "me/voice.md", "effect": "allow"}])
     local = opencode["agents"]["local"]
     assert local["model"].startswith("ollama/")
     assert [r["resource"] for r in local["permissions"] if r["effect"] == "allow"] == denied
@@ -153,7 +154,7 @@ def test_claude_rules_deny_every_local_folder_and_reopen_the_exceptions():
     rules = install.claude_read_rules(v.DEFAULT_ROUTING_OBJ)
     assert rules == ["Read(./.harness/baseline/**)", "Read(./.harness/traces/**)", "Read(./company/**)",
                      "Read(./finance/**)", "Read(journal/*)", "Read(!journal/reports/**)", "Read(me/*)",
-                     "Read(!me/preferences.md)", "Read(./raw/docs/**)", "Read(./.harness/.env)",
+                     "Read(!me/preferences.md)", "Read(!me/voice.md)", "Read(./raw/docs/**)", "Read(./.harness/.env)",
                      "Read(./.harness/clients.txt)", "Read(./.harness/names.txt)"]
 
 
@@ -354,3 +355,70 @@ def test_doctor_reaches_a_local_endpoint(brain, capsys):
         assert "ok    local model endpoint answers" in capsys.readouterr().out
     finally:
         server.shutdown()
+
+
+def test_init_refuses_a_folder_holding_a_pasted_legacy_vault(tmp_path, home, capsys):
+    brain = tmp_path / "brain"
+    (brain / "Readwise" / "Books").mkdir(parents=True)
+    (brain / "Readwise" / "Books" / "The Snow Leopard.md").write_text("highlights\n")
+    (brain / "Deep Work.md").write_text("my notes\n")
+    (brain / ".obsidian").mkdir()
+    assert cli.main(["init", str(brain)]) == 2
+    err = capsys.readouterr().err
+    assert "already holds 2 file(s) that anybrain did not create" in err and "brain-legacy" in err
+    assert not (brain / "library").exists() and not (brain / "AGENTS.md").exists(), "nothing written"
+
+
+def test_init_accepts_an_empty_obsidian_vault_and_an_existing_anybrain_vault(tmp_path, home):
+    brain = tmp_path / "brain"
+    (brain / ".obsidian").mkdir(parents=True)
+    assert cli.main(["init", str(brain)]) == 0
+    (brain / "library" / "my-book.md").write_text(
+        "---\ntitle: My book\ntype: book\ndescription: Says one thing.\ntags: []\nlanguage: en\n"
+        "created: 2026-11-18\nupdated: 2026-11-18\nsources: []\nsensitivity: public\nauthor: A B\nstatus: to-read\n---\n")
+    assert cli.main(["init", str(brain)]) == 0, "a vault anybrain made is not foreign, whatever it holds"
+
+
+
+def test_the_guard_sees_legacy_files_in_layout_named_folders_and_update_keeps_it(tmp_path, home, capsys):
+    brain = tmp_path / "brain"
+    (brain / "library").mkdir(parents=True)
+    (brain / "library" / "Old Book.md").write_text("legacy notes, no frontmatter\n")
+    assert cli.main(["init", str(brain)]) == 2
+    assert "library/Old Book.md" in capsys.readouterr().err
+    assert cli.main(["update", str(brain), "--yes"]) == 2, "update must not mark the folder as initialised"
+    assert not (brain / ".harness" / "render.json").exists()
+    assert cli.main(["init", str(brain)]) == 2, "still refused"
+
+
+def test_a_fresh_obsidian_vault_says_to_delete_its_welcome_page(tmp_path, home, capsys):
+    brain = tmp_path / "brain"
+    (brain / ".obsidian").mkdir(parents=True)
+    (brain / "Welcome.md").write_text("Obsidian's welcome page\n")
+    assert cli.main(["init", str(brain)]) == 2
+    assert "sample page Welcome.md: delete it" in capsys.readouterr().err
+    (brain / "Welcome.md").unlink()
+    assert cli.main(["init", str(brain)]) == 0
+
+
+
+def test_init_accepts_a_copy_of_the_example_vault(tmp_path, home):
+    import shutil
+    from conftest import EXAMPLE
+    brain = tmp_path / "brain"
+    shutil.copytree(EXAMPLE, brain)
+    assert cli.main(["init", str(brain)]) == 0, "pages anybrain could have made are not foreign"
+
+
+def test_the_guard_sees_a_linked_folder_and_an_index_outside_the_layout(tmp_path, home, capsys):
+    legacy = tmp_path / "elsewhere"
+    legacy.mkdir()
+    (legacy / "note.md").write_text("legacy\n")
+    brain = tmp_path / "brain"
+    brain.mkdir()
+    (brain / "Old").symlink_to(legacy)
+    (brain / "Notes").mkdir()
+    (brain / "Notes" / "index.md").write_text("a legacy hub\n")
+    assert cli.main(["init", str(brain)]) == 2
+    err = capsys.readouterr().err
+    assert "Old" in err and "Notes/index.md" in err

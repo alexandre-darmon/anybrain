@@ -71,6 +71,19 @@ def page_line(page: v.Page, link: str, graph: g.Graph, domain: str = "") -> str:
     elif page.type == "project":
         review = v.as_date(fm.get("next_review"))
         parts = [_text(fm.get("status")), _text(fm.get("kind")), f"review {review.isoformat()}" if review else None]
+    elif page.type == "draft":
+        from . import lint
+
+        head = f"- [{page.title}]({link}): {_text(fm.get('angle')) or page.description}"
+        placeholders = len(lint.PLACEHOLDER_RE.findall(lint.content_text(page)))
+        parts = [_text(fm.get("channel")), _text(fm.get("status")), _plural(len(lint.content_sources(page)), "source"),
+                 _plural(placeholders, "placeholder")]
+    elif page.type == "published":
+        date = v.as_date(fm.get("published"))
+        ratio = fm.get("edit_ratio")
+        edit = (f"edit {round(ratio * 100)}%" if isinstance(ratio, (int, float)) and not isinstance(ratio, bool)
+                and 0 <= ratio <= 1 else None)  # .nan or .inf in YAML is a --schema error, not a crash
+        parts = [_text(fm.get("channel")), date.isoformat() if date else None, edit]
     else:
         parts = []
     extra = " · ".join(str(p) for p in parts if p not in (None, ""))
@@ -97,10 +110,36 @@ def _group_order(known: list[str], key: str) -> int:
     return known.index(key) if key in known else len(known)
 
 
+DRAFT_ORDER = ["ready", "drafting", "idea", "published", "dropped"]
+
+
+def _content_groups(pages: list[v.Page]) -> list[tuple[str, list[v.Page]]]:
+    """content/index.md: drafts by status, published pieces by date, then channel guides and the rest (10.2)."""
+    drafts = [p for p in pages if p.type == "draft"]
+    published = [p for p in pages if p.type == "published"]
+    others = [p for p in pages if p.type not in ("draft", "published")]
+
+    def status(p: v.Page) -> int:
+        value = p.meta.get("status")
+        return DRAFT_ORDER.index(value) if value in DRAFT_ORDER else len(DRAFT_ORDER)
+
+    drafts = sorted(sorted(sorted(drafts, key=lambda p: p.rel), key=_updated, reverse=True), key=status)
+    published = sorted(sorted(published, key=lambda p: p.rel),
+                       key=lambda p: str(v.as_date(p.meta.get("published")) or ""), reverse=True)
+    others = sorted(others, key=lambda p: p.rel)
+    return [(name, group) for name, group in (("drafts", drafts), ("published", published), (OTHER_GROUP, others)) if group]
+
+
 def domain_index(domain: str, pages: list[v.Page], graph: g.Graph) -> str:
     out = [HEADER, f"# {domain}", ""]
     if not pages:
         out += ["No pages yet.", ""]
+        return "\n".join(out)
+    if domain == "content":
+        for name, group in _content_groups(pages):
+            out += [f"## {name}", ""]
+            out += [page_line(page, page.rel[len(domain) + 1:], graph, domain) for page in group]
+            out.append("")
         return "\n".join(out)
     known = _known_statuses(pages)
     groups: dict[str, list[v.Page]] = {}
@@ -119,6 +158,11 @@ def domain_index(domain: str, pages: list[v.Page], graph: g.Graph) -> str:
 
 
 def _domain_summary(pages: list[v.Page]) -> str:
+    if pages and all(p.folder == "content" for p in pages):
+        drafts = [p for p in pages if p.type == "draft"]
+        ready = sum(p.meta.get("status") == "ready" for p in drafts)
+        published = sum(p.type == "published" for p in pages)
+        return f"{_plural(len(drafts), 'draft')} ({ready} ready), {published} published"
     known = _known_statuses(pages)
     if not known or not pages:
         return _plural(len(pages), "page")

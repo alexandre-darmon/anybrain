@@ -413,14 +413,14 @@ brain/
 
 | Folder | Who writes | Default `sensitivity` | Model route | Notes |
 | --- | --- | --- | --- | --- |
-| `me/` | Owner; agent appends to `preferences.md` "Learned rules" only after approval | personal | local, except `me/preferences.md` → frontier (Q15) | `preferences.md` holds rules for the agent, never private facts: every model reads it |
+| `me/` | Owner; agent appends to `preferences.md` "Learned rules" only after approval | personal | local, except `me/preferences.md` and `me/voice.md` → frontier (Q15, Q35) | `preferences.md` holds rules for the agent and `voice.md` writing traits, never private facts: every model reads them |
 | `raw/` | Owner and capture tools; **agent never edits** | personal | frontier, except `raw/docs/` → local | Agent may create new files only in `raw/inbox/` when asked to save something |
 | `library/` | Agent (except protected sections) | public | frontier | |
 | `wiki/` | Agent (except protected sections) | public | frontier | |
 | `projects/` | Agent and owner | personal; `kind: mission` → confidential | frontier with `anonymize`, missions → local | |
 | `company/`, `finance/` | Owner; agent reads, may append to `decisions.md` on request | confidential | local only | |
 | `journal/` | Agent | personal | local | |
-| `content/drafts/`, `content/ideas.md` | Agent writes, owner edits | public | frontier | Allowed sources limited by section 19.7. Drafts of `channel: application` are personal |
+| `content/drafts/`, `content/ideas.md` | Agent writes, owner edits | public | frontier | Allowed sources limited by section 19.4b. Drafts of `channel: application` are personal |
 | `content/published/`, `content/channels/` | Owner (published text arrives through `publish`) | public | frontier | Fully protected |
 | `.harness/` | Scripts and owner | n/a | n/a | Agent reads `models.toml`, `graph.json`; writes only through CLI commands |
 
@@ -435,7 +435,7 @@ All pages are Markdown with YAML frontmatter delimited by `---`. Scripts read fr
 | Field | Type | Required | Rule |
 | --- | --- | --- | --- |
 | `title` | string | yes | Human title, any language |
-| `type` | enum | yes | `book`, `concept`, `note`, `project`, `profile`, `brief`, `report` |
+| `type` | enum | yes | `book`, `concept`, `note`, `project`, `profile`, `brief`, `report`, and with P1b `draft`, `published`, `channel` |
 | `description` | string | yes | ≤ 150 characters. Becomes the index line. States what the page says, not what it is ("Win by creating the category you are judged in", not "A page about category design") |
 | `tags` | list[str] | yes (may be empty) | kebab-case, reuse existing tags first |
 | `aliases` | list[str] | no | Other names used in links (`[[Snow Leopard]]`) |
@@ -994,6 +994,7 @@ api_key_env = ""
 default     = "frontier"
 "me/"       = "local"
 "me/preferences.md" = "frontier"                # rules for the agent, read by every model (Q15)
+"me/voice.md" = "frontier"                      # how the owner writes, read by every model (Q35)
 "journal/"  = "local"
 "company/"  = "local"
 "finance/"  = "local"
@@ -1314,7 +1315,7 @@ Time budget: steps 1 to 7 over one weekend; steps 8 to 13 over one to two weeks 
 | 6 | `install.py`: `init`, `update` (hash-aware), `doctor`; AGENTS template rendering; skill linking into all configured dirs; harness configs; Obsidian config merge | `init` twice = no-op; `update` keeps owner-modified files unless confirmed; `doctor` reports a planted `.icloud` file |
 | 7 | `anonymize.py`, `feedback.py`, `stats.py` | Acceptance of 16 and 19.3 |
 | 8 | Skills `ingest`, `ask`, `lint`, `recommend`, `feedback` rewritten to sections 15 and 16 | Each run once on `vault.example/` in Claude Code; results recorded in `docs/decisions.md` |
-| 9 | Same skills in OpenCode with the local profile | Recorded; any harness-specific wording removed |
+| 9 | Same skills in OpenCode with the local profile | Recorded; any harness-specific wording removed. **Deferred by the owner (2026-11-18): Claude Code only for now (D041)** |
 | 10 | `evals.py`: runner, graders, judge in fresh context, cost cap, gates, baseline; `evals/golden.example.yaml` with ≥ 8 cases covering every tag; `trace.py` with one adapter per harness and a run trace per case (22.5); `anybrain trace show` | Runs end to end on `vault.example/` with both harnesses; every case has a trace with files read, tokens and cost; a safety case that reads a local-only file on frontier fails |
 | 11 | `migrate.py` + `migrate` skill; fixture `legacy-obsidian/` | Acceptance of 21.3 on the fixture |
 | 12 | README per 9.4; `docs/architecture.md`, `docs/prior-art.md`, `docs/decisions.md` | No em dashes (a search for the character U+2014 in `*.md` returns nothing); every claim maps to a section of this PRD |
@@ -1387,6 +1388,13 @@ P2, P3, P4 are planned only after step 18 and the 4-week measure.
 | Q30 | What counts as a file read in a shell command, for `files_read` and `local_only_read_on_frontier` (22.5)? | **Decided by the owner (2026-11-18): yes.** Conservative: every file a command names, in any word or quoted code, except for a short list of commands that show no content; a recursive search reads the local-only files under its folders; a failed command that ran counts. Records also carry `files_searched` and `attempts` (D036) |
 | Q31 | A project migrated from a legacy note without a review date gets one computed by code (owner decision, 2026-11-18). How far ahead? | 30 days after the migration, the date the inventory prints and `migrate check` verifies (D037) |
 | Q32 | The dashboard of 22.7 is P2, with continuous observability. Should it come earlier, fed only by eval runs (P1) and the vault's own figures? | P2, with 22.6; the owner asked for it on 2026-11-18 without a date |
+| Q33 | P1b was built before the owner's real migration (step 14), which section 7 and 24 put first. Does P1b's exit still wait for step 14? | Yes: the code is built (owner decision, 2026-11-18), the exit criteria (4 pieces published, edit ratio measured, content evals) need real use after step 14 (D044) |
+| Q34 | How is the edit ratio counted, and how strict are content checks on text the owner already published? | Characters inserted, deleted or replaced over the longer text; banned patterns and placeholders are warnings on published pieces, which are the owner's protected text (D044) |
+| Q35 | `me/voice.md` sits in `me/`, which the default routing keeps local, so a Claude Code session (frontier) cannot read the voice traits when drafting. Should it be readable by frontier models, like `me/preferences.md` (Q15)? It holds writing traits and sentences already published, no private facts | **Decided by the owner (2026-11-18): yes, `me/voice.md` is routed frontier like `me/preferences.md`.** The draft skill keeps its fallback for a vault that routes it local (D047) |
+| Q36 | A draft written and published the same day gets the same file name in `content/drafts/` and `content/published/` (11.10, 11.11), which 13.2 forbids. | The published piece takes the suffix `-published` in that case only (D045) |
+| Q37 | 15.10 lets a draft use a mission page the owner names, while `lint --content` makes any mission source an error. How is that learning sourced? | The learning is written in general terms and never cited: not in `sources`, not in a `src` comment, not in the notes, which say a named page was used. The check stays an error (D046) |
+| Q38 | 22.2 says the judge sees the question, the behaviour, the answer and the cited files; a content case is about the draft written. And 17.3's cost gate measures answers. | The judge also sees the draft a content case wrote; content cases do not count in the files-read gate (D045) |
+| Q39 | What does `init` do in a folder that already holds someone's files, such as a legacy vault pasted into the target folder? | It refuses, names the files and says how to separate and migrate them; the vault's own root files and hand-written `index.md` files are kept; `update` does not arm a folder `init` never made (D043, D046) |
 
 ---
 

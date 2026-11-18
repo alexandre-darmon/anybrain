@@ -51,11 +51,10 @@ def test_shared_rules_are_repeated_at_the_top(path):
     assert len(re.findall(r"^\d+\. ", rules, re.M)) == 8
 
 
-def test_p1_skills_exist():
+def test_p1_and_p1b_skills_exist():
     names = {p.parent.name for p in SKILLS}
-    assert {"ingest", "ask", "lint", "recommend", "feedback", "daily-brief"} <= names
-    assert not names & {"draft", "publish"}  # P1b (docs/decisions.md D004)
-    assert "migrate" in names
+    assert {"ingest", "ask", "lint", "recommend", "feedback", "daily-brief", "migrate"} <= names
+    assert {"draft", "publish"} <= names  # P1b, built before step 14 at the owner's request (D044)
 
 
 def test_commands_named_in_skills_exist():
