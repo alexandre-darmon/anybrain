@@ -493,7 +493,7 @@ Format: `D<number> · <title>`, with the build step and the PRD sections involve
   - a `brief` in `raw/inbox/` for an application, bio or email;
   - `url`, `published`, `draft` and an `edit_ratio` from 0 to 1 on a published piece.
   `content/ideas.md` is an append-only file, like `log.md`, not a page.
-- **init.** It creates `content/channels/`, `content/drafts/`, `content/published/`, `.harness/drafts/`, `content/ideas.md`, and `me/voice.md` with the default banned list of 11.13. The em dash is written `regex:—`, a Python escape, so no file holds the character itself. A vault made before P1b gets the folders by running `init` again, which changes nothing else.
+- **init.** It creates `content/channels/`, `content/drafts/`, `content/published/`, `.harness/drafts/`, `content/ideas.md`, and `me/voice.md` with the default banned list of 11.13. The em dash is written `regex:\u2014`, a Python escape, so no file holds the character itself. A vault made before P1b gets the folders by running `init` again, which changes nothing else.
 - **`lint --content`** (15.4, 19.4b) reads the text a reader sees: the body without HTML comments, and for a draft without `## Notes for the owner`.
   - **Banned patterns.** An error on a draft at `ready`, the status the checks gate. A warning on a draft still in progress.
   - **Placeholders.** An error on a draft at `ready`.
