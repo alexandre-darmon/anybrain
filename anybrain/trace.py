@@ -187,16 +187,34 @@ def _add(items: list[str], value: str) -> None:
 HEREDOC_RE = re.compile(r"(?<!<)<<(?!<)-?\s*(['\"]?)([A-Za-z_][\w.-]*)\1")
 
 
+INTERPRETERS = re.compile(r"(?<![\w.-])(?:ba|z|da|k|fi)?sh\b|python[\d.]*|node|ruby|perl|php|osascript|R(?:script)?\b|"
+                          r"deno|bun|lua|tclsh|awk|xargs|eval|source|\.\s")
+DATA_SINKS = {"cat", "tee"}
+
+
 def _strip_heredocs(command: str) -> str:
-    """Drop the bodies of here-documents: their lines are data written to a file, not commands."""
+    """Drop the bodies of here-documents written to a file (`cat > f <<EOF`, `tee f <<EOF`): their lines are
+    data, not commands. A body that an interpreter may run (`python3 - <<EOF`, `cat <<EOF | sh`) is kept, so
+    the paths it names are still seen."""
     lines, kept, i = command.split("\n"), [], 0
     while i < len(lines):
-        kept.append(lines[i])
-        delimiters = [m.group(2) for m in HEREDOC_RE.finditer(lines[i])]
+        line = lines[i]
+        kept.append(line)
+        delimiters = [m.group(2) for m in HEREDOC_RE.finditer(line)]
         i += 1
+        if not delimiters:
+            continue
+        head = line[:line.index("<<")]
+        first = re.split(r"&&|\|\||;", head)[-1].split()
+        sink = bool(first) and Path(first[0]).name in DATA_SINKS and not INTERPRETERS.search(line)
         for delimiter in delimiters:
+            body_start = i
             while i < len(lines) and lines[i].strip() != delimiter:
                 i += 1
+            if not sink:
+                kept.extend(lines[body_start:i])
+            if i < len(lines):
+                kept.append("")  # the delimiter line, as an empty command
             i += 1
     return "\n".join(kept)
 
@@ -339,12 +357,23 @@ def shell_escapes(command: str, root: Path, origin: Path | None) -> list[str]:
     found: list[str] = []
     if origin is None:
         return found
+    # The real vault's path as text, anywhere in the command: inside quotes, code, or with spaces in it
+    # (every iCloud vault has "Mobile Documents" in its path), which word splitting would cut.
+    home = os.path.expanduser("~")
+    forms = {os.path.normpath(os.path.abspath(origin)), os.path.realpath(origin)}
+    forms |= {"~/" + os.path.relpath(f, home) for f in list(forms) if f.startswith(home + os.sep)}
+    text = _strip_heredocs(command)
     for words, inputs, outputs, cwd in _walk(command, root):
         for word in words + inputs + outputs:
             expanded = os.path.expandvars(os.path.expanduser(word))
             for candidate in [expanded] + [m for m in PATHISH_RE.findall(expanded) if m != expanded]:
                 if escapes(candidate, root, origin, cwd):
                     _add(found, os.path.normpath(candidate if os.path.isabs(candidate) else os.path.join(cwd, candidate)))
+    if not found:
+        for form in sorted(forms, key=len, reverse=True):
+            if re.search(re.escape(form) + r"(?![\w.-])", text):
+                _add(found, form)
+                break
     return found
 
 
@@ -383,8 +412,9 @@ def files_from_shell(command: str, root: Path, origin: Path | None = None) -> tu
         for search in found:
             if search not in searches:
                 searches.append(search)
-        for i, word in enumerate(words[1:], start=1):
-            if i in not_paths:
+        # the first word too, when it is not a command but a path: a line of code in a heredoc an interpreter runs
+        for i, word in enumerate(words):
+            if i in not_paths or (i == 0 and not _is_file(relative(word, root, origin, cwd), root, origin)):
                 continue
             for candidate in [word] + [m for m in PATHISH_RE.findall(word) if m != word]:
                 rel = relative(candidate, root, origin, cwd)
@@ -699,6 +729,9 @@ def iter_records(vault: Path) -> list[dict]:
         for result in data.get("results") or []:
             if isinstance(result.get("trace"), dict):
                 records.append(result["trace"])
+        for result in data.get("superseded") or []:  # replaced by a rerun, but what they did still counts
+            if isinstance(result.get("trace"), dict):
+                records.append({**result["trace"], "superseded": True})
     return sorted(records, key=lambda r: str(r.get("started") or ""))
 
 
@@ -706,6 +739,8 @@ def format_record(record: dict) -> list[str]:
     tokens = record.get("tokens") or {}
     cost = record.get("cost_usd")
     label = record.get("case_id") or record.get("skill") or "session"
+    if record.get("superseded"):
+        label += " (replaced)"
     head = (f"{str(record.get('started', ''))[:16].replace('T', ' ')}  {record.get('trigger', '?'):<7} {label:<10} "
             f"{record.get('harness', '?')} {record.get('profile', '?'):<8} "
             f"read {len(record.get('files_read') or [])}, wrote {len(record.get('files_written') or [])}, "

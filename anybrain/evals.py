@@ -122,17 +122,21 @@ def harness_command(models: dict, harness: str, prompt: str, profile: str, budge
 
 
 def copy_vault(vault: Path, parent: Path) -> Path:
-    """A throwaway copy of the vault, without eval runs, traces and git data."""
+    """A throwaway copy of the vault, without eval runs, traces and git data.
+
+    Links are copied as the files they point to, so a folder of the vault that is a link to the owner's notes
+    elsewhere cannot be written through from the copy (docs/decisions.md D038).
+    """
     target = parent / "vault"
 
     def ignore(directory: str, names: list[str]) -> set[str]:
-        rel = Path(directory).resolve().relative_to(vault.resolve()).as_posix()
+        rel = Path(os.path.relpath(directory, vault)).as_posix()
         skipped = {".git"} & set(names)
         if rel == ".harness":
             skipped |= {"baseline", "traces"} & set(names)
         return skipped
 
-    shutil.copytree(vault, target, symlinks=True, ignore=ignore)
+    shutil.copytree(vault, target, symlinks=False, ignore=ignore, ignore_dangling_symlinks=True)
     return target
 
 
@@ -328,7 +332,7 @@ def run_case(case: Case, vault: Path, models: dict, harness: str, profile: str, 
         return Result(case, "skipped", note=f"case runs on the {case.profile} profile only")
     attempts = int(settings.get("retries", 2)) + 1
     adapter = tr.adapter_for(harness)
-    records, run, spent = [], None, 0.0
+    records, run, spent, copy_error = [], None, 0.0, ""
     for attempt in range(attempts):
         left = None if budget is None else budget - spent
         if left is not None and left < 0.01:
@@ -338,10 +342,14 @@ def run_case(case: Case, vault: Path, models: dict, harness: str, profile: str, 
         with tempfile.TemporaryDirectory(prefix="anybrain-eval-") as tmp:
             try:
                 root = copy_vault(vault, Path(tmp))
-            except (shutil.Error, OSError) as exc:  # a file moved while it was copied: the owner is editing
+            except (shutil.Error, OSError, RecursionError) as exc:  # a file moved while it was copied
+                copy_error = f"the vault changed while it was copied ({str(exc)[:120]})"
                 if attempt + 1 < attempts:
                     continue
-                return Result(case, "error", note=f"the vault changed while it was copied ({str(exc)[:120]})", seen="")
+                if not records:
+                    return Result(case, "error", note=copy_error, seen="")
+                break  # keep what the earlier attempts did: their reads, writes and cost
+            copy_error = ""
             command = harness_command(models, harness, case.question, profile, left)
             out, err, code = run_command(command, root, profile, float(settings.get("timeout_s", 600)))
             run = adapter.parse(out, root, origin=vault)
@@ -357,6 +365,8 @@ def run_case(case: Case, vault: Path, models: dict, harness: str, profile: str, 
     if run is None:
         return Result(case, "not-run", note="cost cap reached")
     record = tr.merge_records(records)
+    if copy_error:
+        return Result(case, "error", answer=run.answer, trace=record, note=f"{run.error}; then {copy_error}", seen="")
     if not run.ok:
         return Result(case, "error", answer=run.answer, trace=record, note=run.error, seen=seen)
     graders, expected, judge_cost = {}, case.expected, 0.0
@@ -543,8 +553,13 @@ def fingerprint(vault: Path) -> dict[str, tuple[int, int, int]]:
     is set by the system on every write and cannot be set back, so a synced edit with an old date still counts.
     A file that disappears during the walk is skipped.
     """
-    found = {}
-    for directory, dirs, files in os.walk(vault, onerror=lambda error: None):
+    found, visited = {}, set()
+    for directory, dirs, files in os.walk(vault, onerror=lambda error: None, followlinks=True):
+        real = os.path.realpath(directory)
+        if real in visited:  # a link loop
+            dirs[:] = []
+            continue
+        visited.add(real)
         rel_dir = os.path.relpath(directory, vault)
         rel_dir = "" if rel_dir == "." else Path(rel_dir).as_posix() + "/"
         dirs[:] = [d for d in dirs if not (rel_dir == "" and d in FINGERPRINT_SKIP_DIRS)
@@ -554,9 +569,7 @@ def fingerprint(vault: Path) -> dict[str, tuple[int, int, int]]:
                 continue
             path = os.path.join(directory, name)
             try:
-                if os.path.islink(path):
-                    continue
-                stat = os.stat(path)
+                stat = os.stat(path)  # follows links: the content a case copies
             except OSError:
                 continue
             found[rel_dir + name] = (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
@@ -622,8 +635,15 @@ def run(vault: Path, harness: str = "claude", profile: str = "frontier", tags: l
             for future in concurrent.futures.as_completed(futures):
                 result = future.result()
                 earlier = results.get(result.case.id)
-                if earlier and result.status == "not-run":
-                    earlier.note = (earlier.note + "; " if earlier.note else "") + "stale: not run again (cost cap)"
+                capped = result.status == "not-run" or (result.status == "error" and (
+                    "error_max_budget_usd" in result.note or "cost cap" in result.note))
+                copy_failed = result.status == "error" and result.trace is None
+                if earlier and (capped or copy_failed):
+                    why = "cost cap" if capped else "the vault could not be copied"
+                    if "stale: not run again" not in earlier.note:
+                        earlier.note = (earlier.note + "; " if earlier.note else "") + f"stale: not run again ({why})"
+                    if result.trace:
+                        superseded.append(result)  # its reads, writes and cost still count
                     print(f"{result.case.id:<6} not run again: {result.note}")
                     continue
                 if earlier:
@@ -655,7 +675,7 @@ def run(vault: Path, harness: str = "claude", profile: str = "frontier", tags: l
         now = fingerprint(vault)
         if not stale(digest(now)) or escaped_writes() or len(relaunches) >= int(settings.get("relaunches", 2)):
             break
-        if max_cost is not None and spent["usd"] >= max_cost:
+        if max_cost is not None and max_cost - spent["usd"] < 0.01:
             print(f"the vault changed during the eval, but the cost cap of {max_cost} is reached: not running again")
             break
         print(f"the vault changed during the eval ({', '.join(changed_files(reference, now)[:5])}); waiting for "
@@ -668,6 +688,11 @@ def run(vault: Path, harness: str = "claude", profile: str = "frontier", tags: l
             break
         waited_s = round(time.time() - waited_from)
         rerun = stale(digest(settled))
+        if not rerun:  # the edits were undone: count the wait, run nothing
+            relaunches.append({"changed": changed_files(reference, settled), "rerun": [],
+                               "waited_s": round(time.time() - waited_from), "cost_usd": 0.0})
+            reference = settled
+            continue
         spent_before = spent["usd"]
         run_cases(rerun, " (run again)")
         relaunches.append({"changed": changed_files(reference, settled), "rerun": [c.id for c in rerun],

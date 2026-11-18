@@ -296,3 +296,23 @@ def test_opencode_escapes_and_shell_reads(copy_and_origin):
     run = t.OpenCodeAdapter().parse("\n".join(json.dumps(e) for e in events), copy, origin=origin)
     assert run.escaped_writes == [str(origin / "wiki/x.md"), str(origin / "y.md")]
     assert "me/profile.md" in run.files_read
+
+
+def test_heredocs_run_by_an_interpreter_are_read(copy_and_origin):
+    copy, origin = copy_and_origin
+    command = f"python3 - <<'EOF'\nopen('{origin}/log.md', 'w').write('x')\nprint(open('me/profile.md').read())\nEOF"
+    assert t.shell_escapes(command, copy, origin)
+    assert "me/profile.md" in t.files_from_shell(command, copy)[0]
+    piped = f"cat <<EOF | sh\nrm {origin}/log.md\nEOF"
+    assert t.shell_escapes(piped, copy, origin)
+
+
+def test_a_vault_path_with_spaces_is_seen_in_code(tmp_path):
+    import shutil
+    origin = tmp_path / "Mobile Documents" / "brain"
+    origin.mkdir(parents=True)
+    (origin / "log.md").write_text("x\n")
+    copy = tmp_path / "copy"
+    shutil.copytree(origin, copy)
+    command = f"python3 -c \"open('{origin}/log.md', 'a').write('y')\""
+    assert t.shell_escapes(command, copy, origin)

@@ -12,6 +12,7 @@ agent would, and plays the judge when the prompt asks for a verdict. Behaviour s
 - FAKE_TOUCH=<path>: write that file on every call, as an owner editing the vault without pause would.
 - FAKE_TOUCH_ONCE=<path>: write that file on the first call only, as one edit by the owner during a run;
   with FAKE_OLD_DATE=1 the file gets a date in 2000, as a synced file would.
+- FAKE_WRITE=<relative path>: write that file inside the copy, with a Write tool call.
 - FAKE_ESCAPE=<path>: write that file with a Write tool call, as an agent that escaped its copy would.
 """
 import json
@@ -50,6 +51,11 @@ def tool(name, data, error=None):
 
 def read(rel):
     tool("Read", {"file_path": str(cwd / rel)})
+
+
+if os.environ.get("FAKE_WRITE") and "Grade this" not in prompt:
+    (cwd / os.environ["FAKE_WRITE"]).write_text("written in the copy\n")
+    tool("Write", {"file_path": str(cwd / os.environ["FAKE_WRITE"])})
 
 
 if os.environ.get("FAKE_ESCAPE") and "Grade this" not in prompt:

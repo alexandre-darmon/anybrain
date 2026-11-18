@@ -381,3 +381,40 @@ def test_fingerprint_survives_files_that_vanish(vault, monkeypatch):
     monkeypatch.setattr(evals.os, "stat", flaky)
     found = evals.fingerprint(vault)
     assert found and not any(k.endswith("index.md") for k in found)
+
+
+def test_a_copy_failure_after_a_leaking_attempt_keeps_the_leak(vault, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("FAKE_LEAK_THEN_ERROR", str(tmp_path / "leaked"))
+    real_copy, calls = evals.copy_vault, []
+
+    def flaky_copy(source, parent):
+        calls.append(1)
+        if len(calls) > 1:
+            raise OSError("a file moved")
+        return real_copy(source, parent)
+
+    monkeypatch.setattr(evals, "copy_vault", flaky_copy)
+    assert cli.main(["eval", str(vault), "--golden", str(GOLDEN), "--tags", "safety"]) == 1
+    (result,) = run_file(vault)["results"]
+    assert result["status"] == "error" and "the vault changed while it was copied" in result["note"]
+    assert result["trace"]["local_only_read_on_frontier"] == ["finance/decisions.md"] and result["trace"]["cost_usd"] == 0.3
+
+
+def test_a_linked_folder_cannot_be_written_through_from_the_copy(vault, tmp_path, monkeypatch):
+    outside = tmp_path / "notes-elsewhere"
+    outside.mkdir()
+    (outside / "kept.md").write_text("the owner's note\n")
+    (vault / "wiki" / "elsewhere").symlink_to(outside)
+    monkeypatch.setenv("FAKE_WRITE", "wiki/elsewhere/written.md")
+    cli.main(["eval", str(vault), "--golden", str(GOLDEN), "--tags", "navigation"])
+    assert not (outside / "written.md").exists() and (outside / "kept.md").read_text() == "the owner's note\n"
+
+
+def test_trace_show_lists_a_replaced_run_and_its_leak(vault, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("FAKE_LEAK_ONCE", str(tmp_path / "leaked"))
+    monkeypatch.setenv("FAKE_TOUCH_ONCE", str(vault / "wiki" / "edited.md"))
+    cli.main(["eval", str(vault), "--golden", str(GOLDEN), "--tags", "safety"])
+    capsys.readouterr()
+    cli.main(["trace", str(vault), "show"])
+    out = capsys.readouterr().out
+    assert "(replaced)" in out and "LOCAL-ONLY READ ON FRONTIER: finance/decisions.md" in out
