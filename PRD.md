@@ -326,6 +326,7 @@ anybrain/
 | `anybrain migrate <vault> check` | Verify no owner paragraph from the legacy snapshot is missing from the vault | P1 |
 | `anybrain eval <vault> [--harness claude\|opencode] [--profile frontier\|local] [--tags T,...] [--max-cost EUR] [--freeze]` | Run the golden set, print pass rate and gates | P1 |
 | `anybrain stats <vault> [--weeks 4]` | Usage counts from `log.md` per week and per skill | P1 |
+| `anybrain stats <vault> --dashboard` | Write `journal/dashboard.md`: observability and vault figures to read in Obsidian (22.7) | P2 |
 | `anybrain transcribe <vault>` | Transcribe new audio in `raw/voice/` with local whisper.cpp | P3 |
 | `anybrain trace <vault> show [--last N] [--skill NAME]` | Print recent run traces: files read and written, tool calls, tokens, cost, local-only reads | P1 (eval traces), P2 (all runs) |
 | `anybrain trace <vault> import [--since DATE]` | Read finished session transcripts of the configured harnesses and store them as run traces | P2 |
@@ -1274,6 +1275,21 @@ From P2, every session is traced, not only evals, so the owner sees what the age
 - **Report:** `anybrain stats` adds cost per skill and per week, median files read per `ask`, and the count of local-only reads on frontier (target 0). The weekly `lint` skill adds these lines to its report.
 - **Exit criterion:** 4 weeks of traces from real use, with no local-only read on the frontier profile, or each one explained in `journal/`.
 
+### 22.7 Dashboard in Obsidian (P2)
+
+The owner sees the vault's figures and its observability where they already read: in Obsidian. There is no server, no web front and no Obsidian plugin to maintain (owner decision, 2026-11-18).
+
+- **Vault content.** `templates/obsidian/dashboard-vault.md` holds Dataview queries over frontmatter: books by status and rating, concepts by confidence and source count, projects past `next_review`, pages updated this week. The owner copies it into the vault if they want it. Obsidian computes it live, and no anybrain code is involved. The same queries can be written as an Obsidian Base.
+- **Observability.** `anybrain stats --dashboard` writes `journal/dashboard.md` from what Obsidian cannot read: run traces and eval runs live in `.harness/`, which Obsidian does not index.
+  - The page lists local-only reads on the frontier profile first (target 0).
+  - Then cost per skill and per week, median files read per `ask`, the last eval runs with pass rate per tag, gates and cost, graph figures (pages, edges, orphans, broken links), usage counts from `log.md`, and pending rule proposals.
+  - It uses tables and text bars, so it renders in any Markdown viewer.
+- **Rules.**
+  - The page is generated: it starts with the header of generated files (14.3) and is rewritten each time. `anybrain stats --dashboard` refuses to overwrite a page without that header.
+  - It sits in `journal/`, which is routed local, because it summarises traces (22.5).
+  - The weekly `lint` skill refreshes it.
+  - No command sends it anywhere. A later viewer, if one is ever needed, reads the same local files.
+
 ## 23. Testing strategy
 
 - **Unit tests** (`pytest`) for every module in `anybrain/`: frontmatter parsing, slug rules, link extraction and resolution (all syntaxes in 13.1, aliases, duplicates), graph in/out edges and context, index formats and grouping, each lint check (one passing and one failing fixture each), protected and append-only hashing, feedback counting and proposals, anonymize patterns (including the date regression), migrate inventory and check.
@@ -1370,6 +1386,7 @@ P2, P3, P4 are planned only after step 18 and the 4-week measure.
 | Q29 | `anybrain eval --max-cost` with `jobs` > 1: cases in parallel cannot know what the others spend, so the cap can be passed several times over. Split the budget, or run one at a time? | **Decided by the owner (2026-11-18): one at a time.** One at a time when a cap is given; parallel otherwise (D036) |
 | Q30 | What counts as a file read in a shell command, for `files_read` and `local_only_read_on_frontier` (22.5)? | **Decided by the owner (2026-11-18): yes.** Conservative: every file a command names, in any word or quoted code, except for a short list of commands that show no content; a recursive search reads the local-only files under its folders; a failed command that ran counts. Records also carry `files_searched` and `attempts` (D036) |
 | Q31 | A project migrated from a legacy note without a review date gets one computed by code (owner decision, 2026-11-18). How far ahead? | 30 days after the migration, the date the inventory prints and `migrate check` verifies (D037) |
+| Q32 | The dashboard of 22.7 is P2, with continuous observability. Should it come earlier, fed only by eval runs (P1) and the vault's own figures? | P2, with 22.6; the owner asked for it on 2026-11-18 without a date |
 
 ---
 

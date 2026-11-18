@@ -431,3 +431,15 @@ Format: `D<number> · <title>`, with the build step and the PRD sections involve
   - Local-only candidates are left out on non-local profiles. The finding about a local-only page is masked as before (D016).
 - **Skills.** Ingest, migrate and lint write a link only for a real relation, with its reason. Otherwise they ask the owner in one message and write the owner's answer on both pages, ending with `[said]`. The vault's `AGENTS.md` states the rule.
 - **Metrics.** The target is 0 orphans (section 6), and 21.3 asks for 0 once the owner has answered the migration's questions. On the migrated fixture (D035), 3 pages need the owner: `deep-work` (Cal Newport, no other page of his), `this-book-will-make-you-dangerous` (author "Unknown") and `coaching-lab`.
+
+## D040 · Seeing the vault's figures and its observability
+
+- **Owner question, 2026-11-18:** how to see the vault's statistics and its observability: a localhost front, or an Obsidian plugin? On the recommendation below, the owner asked to add it to the PRD (22.7).
+- **Recommendation and decision.**
+  - **Vault content.** Dataview, which the owner already uses, or an Obsidian Base computes it live from frontmatter. A template page with queries is enough, and no anybrain code is involved.
+  - **Observability.** The figures sit in `.harness/`, which Obsidian does not index. `anybrain stats --dashboard` writes them as a generated Markdown page in `journal/`, routed local because it summarises traces.
+  - **Rejected for now.**
+    - A localhost front: a server to start, a JavaScript stack, and one more screen away from where the owner reads.
+    - An Obsidian plugin: TypeScript, a second stack, its own release path, breakage on Obsidian updates, it duplicates Dataview, and it ties observability to one editor.
+    - Either can come later, if a need appears that a Markdown page cannot meet, such as interactive drill-down over months. It would then read the same local files.
+- **When.** P2, with continuous observability (22.6), because the daily traces only exist from P2. The owner did not give a date; an earlier version fed by eval runs only is Q32.
