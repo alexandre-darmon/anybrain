@@ -123,6 +123,8 @@ def _cmd_trace(args: argparse.Namespace) -> int:
 def _cmd_eval(args: argparse.Namespace) -> int:
     from . import evals, vault
 
+    if os.environ.get(vault.EVAL_COPY_ENV):
+        raise UsageError("anybrain eval cannot run inside an eval case")
     tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else None
     return evals.run(vault.resolve_vault(vault_arg(args.vault)), harness=args.harness, profile=args.profile,
                      tags=tags, max_cost=args.max_cost, freeze=args.freeze, golden=args.golden)

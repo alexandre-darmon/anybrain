@@ -100,6 +100,24 @@ def framework_root() -> Path:
     raise VaultError("cannot find the anybrain templates; reinstall the package")
 
 
+EVAL_COPY_ENV = "ANYBRAIN_EVAL_COPY"
+
+
+def check_eval_copy(path: Path) -> None:
+    """Inside an eval case, `anybrain` may only touch the case's throwaway copy of the vault.
+
+    `anybrain eval` sets ANYBRAIN_EVAL_COPY for the harness it starts. A command that names another vault (the
+    owner's real one, through a path or a `~/brain` alias) is refused, so an injected instruction cannot log
+    feedback, write a report or accept a protected edit there (docs/decisions.md D036).
+    """
+    copy = os.environ.get(EVAL_COPY_ENV)
+    if not copy:
+        return
+    allowed = Path(copy).resolve()
+    if path.resolve() != allowed and allowed not in path.resolve().parents:
+        raise VaultError(f"inside an eval case, anybrain only works on the case's copy of the vault ({allowed})")
+
+
 def resolve_vault(value: str | os.PathLike | None) -> Path:
     """Vault path from the argument, else ANYBRAIN_VAULT (PRD 9.2). Must be an existing folder."""
     raw = value if value else os.environ.get("ANYBRAIN_VAULT")
@@ -108,6 +126,7 @@ def resolve_vault(value: str | os.PathLike | None) -> Path:
     path = Path(raw).expanduser().resolve()
     if not path.is_dir():
         raise VaultError(f"vault not found: {path}")
+    check_eval_copy(path)
     return path
 
 

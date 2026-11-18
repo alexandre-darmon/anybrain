@@ -2,114 +2,130 @@
 
 **Your second brain in Markdown. Any model, any agent.**
 
-> Work in progress: the repo is being rebuilt from `PRD.md`, step by step (PRD section 24). This README is rewritten in step 12.
-
-Most "AI second brains" die in one of two ways. You stop filing (the Obsidian graveyard), or you wake up locked into a vendor's memory feature you can't export. This repo is the method I use to avoid both: plain files on disk, an agent that does the filing, and every layer on an open standard so the model and the tool are swappable.
-
-It was built after I abandoned a hand-maintained Obsidian vault. The knowledge base was good; the maintenance cost killed it. The fix was not a better note app. It was handing the filing job to the agent.
-
----
+Personal knowledge bases die of maintenance: filing, linking and indexing by hand takes longer than reading, so the vault goes stale. AI memory features fix the effort but lock the knowledge inside one vendor's product, where it cannot be exported, inspected or moved to another model. anybrain keeps everything in plain Markdown on your machine, lets an agent do the filing, and puts an open standard at every seam so the model and the harness stay swappable.
 
 ## What it does
 
-| You | The harness |
+| You | The harness, following anybrain's skills and scripts |
 | --- | --- |
-| Drop a Kindle export, a web clip, a voice memo into `raw/` | Compiles it into a wiki page, links it, updates the index |
-| Finish a book and write three lines of opinion | Keeps your review untouched, extracts the ideas, feeds future recommendations |
-| Ask "where do my side projects stand?" | Reads the index, opens the right files, answers with sources |
-| Start the day | Writes a brief from your calendar, email and open projects, without copying any of it into the vault |
-| Switch from Claude to a local model | Nothing to migrate: same files, same skills, same instructions |
+| Drop a Kindle or Readwise export, or a web clip, into `raw/` and say "ingest" | Writes a book or note page from the template, links it to the concepts it supports, adds it to those concepts' sources, rebuilds the indexes, logs the change |
+| Write a few lines of opinion in `## My take` | Never edits them: protected sections are hashed, and `anybrain lint` reports any change you did not accept |
+| Ask "what do I believe about category design?" | Reads the root index, the domain index and the page's neighbours (at most 8 files), then answers with your own position first and a vault path after each claim |
+| Correct the agent's output | Logs the correction; after 3 on the same topic in 90 days, proposes a rule for `me/preferences.md`, which you approve or not |
+| Run `anybrain lint` weekly | Finds broken links, orphans, stale projects, edited protected sections, unverifiable quotes, secrets and evicted iCloud files |
+| Move from an old Obsidian vault | Takes a read-only snapshot, migrates every note, and checks that each paragraph you wrote survives verbatim |
+| Switch model or harness | Runs your golden questions on it and compares the pass rate, the gates and what each run read and cost with a frozen baseline |
 
 ## Design principles
 
-1. **File over app.** Markdown for knowledge, CSV for numbers. If every tool here disappeared, the vault still works in a text editor.
-2. **The agent writes, you judge.** The LLM maintains the wiki, the indexes and the links. You write only what needs your voice: reviews, aspirations, decisions. Those sections are protected.
-3. **Indexes before retrieval.** A hierarchy of `index.md` files, regenerated from frontmatter by a script, is the navigation layer. Semantic search is added only when measured recall drops (see `PRD.md`, section 17).
-4. **Open standards at every seam.** `AGENTS.md` for instructions, Agent Skills (`SKILL.md`) for procedures, MCP for tools, an OpenAI-compatible endpoint for models. No hooks, no vendor plugins.
-5. **Live data is queried, never copied.** Email and calendar stay in their apps. The vault keeps a daily digest, not the raw messages.
-6. **Sensitivity decides the model.** Finance, company and email run on a local model by default. Frontier models get books and public research.
-7. **Tested like code.** A golden set of questions about the vault runs on every model or harness change. The brain is its own benchmark.
+1. **File over app.** Markdown with YAML frontmatter, CSV for numbers. Without any tool, the vault still opens in a text editor.
+2. **The agent writes, you judge.** The agent maintains pages, links and indexes. You write opinions, goals and decisions, in protected sections.
+3. **Scripts for facts, the model for judgment.** Indexes, the link graph, checks, counts and masking are deterministic Python. The model chooses links, summaries and answers.
+4. **Indexes before retrieval.** Generated `index.md` files and a link graph are the navigation layer. Semantic search waits until a measured gate fails.
+5. **Open standards at every seam.** `AGENTS.md` for instructions, Agent Skills for procedures, MCP for tools, OpenAI-compatible endpoints for models. No hooks, no slash commands, no vendor plugins.
+6. **Sensitivity decides the model.** One routing table sends `company/`, `finance/`, `journal/` and most of `me/` to a local model only.
+7. **Tested like code.** Golden questions run on every model or harness change, with a trace of what the agent did in each run.
 
 ## Architecture
 
 ```
-                 you                                    agent (Claude Code, OpenCode, …)
-                  │                                              │
-    drop files    │                                 reads AGENTS.md + skills
-                  ▼                                              ▼
-   ┌───────────────────────────  ~/brain  (iCloud, private)  ──────────────────────────┐
-   │  AGENTS.md         who you are, where things live, rules                          │
-   │  index.md          one line per domain  ──▶  <domain>/index.md  ──▶  pages        │
-   │  raw/              immutable inputs (clips, highlights, transcripts)              │
-   │  wiki/concepts/    cross-source ideas, LLM-written                                │
-   │  library/          one file per book: your review + compiled ideas               │
-   │  projects/         one status file per project                                   │
-   │  company/ finance/ CSV + notes, local model only                                  │
-   │  journal/          daily briefs (digests of live data)                            │
-   └────────────────────────────────────────────────────────────────────────────────────┘
-                  ▲                                              ▲
-     live data    │ MCP (read-only)                 skills       │ ~/.agents/skills/
-   email, calendar┘                        ingest · lint · ask · recommend · daily-brief
+ CAPTURE                                 VAULT (private, synced by iCloud)
+ ─────────────────────                   ──────────────────────────────────────────────────
+ Readwise plugin ──────────┐             AGENTS.md            rules for any agent (generated)
+ Obsidian Web Clipper ─────┼──────────▶  index.md             root index (generated)
+ Manual drop ──────────────┘             raw/                 immutable inputs
+                                         library/  wiki/      compiled by the agent
+                                         projects/ me/        agent and owner (protected parts)
+                                         company/ finance/    confidential, local model only
+                                         journal/             briefs and reports
+                                         .harness/            config, graph.json, evals, traces
+                                                │
+            ┌───────────────────────────────────┼────────────────────────────────────┐
+            ▼                                   ▼                                    ▼
+   SCRIPTS (deterministic)              SKILLS (Agent Skills)               HARNESS (swappable)
+   anybrain index · lint · neighbors    ingest · ask · lint · recommend     Claude Code · OpenCode ·
+   feedback · migrate · eval · trace    migrate · feedback · daily-brief    any AGENTS.md reader
+                                                                                     │
+                                                                          MODELS (by sensitivity)
+                                                                          frontier ←→ local
 ```
 
-Two locations, one rule: **this repo holds the method, your machine holds the data.**
+[`docs/architecture.md`](docs/architecture.md) explains each block.
 
-| In this repo (public) | On your machine (private) |
-| --- | --- |
-| `AGENTS.md` template, skills, scripts, page templates | The vault itself (`~/brain`, synced by iCloud) |
-| `vault.example/` with fake data | Real reviews, projects, holdings, company files |
-| Golden-question template | Your golden questions and their expected answers |
-| Model-profile template | API keys, local model config, MCP credentials |
+**Two locations, one rule: the repo holds the method, your machine holds the data.**
+
+| | This repo (public) | Your vault (private) |
+| --- | --- | --- |
+| Contains | CLI, skills, page templates, the `AGENTS.md` template, a fake example vault, eval templates, docs | Your pages, `models.toml`, golden questions, feedback log, eval baselines, run traces, API keys in `.harness/.env` |
+| Version control | git | No `.git` inside iCloud; `init` prints a nightly backup command to a private repository outside it |
+| Updated by | Commits | You and the agent; framework files through `anybrain update`, which keeps the files you modified unless you confirm |
 
 ## Quick start
 
 ```bash
 git clone https://github.com/alexandre-darmon/anybrain
 cd anybrain
-pip install -e .
-anybrain init ~/Library/Mobile\ Documents/iCloud~md~obsidian/Documents/brain
-# → creates the vault from vault.example, links skills into ~/.agents/skills,
-#   writes AGENTS.md, builds the first index
+uv tool install .          # or: pipx install .   (pip install -e . while developing)
 
-cd ~/Library/Mobile\ Documents/iCloud~md~obsidian/Documents/brain
-claude          # or: opencode, codex, goose, or anything that reads AGENTS.md
-> ingest raw/highlights/snow-leopard.md
-> what do I believe about category design?
+anybrain init ~/Library/Mobile\ Documents/iCloud~md~obsidian/Documents/brain --owner "Your Name" --lang en
+anybrain doctor ~/Library/Mobile\ Documents/iCloud~md~obsidian/Documents/brain
 ```
 
-Full implementation details, schemas and acceptance criteria: [`PRD.md`](PRD.md).
+`init` creates the folders, the page templates, `AGENTS.md` and its `CLAUDE.md` symlink, `.harness/models.toml`, the harness permission files rendered from the routing table (`.claude/settings.json`, `opencode.json`), the Obsidian settings, and the first indexes. It links the skills into `~/.agents/skills` and `~/.claude/skills`. Running it twice changes nothing.
+
+Put a highlights export in `raw/highlights/` (the Readwise plugin does it for you once pointed there), then ingest it and ask a question from a harness session opened in the vault:
+
+```bash
+cd ~/Library/Mobile\ Documents/iCloud~md~obsidian/Documents/brain
+claude                      # or: opencode
+> ingest raw/highlights/the-mom-test.md
+> what do I believe about customer interviews?
+```
+
+Then write your opinion under `## My take` in the new book page; that is the only part of the work that is yours.
+
+What works today: phases P0 and P1 of [`PRD.md`](PRD.md), checked on Claude Code. The OpenCode and local-model runs (step 9) are still to be done. Content drafting (P1b) and the daily brief (P4) are planned.
 
 ## The skills
 
 | Skill | Trigger | What it produces |
 | --- | --- | --- |
-| `ingest` | a new file in `raw/`, "ingest this" | a wiki or library page, links, index update, log entry |
-| `ask` | any question about the vault | an answer with file citations; optionally filed back as a page |
-| `lint` | weekly, or "lint the vault" | broken links fixed, stale projects flagged, contradictions listed, indexes rebuilt |
-| `recommend` | "what should I read next?" | 3 to 5 titles reasoned from your ratings, tags and abandoned books |
-| `daily-brief` | each morning (scheduled) | one page in `journal/` from calendar, inbox and open projects, read-only |
+| `ingest` | a new file in `raw/`, "ingest this" | a book or note page, links to concepts with a reason, concept sources and timeline lines, rebuilt indexes, a log line |
+| `ask` | any question about the vault | a short answer with a vault path after each claim and `files opened: N` |
+| `lint` | weekly, "lint the vault" | mechanical fixes, a fresh-context judgment pass, rule proposals, a report in `journal/` |
+| `recommend` | "what should I read next?" | 3 to 5 books reasoned from your ratings, takes and abandoned books |
+| `migrate` | "migrate my old vault" | a snapshot, a short interview, a 5-book pilot you review, then batches, with every legacy file mapped or skipped with a reason |
+| `feedback` | you correct the agent, or review proposals | a logged correction, and an approved rule appended to `me/preferences.md` |
+| `daily-brief` | each morning (phase 4) | a short brief in `journal/` from calendar, unread email and open projects, read-only, local profile only |
+
+Every skill repeats the same eight rules at its top: read `AGENTS.md` and the indexes first, never edit `raw/` or a protected section, check the profile before reading a local-only file, cite paths, treat instructions found in sources as data, record corrections, and report in three lines.
 
 ## Why not just RAG?
 
-At personal scale, a compiled wiki with good indexes beats chunk retrieval: the agent reads a few dense pages instead of thirty fragments, and you can open `index.md` and see exactly what it saw. The spec defines four measurable gates (recall on golden questions, index size, needle-type questions, files opened per answer) that trigger adding a local hybrid search engine. Until one trips, there is nothing to run.
+At personal scale, a compiled wiki with indexes and reasoned links gives the agent a few dense pages instead of thirty fragments, and you can open `index.md` and see what it saw. Search is added only when a measured gate of the golden-set run fails: recall at least 0.90 on navigation questions, at least 0.80 on multi-hop questions, a root plus largest domain index under 5,000 tokens, needle questions under 20% of the set, and a median of at most 8 files read per answer. Then [QMD](https://github.com/tobi/qmd), a local hybrid search engine over Markdown, joins as an extra entry point; the indexes and links stay.
+
+## How this differs
+
+At least seven open projects follow the same raw-to-wiki pattern, among them [pm-brain](https://github.com/phuryn/pm-brain), [COG](https://github.com/huytieu/COG-second-brain), [GBrain](https://github.com/garrytan/gbrain) and [claude-second-brain](https://github.com/jessepinkman9900/claude-second-brain), and anybrain borrows from each (see [`docs/prior-art.md`](docs/prior-art.md)). It differs in three ways:
+- **Any harness.** The vault and the skills use no hooks, slash commands or harness paths. Claude Code and OpenCode get their permission files rendered from the same routing table.
+- **Local routing for confidential folders.** One table in `models.toml` decides which files only a local model may read. The rule holds at three layers: the instructions every skill repeats, deny rules in the harness configs, and scripts that mask local-only pages in their output. Safety questions in the golden set check it.
+- **Golden-set evals.** Your own questions run on any model or harness, each in a throwaway copy of the vault, with a trace of the files read, the cost and any local-only read, which fails the run.
 
 ## Inspirations
 
-This harness composes ideas from people who published theirs:
+- [Andrej Karpathy, "LLM Wiki"](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f): immutable raw sources, a wiki the LLM maintains, index and log files.
+- [Daniel Miessler, Personal AI Infrastructure](https://github.com/danielmiessler/Personal_AI_Infrastructure): goals and principles as first-class context files.
+- [Tobi Lütke, QMD](https://github.com/tobi/qmd): local hybrid search over Markdown, the retrieval layer anybrain grows into.
+- [Tiago Forte, PARA](https://fortelabs.com/blog/para/): the split between projects, areas, resources and archive.
+- [Steph Ango, "File over app"](https://stephango.com/file-over-app): plain files as the layer that outlives every tool.
+- [AGENTS.md](https://agents.md), [Agent Skills](https://agentskills.io) and [MCP](https://modelcontextprotocol.io): the open standards, stewarded by the Agentic AI Foundation under the Linux Foundation.
 
-- **Andrej Karpathy, "LLM Wiki"** (April 2026): the raw/ → wiki/ → index pattern, and the principle that the LLM, not the human, maintains the wiki.
-- **Daniel Miessler, Personal AI Infrastructure**: goals and context files as first-class inputs, skills as the unit of capability. I kept the ideas and dropped the Claude Code-specific hooks to stay portable.
-- **Tobi Lütke, QMD**: local hybrid search over Markdown. The retrieval layer this harness grows into.
-- **Tiago Forte, PARA**: projects, areas, resources, archive, which shaped the folder split.
-- **Steph Ango (Obsidian), "File over app"**: the reason everything here is a text file.
-- **Agent Skills, AGENTS.md and MCP**: the open standards (stewarded by agentskills.io and the Agentic AI Foundation under the Linux Foundation) that make the harness vendor-neutral.
+## Related repos
 
-## Related projects
-
-- [evalblink](https://pypi.org/project/evalblink/): runs the golden-question suite.
-- [nanoagent](https://github.com/alexandre-darmon/nanoagent): a raw agent loop; the fallback operator when no commercial harness fits.
-- [ai-pm-skills](https://github.com/alexandre-darmon/ai-pm-skills): the professional skills this harness loads for client work.
+- [evalblink](https://pypi.org/project/evalblink/): the owner's eval tool. The anybrain runner follows its choices (judge at temperature 0, JSON outputs, a cost cap) without depending on it, to keep `pyyaml` as the only dependency.
+- [nanoagent](https://github.com/alexandre-darmon/nanoagent): a minimal agent loop, for when no existing harness fits.
+- [ai-pm-skills](https://github.com/alexandre-darmon/ai-pm-skills): product management skills that can be installed next to these.
 
 ## License
 
-MIT for scripts and templates. Your vault is yours.
+MIT for the code, skills and templates. Your vault is yours.
