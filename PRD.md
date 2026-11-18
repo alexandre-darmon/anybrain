@@ -147,7 +147,7 @@
 | Protected-section violations | 0 | `anybrain lint --protected` |
 | Confidential reads on frontier profile | 0 in the safety eval cases | `anybrain eval` safety tag |
 | Owner text lost in migration | 0 paragraphs | `anybrain migrate-check` |
-| Orphan compiled pages | < 10% after migration, < 5% steady state | `anybrain lint --graph` |
+| Orphan compiled pages | 0 (owner decision, Q28); a page younger than 7 days may wait for its link | `anybrain lint --graph`, `anybrain index --stats` |
 | Quotes not found in their source | 0 | `anybrain lint --quotes` |
 | Draft edit ratio (share of the agent's first draft changed by the owner before publishing, by characters) | ≤ 30% by the 8th published piece, trending down | `anybrain content diff` |
 | Content cadence | ≥ 1 piece per week drafted from the vault and published, 4 weeks in a row | Count of `content/published/` |
@@ -638,6 +638,7 @@ Acceptance: fixture tests for an agent edit inside `## My take` (finding), an ow
 3. **≤ 20 outgoing links per page.** Above that, the page should be split.
 4. **Prefer existing pages.** Before creating a concept, check `wiki/index.md` and aliases.
 5. **Never link to confidential pages from public or personal pages.** Links from `library/` or `wiki/` to `company/` or `finance/` are reported by `lint --graph`.
+6. **No orphan** (owner decision, 2026-11-18). A page is connected to its source (`sources`), its author, its theme and similar pages. At least one of these is an incoming link from another page of `library/`, `wiki/` or `projects/`: the concept its ideas support lists it, a book by the same author says "same author as [[x]]", a similar page says how it relates, or a page it links to states the relation back. Links from `journal/`, `me/`, `content/` and generated indexes do not count. Only real relations: when none exists, the agent asks the owner and writes the relation the owner states, ending with `[said]`. There are no author or theme pages (D039).
 
 ### 13.4 `graph.json`
 
@@ -690,7 +691,7 @@ The Snow Leopard (book, public)
 | Broken link | error | Unresolvable link |
 | Duplicate filename | error | Same stem in two folders |
 | Confidential leak | error | Link from public/personal page to confidential page |
-| Orphan | warning | Compiled page (`library/`, `wiki/`, `projects/`) with 0 incoming links. Exempt: pages created < 7 days ago |
+| Orphan | warning, then error | Compiled page (`library/`, `wiki/`, `projects/`) that no other compiled page links to (13.3 rule 6). A warning for the 7 days after `created`, an error after. The finding lists candidates found by code: pages by the same author, pages it links to, pages sharing a tag that most pages do not carry. Code never writes the link |
 | Naked link | warning | List item or line whose only content is a link |
 | Over-linked | warning | > 20 outgoing links |
 | Near-duplicate concepts | warning | Two concept titles or slugs with `difflib` ratio ≥ 0.85 |
@@ -769,7 +770,7 @@ Acceptance: on `vault.example/`, generated files are byte-identical to the commi
 2. **Find or create.** Search the domain index by title, author, aliases. Update an existing page; otherwise create from the template.
 3. **Compile.** Fill sections per the page contract. Quotes verbatim with location. Leave `My take` with its placeholder.
 4. **Link.** For each key idea: get the concept list from `wiki/index.md`. If a concept fits, link with a reason phrase and add this source under the concept's `What the sources say` and a Timeline line. If no concept exists and the idea now appears in a second source (check `wiki/notes/` and `library/`), create the concept from both sources. One source only: no concept.
-5. **Neighbours.** Run `anybrain neighbors` on the page to check the new links resolve and to spot an obvious missing relation to a page linked from the same concepts.
+5. **Neighbours.** Run `anybrain neighbors` on the page to check the new links resolve and to spot an obvious missing relation to a page linked from the same concepts. The page must not stay an orphan (13.3 rule 6): use the candidates `lint --graph` lists, write only real relations, and otherwise ask the owner.
 6. **Close.** Frontmatter complete; `anybrain index`; `log.md`; three-line report.
 
 **Red lines.** No invented quote, rating, date read or opinion. No concept from one source. No rewrite of an existing `Key ideas` section: merge and keep owner edits. No page from a tweet-sized clip.
@@ -781,7 +782,7 @@ Acceptance: on `vault.example/`, generated files are byte-identical to the commi
 **Trigger.** Weekly, or "lint the vault".
 **Method.**
 1. Run `anybrain lint <vault> --report-only --report journal/lint-YYYY-MM-DD.md` on the local profile, or `--report journal/reports/lint-YYYY-MM-DD.md` on any other profile: each session writes its report where its profile can read it, and the command masks local-only details according to where the report goes (Q22).
-2. **Mechanical fixes** (agent): links to renamed files, missing `updated`, naked links (add a reason phrase), tags that only differ by case or plural. Log each fix.
+2. **Mechanical fixes** (agent): links to renamed files, missing `updated`, naked links (add a reason phrase), tags that only differ by case or plural, orphans with a real relation among their candidates. Log each fix. Orphans without one go to the owner (13.3 rule 6).
 3. **Judgment pass in a fresh context.** The harness runs a separate session or subagent that receives only file paths, not the worker's summary. It reads concepts updated or cited in the last 30 days and lists: contradictions between `My position` and newer sources; concepts to merge; projects whose `Now` disagrees with their latest Timeline entry. It writes findings, it does not fix them.
 4. **Feedback.** Run `anybrain feedback proposals` and add proposals to the report (section 16).
 5. **Content ideas** (P1b): up to 3 ideas from what moved this week (a concept gained a source, the owner wrote a strong take, a project shipped), each with an angle, its source paths, and a check that no published piece already covers it. Append them to `content/ideas.md`.
@@ -1137,7 +1138,7 @@ Readwise sync appends new highlights to existing files. The agent treats a chang
 
 - Every legacy file appears in the migration report as mapped or skipped with a reason.
 - `migrate check` reports 0 missing owner paragraphs.
-- `lint` clean on errors; orphans < 10% of compiled pages.
+- `lint` clean on errors, and 0 orphans (`index --stats`) once the owner has answered the questions the migration asked (13.3 rule 6).
 - Golden set ≥ 0.80.
 
 ---
@@ -1365,7 +1366,7 @@ P2, P3, P4 are planned only after step 18 and the 4-week measure.
 | Q25 | `anybrain eval --max-cost` is described in EUR, but Claude Code reports its cost in US dollars. Which currency? | The currency the harness reports, without a guessed exchange rate (D033) |
 | Q26 | A run filtered with `--tags` is compared with the full frozen baseline. Should the overall delta use only the baseline's cases with the same tags? | Per-tag deltas only are meaningful today; the overall delta of a filtered run is not comparable (D034) |
 | Q27 | 21.1 maps `Inbox`, `Readwise`, `Pièces jointes` and `Archive` to folders of `raw/`, but agents never write in `raw/`, and 21.2 step 6 looks for owner text "outside `raw/`". Who moves those files, and where does owner text in an Inbox or Archive note count as kept? | The snapshot already sits in `raw/legacy/<date>/`: pages are compiled from it and link to it, nothing is copied; new captures go to the 21.1 folders once step 7 repoints them. `migrate check` accepts a page or a file of `raw/` outside the snapshot, and reports text from a file the owner chose not to migrate as "kept only in the snapshot" (D035) |
-| Q28 | Orphans < 10% (sections 6 and 21.3) is measured with `lint --graph`, which exempts pages younger than 7 days, so it reads 0 right after a migration. Measured without the exemption, the legacy fixture gives 3 orphans of 7 pages (43%), because its notes have no links between them. Should the target compare with the orphan rate of the legacy vault (a migration must not raise it), apply only to vaults above a minimum size, or stay as written? | Left as written. The skill measures with `index --stats`, links only real relations and lists the other orphans for the owner; on the fixture the line fails (D035) |
+| Q28 | Orphans < 10% (sections 6 and 21.3) is measured with `lint --graph`, which exempts pages younger than 7 days, so it reads 0 right after a migration. Measured without the exemption, the legacy fixture gives 3 orphans of 7 pages (43%), because its notes have no links between them. Should the target compare with the orphan rate of the legacy vault (a migration must not raise it), apply only to vaults above a minimum size, or stay as written? | **Decided by the owner (2026-11-18): no orphan.** A page is connected to its source, author, theme and similar pages, through real links only; the owner states the relation when none exists. No author or theme pages (13.3 rule 6, 13.6, D039) |
 | Q29 | `anybrain eval --max-cost` with `jobs` > 1: cases in parallel cannot know what the others spend, so the cap can be passed several times over. Split the budget, or run one at a time? | **Decided by the owner (2026-11-18): one at a time.** One at a time when a cap is given; parallel otherwise (D036) |
 | Q30 | What counts as a file read in a shell command, for `files_read` and `local_only_read_on_frontier` (22.5)? | **Decided by the owner (2026-11-18): yes.** Conservative: every file a command names, in any word or quoted code, except for a short list of commands that show no content; a recursive search reads the local-only files under its folders; a failed command that ran counts. Records also carry `files_searched` and `attempts` (D036) |
 | Q31 | A project migrated from a legacy note without a review date gets one computed by code (owner decision, 2026-11-18). How far ahead? | 30 days after the migration, the date the inventory prints and `migrate check` verifies (D037) |

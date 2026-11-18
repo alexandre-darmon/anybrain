@@ -399,3 +399,35 @@ Format: `D<number> · <title>`, with the build step and the PRD sections involve
 - **Nothing is erased.** A replaced result is kept in the run file under `superseded`. Its local-only reads, escapes and failed safety or injection cases still fail the run: a confidential file sent to the frontier provider is not forgiven by a clean rerun. A rerun that the cost cap stops leaves the earlier graded result in place, marked stale.
 - **Cost and time.** The run file's `cost_usd` counts every run, including replaced ones. Each relaunch records the changed files, the cases run again, `waited_s` and `cost_usd`. `--max-cost` covers the whole run, reruns included. One edit at a random moment makes about half the cases stale on average: about half the cost again, plus 15 minutes of waiting.
 - **Review, 2026-11-18.** An adversarial review confirmed 31 findings on the first version of this mechanism and of D037. The main ones: a rerun erased a local-only read; file dates decided which cases to rerun, so a synced edit was missed and a future date could make the runner wait forever; Obsidian's window saves triggered paid reruns; most shell writes and every OpenCode write into the real vault passed as owner edits. All are fixed as described above, with regression tests.
+
+## D039 · No orphan page (Q28)
+
+- **Owner decisions, 2026-11-18:**
+  - "We must not have orphans. A note is connected to its source, to its author, to the theme it belongs to, and to the other similar notes."
+  - Asked whether author pages add value, the owner said to keep it simple unless they do.
+  - The owner agreed with the approach below.
+- **Design panel.** Three designs were scored by three judges (owner, architect, safety lenses):
+  - minimal, with no new page type: 133;
+  - code first, with generated theme and author hubs: 125;
+  - first-class hubs: 114.
+  The judges preferred the hubs for fidelity. The owner then weighed author pages against their value and chose the minimal design.
+- **Why no author or theme pages.**
+  - The author is already on every book's line in `library/index.md`, so "what have I read by X" needs no page.
+  - An author page that lists one book connects that book to none of the owner's ideas: it would clear the orphan count without connecting anything.
+  - It would also cost about one file per two books, clutter in the Obsidian graph, and spelling variants to handle.
+  - The owner already uses Dataview, which can list books by author without generated files.
+  - An author page would earn its place if the owner wants to write about an author across books. That would be a new decision.
+- **Rule (PRD 13.3 rule 6).**
+  - A compiled page needs an incoming link from another page of `library/`, `wiki/` or `projects/`: the concept it supports lists it, a book by the same author says "same author as", a similar page says how it relates, or a page it links to states the relation back.
+  - Links from `journal/`, `me/`, `content/` and generated indexes no longer count: a brief that cites a project does not connect it to its source, author, theme or similar pages.
+  - The source connection is the `sources` field. It is outgoing only, since `raw/` is not part of the graph.
+- **Lint (13.6).**
+  - An orphan is a warning for the 7 days after `created`, the time for a second source to arrive, and an error after.
+  - The finding lists candidates computed by code from facts:
+    - pages with the same author, where placeholders such as "Unknown" are no author;
+    - the pages the orphan links to, which can state the relation back;
+    - pages sharing a tag that is not generic. A tag is generic when it is on more than 10 pages, or on more than half the pages of the type in a type with at least 4 pages.
+  - Code never writes a link.
+  - Local-only candidates are left out on non-local profiles. The finding about a local-only page is masked as before (D016).
+- **Skills.** Ingest, migrate and lint write a link only for a real relation, with its reason. Otherwise they ask the owner in one message and write the owner's answer on both pages, ending with `[said]`. The vault's `AGENTS.md` states the rule.
+- **Metrics.** The target is 0 orphans (section 6), and 21.3 asks for 0 once the owner has answered the migration's questions. On the migrated fixture (D035), 3 pages need the owner: `deep-work` (Cal Newport, no other page of his), `this-book-will-make-you-dangerous` (author "Unknown") and `coaching-lab`.
