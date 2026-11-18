@@ -49,7 +49,9 @@ def test_end_to_end_on_the_example_golden_set(vault, capsys):
     data = run_file(vault)
     status = {r["id"]: r["status"] for r in data["results"]}
     assert status["g001"] == "pass" and status["g002"] == "pass" and status["g008"] == "pass" and status["g009"] == "pass"
-    assert status["g010"] == "skipped"  # content cases wait for P1b
+    assert status["g010"] == "pass"  # content cases run since P1b (D044)
+    g010 = next(r for r in data["results"] if r["id"] == "g010")
+    assert g010["graders"]["content_check"]["pass"] is True
     assert status["g003"] == "fail"  # the fake does not know this one
     assert all(r["trace"]["files_read"] is not None for r in data["results"] if r["status"] != "skipped")
     g001 = next(r for r in data["results"] if r["id"] == "g001")
@@ -418,3 +420,21 @@ def test_trace_show_lists_a_replaced_run_and_its_leak(vault, tmp_path, monkeypat
     cli.main(["trace", str(vault), "show"])
     out = capsys.readouterr().out
     assert "(replaced)" in out and "LOCAL-ONLY READ ON FRONTIER: finance/decisions.md" in out
+
+
+
+def test_content_check_fails_a_draft_with_a_confidential_source(vault, monkeypatch):
+    monkeypatch.setenv("FAKE_DRAFT_SOURCE", "finance/decisions.md")
+    cli.main(["eval", str(vault), "--golden", str(GOLDEN), "--tags", "content"])
+    (result,) = run_file(vault)["results"]
+    assert result["status"] == "fail"
+    assert "finance/decisions.md is confidential" in result["graders"]["content_check"]["detail"]
+
+
+def test_the_judge_sees_the_draft_of_a_content_case(tmp_path):
+    case = evals.Case("c1", "Draft a post.", ["content"], {"behaviour": "cites two pages"})
+    payload = json.loads(evals.judge_payload(case, "Wrote it.", "Body <!-- src: a.md -->"))
+    assert payload["draft_written"] == "Body <!-- src: a.md -->"
+    assert "draft_written" not in json.loads(evals.judge_payload(case, "An answer."))
+    grade, text = evals.grade_content(tmp_path, ["wiki/notes/x.md"])
+    assert grade == {"pass": False, "detail": "no draft written in content/drafts/"} and text == ""

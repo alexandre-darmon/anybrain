@@ -46,7 +46,7 @@ RETRY_DELAYS_S = (5, 15)
 JUDGE_BUDGET_USD = 0.5  # per judge run when no --max-cost is given
 NOT_RETRIED = ("error_max_budget_usd", "error_max_turns")  # limits: a retry would hit them again
 PATH_RE = re.compile(r"(?<![\w/.-])((?:[\w.-]+/)*[\w.-]+\.(?:md|csv|txt))\b")
-SKIPPED_PHASE = {"content": "P1b: the draft skill and `anybrain content check` arrive in step 16"}
+SKIPPED_PHASE: dict[str, str] = {}  # content cases run since P1b (docs/decisions.md D044)
 
 
 # ---------------------------------------------------------------------------- golden set (22.1)
@@ -183,15 +183,36 @@ def rubric() -> str:
     return v.read_text(path) if path.is_file() else "Grade the answer against the expected behaviour only."
 
 
-def judge_payload(case: Case, answer: str) -> str:
-    """What the judge sees: the question, the expected behaviour, the answer and the cited files. Never the
-    worker's reasoning or tool calls (22.2: the judge runs in a fresh context)."""
-    return json.dumps({
+def judge_payload(case: Case, answer: str, artifact: str = "") -> str:
+    """What the judge sees: the question, the expected behaviour, the answer and the cited files, and for a
+    content case the draft the worker wrote. Never the worker's reasoning or tool calls (22.2: the judge runs
+    in a fresh context)."""
+    payload = {
         "question": case.question,
         "expected_behaviour": case.expected.get("behaviour"),
         "answer": answer,
         "cited_files": cited_paths(answer),
-    }, ensure_ascii=False, indent=2)
+    }
+    if artifact:
+        payload["draft_written"] = artifact
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def grade_content(root: Path, written: list[str]) -> tuple[dict, str]:
+    """`content_check: pass` (22.2): `anybrain content check` finds no error in the draft the case wrote.
+    Returns the grade and the draft's text, for the judge."""
+    from . import lint
+
+    drafts = [rel for rel in written if rel.startswith("content/drafts/") and rel.endswith(".md") and (root / rel).is_file()]
+    if not drafts:
+        return {"pass": False, "detail": "no draft written in content/drafts/"}, ""
+    ctx, errors = lint.Context(root), []
+    for rel in drafts:
+        page = v.load_page(root, root / rel)
+        errors += [f"{rel}: {p}" for p in lint._check_page_schema(page)]
+        errors += [f.message for f in lint.content_findings(ctx, page) if f.level == "error"]
+    detail = "; ".join(errors[:5]) if errors else f"no error in {', '.join(drafts)}"
+    return {"pass": not errors, "detail": detail}, v.read_text(root / drafts[0])
 
 
 def parse_verdict(text: str) -> dict:
@@ -218,12 +239,12 @@ class EndpointJudge:
         if not self.base_url or not self.model or "<" in str(self.model):
             raise v.VaultError(f"judge profile {profile_name!r} needs base_url and a real model in {v.MODELS_FILE}")
 
-    def __call__(self, case: Case, answer: str, budget: float | None = None) -> dict:
+    def __call__(self, case: Case, answer: str, budget: float | None = None, artifact: str = "") -> dict:
         body = json.dumps({
             "model": self.model, "temperature": 0, "max_tokens": self.max_tokens,
             "response_format": {"type": "json_object"},
             "messages": [{"role": "system", "content": rubric()},
-                         {"role": "user", "content": judge_payload(case, answer)}],
+                         {"role": "user", "content": judge_payload(case, answer, artifact)}],
         }).encode()
         headers = {"Content-Type": "application/json"}
         if self.api_key:
@@ -259,9 +280,9 @@ class HarnessJudge:
         command = [prompt if w == "{prompt}" else w.replace("{prompt}", prompt) for w in words]
         return command + tr.adapter_for(self.harness).output_args(self.profile, budget)
 
-    def __call__(self, case: Case, answer: str, budget: float | None = None) -> dict:
+    def __call__(self, case: Case, answer: str, budget: float | None = None, artifact: str = "") -> dict:
         prompt = (rubric() + "\n\nGrade this. Reply with one JSON object only: "
-                  '{"pass": true or false, "reason": "one sentence"}.\n\n' + judge_payload(case, answer))
+                  '{"pass": true or false, "reason": "one sentence"}.\n\n' + judge_payload(case, answer, artifact))
         with tempfile.TemporaryDirectory(prefix="anybrain-judge-") as empty:
             out, err, code = run_command(self.command(prompt, JUDGE_BUDGET_USD if budget is None else budget),
                                          Path(empty), self.profile, self.timeout)
@@ -333,6 +354,7 @@ def run_case(case: Case, vault: Path, models: dict, harness: str, profile: str, 
     attempts = int(settings.get("retries", 2)) + 1
     adapter = tr.adapter_for(harness)
     records, run, spent, copy_error = [], None, 0.0, ""
+    content_grade, artifact = None, ""
     for attempt in range(attempts):
         left = None if budget is None else budget - spent
         if left is not None and left < 0.01:
@@ -354,6 +376,8 @@ def run_case(case: Case, vault: Path, models: dict, harness: str, profile: str, 
             out, err, code = run_command(command, root, profile, float(settings.get("timeout_s", 600)))
             run = adapter.parse(out, root, origin=vault)
             records.append(tr.build_record(run, root, profile, "eval", started, case_id=case.id, origin=vault))
+            if case.expected.get("content_check"):  # graded in the copy, before it is deleted
+                content_grade, artifact = grade_content(root, run.files_written)
         spent += run.cost_usd or 0.0
         if run.ok:
             break
@@ -372,6 +396,8 @@ def run_case(case: Case, vault: Path, models: dict, harness: str, profile: str, 
     graders, expected, judge_cost = {}, case.expected, 0.0
     if expected.get("cited_files"):
         graders["cited_files"] = grade_cited(run.answer, [str(p) for p in v.as_list(expected["cited_files"])])
+    if content_grade is not None:
+        graders["content_check"] = content_grade
     if expected.get("must_include") or expected.get("must_not_include"):
         graders["includes"] = grade_includes(run.answer, [str(s) for s in v.as_list(expected.get("must_include"))],
                                              [str(s) for s in v.as_list(expected.get("must_not_include"))])
@@ -384,7 +410,7 @@ def run_case(case: Case, vault: Path, models: dict, harness: str, profile: str, 
             graders["behaviour"] = {"pass": False, "detail": "not judged: cost cap reached"}
             note = "cost cap reached before the judge ran"
         else:
-            verdict = judge(case, run.answer, left)
+            verdict = judge(case, run.answer, left, artifact)
             judge_cost = float(verdict.pop("cost_usd", 0.0) or 0.0)
             graders["behaviour"] = verdict
     measured = len(record["files_read"])

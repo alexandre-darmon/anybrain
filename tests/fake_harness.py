@@ -7,6 +7,7 @@ agent would, and plays the judge when the prompt asks for a verdict. Behaviour s
 - FAKE_LEAK_THEN_ERROR=<path>: the first call reads finance/decisions.md, leaves a file in its copy, ends with
   an error and creates <path>; later calls refuse cleanly, and create <path>.saw-previous if that file is there.
 - FAKE_LEAK_ONCE=<path>: the first call reads finance/decisions.md and answers normally; later calls refuse.
+- FAKE_DRAFT_SOURCE=<path>: the source the content case's draft cites first (default: a public concept).
 - FAKE_BUDGET=1: every run stops at its --max-budget-usd, as `error_max_budget_usd`, costing that budget.
 - FAKE_LOG=<path>: append one JSON line per call (budget, judge or worker, tools flag).
 - FAKE_TOUCH=<path>: write that file on every call, as an owner editing the vault without pause would.
@@ -95,6 +96,19 @@ elif "investment decisions" in prompt:
         answer = "I looked and will not say more.\n\nfiles opened: 1"
     else:
         answer = "That is in finance/, which is local-only. Please switch to the local profile.\n\nfiles opened: 0"
+elif "Draft a LinkedIn post" in prompt:
+    source = os.environ.get("FAKE_DRAFT_SOURCE", "wiki/concepts/category-design.md")
+    draft = (
+        "---\ntitle: \"Name the category first\"\ntype: draft\ndescription: \"LinkedIn post on category design.\"\n"
+        "channel: linkedin\naudience: \"Founders.\"\nangle: \"A category exists once it has a name.\"\nstatus: drafting\n"
+        f"tags: []\nlanguage: en\ncreated: 2026-11-16\nupdated: 2026-11-16\nsources: [{source}, wiki/concepts/languaging.md]\n"
+        "sensitivity: public\n---\n\nCategory design is a positioning tool, not a slogan.\n"
+        f"<!-- src: {source} -->\n\nThe name separates the new from the old.\n<!-- src: wiki/concepts/languaging.md -->\n\n"
+        "[YOUR STORY: a product judged in the wrong category]\n\n## Notes for the owner\n- Placeholders: 1\n")
+    rel = "content/drafts/2026-11-16-name-the-category-first.md"
+    (cwd / rel).write_text(draft)
+    tool("Write", {"file_path": str(cwd / rel)})
+    answer = f"Wrote {rel}. Angle: a category exists once it has a name. 1 placeholder.\n\nfiles opened: 2"
 elif "Ingest" in prompt:
     read("raw/articles/injected-note.md")
     (cwd / "wiki" / "notes" / "positioning-is-a-decision.md").write_text("written by the fake agent\n")

@@ -20,7 +20,7 @@ Fix the mechanical, report the judgmental, delete nothing.
 
 ## Method
 
-1. **Checks.** Write the report where your profile can read it. On the local profile, run `anybrain lint . --report-only --report journal/lint-YYYY-MM-DD.md` (today's date). On any other profile, run `anybrain lint . --report-only --report journal/reports/lint-YYYY-MM-DD.md`. The checks cover schema, links, graph, staleness, protected sections, quotes, secrets, feedback and iCloud.
+1. **Checks.** Write the report where your profile can read it. On the local profile, run `anybrain lint . --report-only --report journal/lint-YYYY-MM-DD.md` (today's date). On any other profile, run `anybrain lint . --report-only --report journal/reports/lint-YYYY-MM-DD.md`. The checks cover schema, content, links, graph, staleness, protected sections, quotes, secrets, feedback and iCloud.
 2. **Mechanical fixes.** Repair links to renamed files; add a missing `updated`; give each naked link a reason phrase; merge tags that differ only by case or plural. Log each fix in `log.md`. Never touch a protected section, even for a typo.
    Orphans: Every page in `library/`, `wiki/` and `projects/` needs at least one incoming link from another page there: the concept its ideas support lists it, a book by the same author says "same author as", a similar page says how it relates, or a page it links to states the relation back. A link from `journal/` or an index does not count. Each orphan finding lists candidates. Write a link only for a relation that is real, with its reason; put the other orphans under "needs the owner" with their candidates, and when the owner answers, write the relation ending with `[said]`. A public or personal page never links to a confidential one, so a confidential page is connected from another confidential page, `company/` or `finance/`. Never write a link only to clear the check.
 3. **Judgment pass, in a fresh context.** The worker never grades itself. Start a new session or a sub-agent, give it only the list of file paths below and these three questions, never your own summary, and let it read the files:
@@ -30,9 +30,10 @@ Fix the mechanical, report the judgmental, delete nothing.
 
    It lists findings and fixes nothing. If no fresh context is available, do the pass yourself after re-reading the files, and say so in the report.
 4. **Rules from corrections.** Run `anybrain feedback . proposals`. For each proposal, draft one rule in the owner's terms, ending with its topic: `Never use em dashes in any page or answer. (topic:no-em-dash)`. Do not write it anywhere yet: the owner approves it through the `feedback` skill.
-5. **Raw files waiting.** List the files in `raw/` with no compiled page, or newer than their page, as candidates for `ingest`.
-6. **Rebuild.** Run `anybrain index .`.
-7. **Report.** Add four sections to the report file of step 1: fixed, needs the owner (contradictions, merges, stale projects, findings you could not fix), proposed rules, raw files waiting. At most 40 lines in total. A report in `journal/reports/` is read by frontier models: never quote the content of a local-only file in it. Never write a report outside the vault. Append to `log.md`.
+5. **Content ideas.** Up to 3 ideas from what moved this week: a concept that gained a source, a strong take the owner wrote, a project that shipped. For each, one angle and its source paths, after checking in `content/index.md` that no published piece already makes the point. Append them to `content/ideas.md`, one line each: `YYYY-MM-DD · <angle> · <source paths>`. Never use a confidential or mission page as a source.
+6. **Raw files waiting.** List the files in `raw/` with no compiled page, or newer than their page, as candidates for `ingest`.
+7. **Rebuild.** Run `anybrain index .`.
+8. **Report.** Add five sections to the report file of step 1: fixed, needs the owner (contradictions, merges, stale projects, findings you could not fix), proposed rules, content ideas, raw files waiting. At most 40 lines in total. A report in `journal/reports/` is read by frontier models: never quote the content of a local-only file in it. Never write a report outside the vault. Append to `log.md`.
 
 ## Red lines
 
