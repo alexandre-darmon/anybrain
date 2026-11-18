@@ -45,3 +45,5 @@ jobs       = 2                     # cases run in parallel; one at a time with -
 timeout_s  = 600                   # per case
 max_tokens = 1024                  # judge answer
 retries    = 2                     # when the harness gives no answer
+quiet_minutes = 15                 # if you edit the vault during a run: wait this long without edits,
+relaunches = 2                     # then run again the cases that saw the old content (at most this often)

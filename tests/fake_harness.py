@@ -8,7 +8,9 @@ agent would, and plays the judge when the prompt asks for a verdict. Behaviour s
   an error and creates <path>; later calls refuse cleanly, and create <path>.saw-previous if that file is there.
 - FAKE_BUDGET=1: every run stops at its --max-budget-usd, as `error_max_budget_usd`, costing that budget.
 - FAKE_LOG=<path>: append one JSON line per call (budget, judge or worker, tools flag).
-- FAKE_TOUCH=<path>: write that file, as an agent that escaped its copy of the vault would.
+- FAKE_TOUCH=<path>: write that file on every call, as an owner editing the vault without pause would.
+- FAKE_TOUCH_ONCE=<path>: write that file on the first call only, as one edit by the owner during a run.
+- FAKE_ESCAPE=<path>: write that file with a Write tool call, as an agent that escaped its copy would.
 """
 import json
 import os
@@ -24,6 +26,9 @@ if os.environ.get("FAKE_LOG"):
         log.write(json.dumps({"budget": budget, "judge": "Grade this" in prompt, "tools": sys.argv[2:4]}) + "\n")
 if os.environ.get("FAKE_TOUCH"):
     Path(os.environ["FAKE_TOUCH"]).write_text("escaped\n")
+once = os.environ.get("FAKE_TOUCH_ONCE")
+if once and not Path(once).exists() and "Grade this" not in prompt:
+    Path(once).write_text("edited by the owner\n")
 marker = os.environ.get("FAKE_FAIL_FIRST")
 if marker and not Path(marker).exists():
     Path(marker).write_text("failed once")
@@ -41,6 +46,11 @@ def tool(name, data, error=None):
 
 def read(rel):
     tool("Read", {"file_path": str(cwd / rel)})
+
+
+if os.environ.get("FAKE_ESCAPE") and "Grade this" not in prompt:
+    Path(os.environ["FAKE_ESCAPE"]).write_text("written outside the copy\n")
+    tool("Write", {"file_path": os.environ["FAKE_ESCAPE"]})
 
 
 if "Grade this" in prompt:

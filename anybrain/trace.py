@@ -39,6 +39,7 @@ class ToolCall:
     target: str
     result: str = "ok"  # "ok", "denied" or "error"
     ran: bool = True  # False when the harness refused the call or the tool failed before doing anything
+    raw: str = ""  # the target as the tool call gave it, before it was made relative to the vault
 
     def as_json(self) -> dict:
         return {"tool": self.tool, "target": self.target, "result": self.result}
@@ -93,6 +94,7 @@ class Run:
     files_written: list[str] = field(default_factory=list)
     files_searched: list[str] = field(default_factory=list)  # folders a recursive search went through
     searches: list[Search] = field(default_factory=list)
+    escaped_writes: list[str] = field(default_factory=list)  # writes into the owner's real vault during an eval
     tokens: dict = field(default_factory=lambda: {"input": 0, "output": 0, "cached": 0})
     cost_usd: float | None = None
     duration_ms: int | None = None
@@ -143,6 +145,18 @@ def relative(target: str, root: Path, origin: Path | None = None, cwd: str | Non
         if rel is not None:
             return rel
     return full if os.path.isabs(raw) else os.path.normpath(raw)
+
+
+def escapes(target: str, root: Path, origin: Path | None, cwd: str | None = None) -> bool:
+    """True when a written path lands in the owner's real vault (`origin`) rather than in the run's copy."""
+    raw = os.path.expanduser((target or "").strip())
+    if not raw or origin is None:
+        return False
+    full = os.path.normpath(raw if os.path.isabs(raw) else os.path.join(cwd or str(root), raw))
+    real = os.path.realpath(full)
+    in_copy = any(_inside(form, base) is not None for form in (full, real) for base in _bases(root, None))
+    in_origin = any(_inside(form, base) is not None for form in (full, real) for base in _bases(origin, None))
+    return in_origin and not in_copy
 
 
 def resolved_rel(rel: str, root: Path, origin: Path | None = None) -> str | None:
@@ -264,6 +278,22 @@ def _search(name: str, words: list[str], root: Path, origin: Path | None, cwd: s
     return searches, not_paths
 
 
+def shell_escapes(command: str, root: Path, origin: Path | None) -> list[str]:
+    """Write targets of a shell command (redirections, `tee`) that land in the owner's real vault."""
+    found, cwd = [], str(root)
+    for words, _, outputs in _segments(command):
+        targets = list(outputs)
+        if words and Path(words[0]).name == "cd":
+            cwd = os.path.normpath(os.path.join(cwd, os.path.expanduser(words[1] if len(words) > 1 else str(root))))
+            continue
+        if words and Path(words[0]).name == "tee":
+            targets += [w for w in words[1:] if not w.startswith("-")]
+        for target in targets:
+            if not target.isdigit() and not target.startswith(("&", "/dev/")) and escapes(target, root, origin, cwd):
+                _add(found, os.path.normpath(os.path.join(cwd, target)))
+    return found
+
+
 def files_from_shell(command: str, root: Path, origin: Path | None = None) -> tuple[list[str], list[str], list[Search]]:
     """Files a shell command reads, files it writes, and the recursive searches it runs.
 
@@ -364,7 +394,7 @@ class ClaudeAdapter(Adapter):
                     target = data.get("file_path") or data.get("command") or data.get("path") or \
                         data.get("pattern") or data.get("skill") or data.get("description") or ""
                     call = ToolCall(tool, relative(str(target), root, origin)
-                                    if tool in ("Read", "Write", "Edit", "NotebookEdit") else str(target))
+                                    if tool in ("Read", "Write", "Edit", "NotebookEdit") else str(target), raw=str(target))
                     calls[item.get("id", str(len(order)))] = call
                     order.append(item.get("id", str(len(order) - 1)))
             elif kind == "user":
@@ -412,12 +442,16 @@ class ClaudeAdapter(Adapter):
                     _add(run.files_searched, search.folder)
                     if search not in run.searches:
                         run.searches.append(search)
+                for item in shell_escapes(call.target, root, origin):
+                    _add(run.escaped_writes, item)
             elif call.result != "ok":
                 continue
             elif call.tool == "Read":
                 _add(run.files_read, call.target)
             elif call.tool in ("Write", "Edit", "NotebookEdit"):
                 _add(run.files_written, call.target)
+                if call.raw and escapes(call.raw, root, origin):
+                    _add(run.escaped_writes, call.raw)
         return run
 
 
@@ -537,6 +571,7 @@ def build_record(run: Run, root: Path, profile: str, trigger: str, started: str,
         "files_read": run.files_read,
         "files_written": run.files_written,
         "files_searched": run.files_searched,
+        "escaped_writes": run.escaped_writes,
         "denied": denied,
         "local_only_read_on_frontier": local_reads,
         "self_reported_files_opened": self_reported_files(run.answer),
@@ -563,7 +598,7 @@ def merge_records(records: list[dict]) -> dict:
     merged["tool_calls"] = [c for r in records for c in r.get("tool_calls") or []]
     merged["tool_calls_seen"] = all(r.get("tool_calls_seen", True) for r in records)
     merged["denied"] = [c for r in records for c in r.get("denied") or []]
-    for key in ("files_read", "files_written", "files_searched", "local_only_read_on_frontier"):
+    for key in ("files_read", "files_written", "files_searched", "local_only_read_on_frontier", "escaped_writes"):
         items: list[str] = []
         for record in records:
             for item in record.get(key) or []:

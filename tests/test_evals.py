@@ -20,7 +20,7 @@ GOLDEN = ROOT / "evals" / "golden.example.yaml"
 def models_toml(judge="harness:claude", jobs=2):
     return (f'[harnesses.claude]\nheadless = "{sys.executable} {FAKE} {{prompt}}"\n'
             f'judge = "{sys.executable} {FAKE} {{prompt}}"\n'
-            f'[eval]\njudge = "{judge}"\njobs = {jobs}\nretries = 1\ntimeout_s = 60\n'
+            f'[eval]\njudge = "{judge}"\njobs = {jobs}\nretries = 1\ntimeout_s = 60\nquiet_minutes = 0\n'
             '[routing]\ndefault = "frontier"\n"me/" = "local"\n"me/preferences.md" = "frontier"\n'
             '"journal/" = "local"\n"company/" = "local"\n"finance/" = "local"\n')
 
@@ -287,9 +287,34 @@ def test_inside_an_eval_case_anybrain_only_touches_the_copy(vault, tmp_path, mon
     assert snapshot(vault) == before and not (tmp_path / "new").exists()
 
 
-def test_the_eval_fails_when_the_vault_changes_during_the_run(vault, monkeypatch, capsys):
-    monkeypatch.setenv("FAKE_TOUCH", str(vault / "wiki" / "escaped.md"))
+def test_the_eval_fails_when_the_vault_keeps_changing(vault, monkeypatch, capsys):
+    monkeypatch.setenv("FAKE_TOUCH", str(vault / "wiki" / "edited.md"))
     assert cli.main(["eval", str(vault), "--golden", str(GOLDEN), "--tags", "navigation"]) == 1
     out = capsys.readouterr().out
-    assert "THE VAULT CHANGED DURING THE EVAL" in out and "wiki/escaped.md" in out
-    assert run_file(vault)["vault_changed"] == ["wiki/escaped.md"]
+    assert out.count("waiting for 0 min without edits") == 2
+    assert "THE VAULT CHANGED DURING THE EVAL (1 file(s)), still after 2 relaunch(es)" in out
+    data = run_file(vault)
+    assert data["vault_changed"] == ["wiki/edited.md"] and len(data["relaunches"]) == 2
+
+
+def test_after_an_owner_edit_the_eval_waits_then_runs_the_stale_cases_again(vault, monkeypatch, capsys):
+    (vault / ".harness" / "models.toml").write_text(models_toml(jobs=1))
+    monkeypatch.setenv("FAKE_TOUCH_ONCE", str(vault / "wiki" / "edited.md"))
+    assert cli.main(["eval", str(vault), "--golden", str(GOLDEN), "--tags", "navigation"]) == 0
+    out = capsys.readouterr().out
+    data = run_file(vault)
+    (relaunch,) = data["relaunches"]
+    first = data["results"][0]["id"]
+    assert relaunch["changed"] == ["wiki/edited.md"] and relaunch["rerun"] == [first], \
+        "only the case that copied the vault before the edit runs again"
+    assert f"{first:<6} pass" in out and "(run again)" in out and data["vault_changed"] == []
+    costs = {r["id"]: r["trace"]["cost_usd"] + r["judge_cost_usd"] for r in data["results"] if r["trace"]}
+    assert data["cost_usd"] == round(sum(costs.values()) + costs[first], 4), "the replaced run still counts"
+
+
+def test_a_case_that_writes_into_the_real_vault_fails_at_once(vault, monkeypatch, capsys):
+    monkeypatch.setenv("FAKE_ESCAPE", str(vault / "wiki" / "escaped.md"))
+    assert cli.main(["eval", str(vault), "--golden", str(GOLDEN), "--tags", "navigation"]) == 1
+    out = capsys.readouterr().out
+    assert "A CASE WROTE INTO THE VAULT ITSELF, NOT INTO ITS COPY" in out and "waiting" not in out
+    assert run_file(vault)["escaped_writes"] == [str(vault / "wiki" / "escaped.md")]

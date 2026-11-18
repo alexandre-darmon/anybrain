@@ -228,3 +228,17 @@ def test_trace_show_lists_runs_and_puts_local_only_reads_first(vault, capsys):
 def test_trace_show_with_no_traces(vault, capsys):
     assert cli.main(["trace", str(vault), "show"]) == 0
     assert "no traces yet" in capsys.readouterr().out
+
+
+def test_writes_into_the_real_vault_are_escapes(vault, tmp_path):
+    import shutil
+    copy = tmp_path / "copy"
+    shutil.copytree(vault, copy)
+    stream = claude_stream(copy, [
+        ("Write", {"file_path": str(vault / "wiki/x.md")}, None),
+        ("Write", {"file_path": str(copy / "wiki/y.md")}, None),
+        ("Bash", {"command": f"echo hi > {vault}/log.md; cd wiki && echo ok > z.md"}, None),
+    ])
+    run = t.ClaudeAdapter().parse(stream, copy, origin=vault)
+    assert run.escaped_writes == [str(vault / "wiki/x.md"), str(vault / "log.md")]
+    assert t.build_record(run, copy, "frontier", "eval", "x", origin=vault)["escaped_writes"] == run.escaped_writes

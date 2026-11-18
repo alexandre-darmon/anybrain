@@ -34,7 +34,9 @@ BASELINE_DIR = tr.BASELINE_DIR
 TAGS = ("navigation", "concept", "multi-hop", "needle", "project", "recommend", "safety", "injection", "content")
 HARD_TAGS = ("safety", "injection")  # a failure here makes the run fail (exit code 1)
 COPY_IGNORE = (".git", "baseline", "traces")
-EVAL_DEFAULTS = {"judge": "endpoint:frontier", "jobs": 2, "timeout_s": 600, "max_tokens": 1024, "retries": 2}
+EVAL_DEFAULTS = {"judge": "endpoint:frontier", "jobs": 2, "timeout_s": 600, "max_tokens": 1024, "retries": 2,
+                 "quiet_minutes": 15, "relaunches": 2}
+QUIET_POLL_S = 30
 RETRY_DELAYS_S = (5, 15)
 JUDGE_BUDGET_USD = 0.5  # per judge run when no --max-cost is given
 NOT_RETRIED = ("error_max_budget_usd", "error_max_turns")  # limits: a retry would hit them again
@@ -298,6 +300,7 @@ class Result:
     trace: dict | None = None
     note: str = ""
     judge_cost: float = 0.0
+    copied_at: float | None = None  # when the vault was copied for the attempt that gave this result
 
     @property
     def cost(self) -> float:
@@ -326,6 +329,7 @@ def run_case(case: Case, vault: Path, models: dict, harness: str, profile: str, 
         if left is not None and left < 0.01:
             break
         started = tr.now_iso()
+        copied_at = time.time()
         with tempfile.TemporaryDirectory(prefix="anybrain-eval-") as tmp:
             root = copy_vault(vault, Path(tmp))
             command = harness_command(models, harness, case.question, profile, left)
@@ -344,7 +348,7 @@ def run_case(case: Case, vault: Path, models: dict, harness: str, profile: str, 
         return Result(case, "not-run", note="cost cap reached")
     record = tr.merge_records(records)
     if not run.ok:
-        return Result(case, "error", answer=run.answer, trace=record, note=run.error)
+        return Result(case, "error", answer=run.answer, trace=record, note=run.error, copied_at=copied_at)
     graders, expected, judge_cost = {}, case.expected, 0.0
     if expected.get("cited_files"):
         graders["cited_files"] = grade_cited(run.answer, [str(p) for p in v.as_list(expected["cited_files"])])
@@ -371,7 +375,7 @@ def run_case(case: Case, vault: Path, models: dict, harness: str, profile: str, 
                                        "detail": "read on frontier: " + ", ".join(record["local_only_read_on_frontier"])}
     passed = all(g["pass"] for g in graders.values())
     status = "error" if note and not record["local_only_read_on_frontier"] else ("pass" if passed else "fail")
-    return Result(case, status, graders, run.answer, record, note=note, judge_cost=judge_cost)
+    return Result(case, status, graders, run.answer, record, note=note, judge_cost=judge_cost, copied_at=copied_at)
 
 
 # ---------------------------------------------------------------------------- run, gates, baseline (17.3, 22.3)
@@ -535,9 +539,25 @@ def fingerprint(vault: Path) -> dict[str, tuple[int, int]]:
 
 
 def changed_files(before: dict, after: dict) -> list[str]:
-    """Files added, removed or changed in the owner's vault while the eval ran: a case escaped its copy, or
-    the owner edited the vault during the run. Either way the run is not clean (docs/decisions.md D036)."""
+    """Files added, removed or changed in the owner's vault while the eval ran (docs/decisions.md D036)."""
     return sorted(k for k in before.keys() | after.keys() if before.get(k) != after.get(k))
+
+
+def last_change(after: dict, changed: list[str]) -> float:
+    """Time of the latest change: the newest modification time among changed files, now for a deleted one."""
+    times = [after[k][1] / 1e9 if k in after else time.time() for k in changed]
+    return max(times) if times else time.time()
+
+
+def wait_for_quiet(vault: Path, minutes: float, since: float) -> dict:
+    """Wait until the vault has had no change for `minutes`, counted from `since`; return its fingerprint then."""
+    current, last = fingerprint(vault), since
+    while time.time() - last < minutes * 60:
+        time.sleep(max(1.0, min(QUIET_POLL_S, minutes * 60 - (time.time() - last))))
+        newer = fingerprint(vault)
+        if newer != current:
+            current, last = newer, time.time()
+    return current
 
 
 def run(vault: Path, harness: str = "claude", profile: str = "frontier", tags: list[str] | None = None,
@@ -566,26 +586,50 @@ def run(vault: Path, harness: str = "claude", profile: str = "frontier", tags: l
 
     # A cap holds only if each case knows what the others spent: with --max-cost, cases run one at a time.
     jobs = 1 if max_cost is not None else max(1, int(settings.get("jobs", 2)))
+
+    def run_cases(batch: list[Case], label: str = "") -> None:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
+            futures = {pool.submit(task, case): case for case in batch}
+            for future in concurrent.futures.as_completed(futures):
+                result = future.result()
+                results[result.case.id] = result
+                trace = result.trace or {}
+                leak = " LOCAL-ONLY READ" if trace.get("local_only_read_on_frontier") else ""
+                extra = (f" ({result.cost:.2f} USD, {len(trace.get('files_read') or [])} file(s) read)"
+                         if isinstance(trace.get("cost_usd"), (int, float)) else "")
+                note = f": {result.note}" if result.note else ""
+                print(f"{result.case.id:<6} {result.status}{leak}{extra}{note}{label}")
+
+    def escaped_writes() -> list[str]:
+        return sorted({p for r in results.values() for p in (r.trace or {}).get("escaped_writes") or []})
+
     before = fingerprint(vault)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
-        futures = {pool.submit(task, case): case for case in cases}
-        for future in concurrent.futures.as_completed(futures):
-            result = future.result()
-            results[result.case.id] = result
-            trace = result.trace or {}
-            leak = " LOCAL-ONLY READ" if trace.get("local_only_read_on_frontier") else ""
-            extra = (f" ({result.cost:.2f} USD, {len(trace.get('files_read') or [])} file(s) read)"
-                     if isinstance(trace.get("cost_usd"), (int, float)) else "")
-            note = f": {result.note}" if result.note else ""
-            print(f"{result.case.id:<6} {result.status}{leak}{extra}{note}")
-    changed = changed_files(before, fingerprint(vault))
+    run_cases(cases)
+    after = fingerprint(vault)
+    changed, escaped, relaunches = changed_files(before, after), escaped_writes(), []
+    quiet = float(settings.get("quiet_minutes", 15))
+    # An edit by the owner during the run leaves some cases on older content: once the vault has been quiet
+    # for `quiet_minutes`, those cases run again. A case that wrote into the vault itself fails the run at once.
+    while changed and not escaped and len(relaunches) < int(settings.get("relaunches", 2)):
+        since = last_change(after, changed)
+        stale = [c for c in cases if results[c.id].copied_at is not None and results[c.id].copied_at <= since]
+        print(f"the vault changed during the eval ({len(changed)} file(s): {', '.join(changed[:5])}); waiting for "
+              f"{quiet:g} min without edits, then running again the {len(stale)} case(s) that started before the last edit")
+        before = wait_for_quiet(vault, quiet, since)
+        relaunches.append({"changed": changed, "rerun": [c.id for c in stale]})
+        run_cases(stale, " (run again)")
+        after = fingerprint(vault)
+        changed, escaped = changed_files(before, after), escaped_writes()
     ordered = [results[c.id] for c in cases]
     first = next((r.trace for r in ordered if r.trace), {}) or {}
     meta = {"date": v.today().isoformat(), "harness": harness, "harness_version": first.get("harness_version"),
             "model": first.get("model"), "profile": profile, "golden": str(golden or GOLDEN),
             "judge": settings.get("judge"), "tags": tags or []}
     summary = summarise(ordered, vault, meta)
+    summary["cost_usd"] = round(spent["usd"], 4)  # every run, including the ones a relaunch replaced
     summary["vault_changed"] = changed
+    summary["relaunches"] = relaunches
+    summary["escaped_writes"] = escaped
     path = run_path(vault, harness, profile)
     v.write_text(path, json.dumps(summary, indent=1, ensure_ascii=False) + "\n")
     print(f"wrote {v.rel_path(vault, path)}")
@@ -595,8 +639,11 @@ def run(vault: Path, harness: str = "claude", profile: str = "frontier", tags: l
         pointer = vault / BASELINE_DIR / f"baseline-{harness}-{profile}.json"
         v.write_text(pointer, json.dumps({"run": path.name, "frozen": v.today().isoformat()}, indent=1) + "\n")
         print(f"wrote {v.rel_path(vault, pointer)} (frozen baseline)")
-    if changed:
-        print(f"THE VAULT CHANGED DURING THE EVAL ({len(changed)} file(s)): " + ", ".join(changed[:10]))
-    hard_fail = summary["local_only_reads"] or changed or any(
+    if escaped:
+        print("A CASE WROTE INTO THE VAULT ITSELF, NOT INTO ITS COPY: " + ", ".join(escaped[:10]))
+    elif changed:
+        print(f"THE VAULT CHANGED DURING THE EVAL ({len(changed)} file(s)), still after {len(relaunches)} "
+              "relaunch(es): " + ", ".join(changed[:10]))
+    hard_fail = summary["local_only_reads"] or changed or escaped or any(
         r.status in ("fail", "error") and set(r.case.tags) & set(HARD_TAGS) for r in ordered)
     return 1 if hard_fail else 0
