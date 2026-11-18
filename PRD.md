@@ -413,7 +413,7 @@ brain/
 
 | Folder | Who writes | Default `sensitivity` | Model route | Notes |
 | --- | --- | --- | --- | --- |
-| `me/` | Owner; agent appends to `preferences.md` "Learned rules" only after approval | personal | local, except `me/preferences.md` → frontier (Q15) | `preferences.md` holds rules for the agent, never private facts: every model reads it |
+| `me/` | Owner; agent appends to `preferences.md` "Learned rules" only after approval | personal | local, except `me/preferences.md` and `me/voice.md` → frontier (Q15, Q35) | `preferences.md` holds rules for the agent and `voice.md` writing traits, never private facts: every model reads them |
 | `raw/` | Owner and capture tools; **agent never edits** | personal | frontier, except `raw/docs/` → local | Agent may create new files only in `raw/inbox/` when asked to save something |
 | `library/` | Agent (except protected sections) | public | frontier | |
 | `wiki/` | Agent (except protected sections) | public | frontier | |
@@ -994,6 +994,7 @@ api_key_env = ""
 default     = "frontier"
 "me/"       = "local"
 "me/preferences.md" = "frontier"                # rules for the agent, read by every model (Q15)
+"me/voice.md" = "frontier"                      # how the owner writes, read by every model (Q35)
 "journal/"  = "local"
 "company/"  = "local"
 "finance/"  = "local"
@@ -1389,7 +1390,7 @@ P2, P3, P4 are planned only after step 18 and the 4-week measure.
 | Q32 | The dashboard of 22.7 is P2, with continuous observability. Should it come earlier, fed only by eval runs (P1) and the vault's own figures? | P2, with 22.6; the owner asked for it on 2026-11-18 without a date |
 | Q33 | P1b was built before the owner's real migration (step 14), which section 7 and 24 put first. Does P1b's exit still wait for step 14? | Yes: the code is built (owner decision, 2026-11-18), the exit criteria (4 pieces published, edit ratio measured, content evals) need real use after step 14 (D044) |
 | Q34 | How is the edit ratio counted, and how strict are content checks on text the owner already published? | Characters inserted, deleted or replaced over the longer text; banned patterns and placeholders are warnings on published pieces, which are the owner's protected text (D044) |
-| Q35 | `me/voice.md` sits in `me/`, which the default routing keeps local, so a Claude Code session (frontier) cannot read the voice traits when drafting. Should it be readable by frontier models, like `me/preferences.md` (Q15)? It holds writing traits and sentences already published, no private facts | Left local until the owner decides. Meanwhile the draft skill writes from the channel guide and the learned rules in `me/preferences.md`, and `anybrain content check` still applies the banned list (D045) |
+| Q35 | `me/voice.md` sits in `me/`, which the default routing keeps local, so a Claude Code session (frontier) cannot read the voice traits when drafting. Should it be readable by frontier models, like `me/preferences.md` (Q15)? It holds writing traits and sentences already published, no private facts | **Decided by the owner (2026-11-18): yes, `me/voice.md` is routed frontier like `me/preferences.md`.** The draft skill keeps its fallback for a vault that routes it local (D047) |
 | Q36 | A draft written and published the same day gets the same file name in `content/drafts/` and `content/published/` (11.10, 11.11), which 13.2 forbids. | The published piece takes the suffix `-published` in that case only (D045) |
 | Q37 | 15.10 lets a draft use a mission page the owner names, while `lint --content` makes any mission source an error. How is that learning sourced? | The learning is written in general terms and never cited: not in `sources`, not in a `src` comment, not in the notes, which say a named page was used. The check stays an error (D046) |
 | Q38 | 22.2 says the judge sees the question, the behaviour, the answer and the cited files; a content case is about the draft written. And 17.3's cost gate measures answers. | The judge also sees the draft a content case wrote; content cases do not count in the files-read gate (D045) |

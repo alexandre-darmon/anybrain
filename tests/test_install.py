@@ -143,7 +143,8 @@ def test_rendered_harness_configs_follow_the_default_routing(brain):
     assert opencode["permissions"] == (
         [{"action": "read", "resource": r, "effect": "deny"} for r in denied]
         + [{"action": "read", "resource": "journal/reports/**", "effect": "allow"},
-           {"action": "read", "resource": "me/preferences.md", "effect": "allow"}])
+           {"action": "read", "resource": "me/preferences.md", "effect": "allow"},
+           {"action": "read", "resource": "me/voice.md", "effect": "allow"}])
     local = opencode["agents"]["local"]
     assert local["model"].startswith("ollama/")
     assert [r["resource"] for r in local["permissions"] if r["effect"] == "allow"] == denied
@@ -153,7 +154,7 @@ def test_claude_rules_deny_every_local_folder_and_reopen_the_exceptions():
     rules = install.claude_read_rules(v.DEFAULT_ROUTING_OBJ)
     assert rules == ["Read(./.harness/baseline/**)", "Read(./.harness/traces/**)", "Read(./company/**)",
                      "Read(./finance/**)", "Read(journal/*)", "Read(!journal/reports/**)", "Read(me/*)",
-                     "Read(!me/preferences.md)", "Read(./raw/docs/**)", "Read(./.harness/.env)",
+                     "Read(!me/preferences.md)", "Read(!me/voice.md)", "Read(./raw/docs/**)", "Read(./.harness/.env)",
                      "Read(./.harness/clients.txt)", "Read(./.harness/names.txt)"]
 
 
@@ -398,3 +399,26 @@ def test_a_fresh_obsidian_vault_says_to_delete_its_welcome_page(tmp_path, home, 
     assert "sample page Welcome.md: delete it" in capsys.readouterr().err
     (brain / "Welcome.md").unlink()
     assert cli.main(["init", str(brain)]) == 0
+
+
+
+def test_init_accepts_a_copy_of_the_example_vault(tmp_path, home):
+    import shutil
+    from conftest import EXAMPLE
+    brain = tmp_path / "brain"
+    shutil.copytree(EXAMPLE, brain)
+    assert cli.main(["init", str(brain)]) == 0, "pages anybrain could have made are not foreign"
+
+
+def test_the_guard_sees_a_linked_folder_and_an_index_outside_the_layout(tmp_path, home, capsys):
+    legacy = tmp_path / "elsewhere"
+    legacy.mkdir()
+    (legacy / "note.md").write_text("legacy\n")
+    brain = tmp_path / "brain"
+    brain.mkdir()
+    (brain / "Old").symlink_to(legacy)
+    (brain / "Notes").mkdir()
+    (brain / "Notes" / "index.md").write_text("a legacy hub\n")
+    assert cli.main(["init", str(brain)]) == 2
+    err = capsys.readouterr().err
+    assert "Old" in err and "Notes/index.md" in err

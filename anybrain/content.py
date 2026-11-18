@@ -81,13 +81,44 @@ def _changed_chars(a: list[str], b: list[str]) -> int:
     return changed
 
 
+REFINE_RE = re.compile(r"\w+|\W")
+CHAR_LIMIT = 2000  # changed passages up to this size are compared letter by letter
+
+
+def _changed(old: str, new: str) -> int:
+    """Characters changed between two passages: letter by letter when small, else by finer words, recursively."""
+    if not old or not new:
+        return len(old) + len(new)
+    start = 0  # the common beginning and end are not changes: a one-letter fix in a long word stays one letter
+    while start < min(len(old), len(new)) and old[start] == new[start]:
+        start += 1
+    end = 0
+    while end < min(len(old), len(new)) - start and old[-1 - end] == new[-1 - end]:
+        end += 1
+    old, new = old[start:len(old) - end], new[start:len(new) - end]
+    if not old or not new:
+        return len(old) + len(new)
+    if len(old) + len(new) <= CHAR_LIMIT:
+        return _changed_chars(list(old), list(new))
+    a, b = REFINE_RE.findall(old), REFINE_RE.findall(new)
+    if len(a) <= 1 and len(b) <= 1:  # one huge word: no finer unit
+        return max(len(old), len(new))
+    changed = 0
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if op != "equal":
+            changed += _changed("".join(a[i1:i2]), "".join(b[j1:j2])) if op == "replace" else \
+                sum(map(len, a[i1:i2])) + sum(map(len, b[j1:j2]))
+    return changed
+
+
 def edit_ratio(first: str, final: str) -> float:
     """Share of the text changed, by characters (PRD section 6): characters deleted, inserted or replaced,
     a replacement counting as its longer side, over the length of the longer text. 0 means unchanged, 1 means
     rewritten. Additions count, so a draft the owner had to lengthen a lot is not scored as close.
 
-    The texts are aligned word by word, then each changed passage is refined character by character, so an
-    article-length text takes milliseconds instead of seconds and a one-letter fix still counts one letter.
+    The texts are aligned word by word, then each changed passage is refined: letter by letter up to 2,000
+    characters, by finer words beyond. An article takes a fraction of a second, and a one-letter fix counts
+    one letter even in a long passage (docs/decisions.md D046, D047).
     """
     if not first and not final:
         return 0.0
@@ -95,11 +126,7 @@ def edit_ratio(first: str, final: str) -> float:
     changed = 0
     for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
         if op == "replace":
-            old, new = "".join(a[i1:i2]), "".join(b[j1:j2])
-            if len(old) + len(new) <= 400:
-                changed += _changed_chars(list(old), list(new))
-            else:
-                changed += max(len(old), len(new))
+            changed += _changed("".join(a[i1:i2]), "".join(b[j1:j2]))
         elif op == "delete":
             changed += sum(map(len, a[i1:i2]))
         elif op == "insert":

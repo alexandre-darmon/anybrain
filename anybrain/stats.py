@@ -132,5 +132,7 @@ def print_content(vault: Path) -> None:
         last = ratios[-CONVERGENCE_PIECES:]
         older, newer = last[:CONVERGENCE_PIECES // 2], last[CONVERGENCE_PIECES // 2:]
         newer_mean = sum(newer) / len(newer)
-        if newer_mean >= sum(older) / len(older) and newer_mean > EDIT_RATIO_TARGET:
-            print("the edit ratio did not go down over the last 8 pieces: review me/voice.md and the channel guides (16.5)")
+        if newer_mean >= sum(older) / len(older):
+            advice = ("review me/voice.md and the channel guides" if newer_mean > EDIT_RATIO_TARGET
+                      else f"it stays under the {_percent(EDIT_RATIO_TARGET)} target")
+            print(f"the edit ratio did not go down over the last 8 pieces: {advice} (16.5)")

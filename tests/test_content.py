@@ -333,11 +333,102 @@ def test_content_check_reports_invalid_yaml_and_hides_a_local_only_draft(fixture
     assert "details hidden" in out and "Acme" not in out
 
 
-def test_stats_stays_quiet_when_the_ratio_is_flat_and_under_target(make_vault, capsys, monkeypatch):
+def test_stats_says_a_flat_ratio_under_target_without_advising_a_review(make_vault, capsys, monkeypatch):
     monkeypatch.setenv("ANYBRAIN_TODAY", "2026-12-31")
     root = make_vault({f"content/published/2026-11-{i:02d}-p{i}.md": page(
         f"P{i}", "published", channel="linkedin", url="https://example.com", published=f"2026-11-{i:02d}",
         draft=f"content/drafts/p{i}.md", edit_ratio=0.1) for i in range(1, 9)})
     stats.run(root)
     out = capsys.readouterr().out
-    assert "met (10%)" in out and "did not go down" not in out
+    assert "met (10%)" in out and "did not go down over the last 8 pieces: it stays under the 30% target" in out
+    assert "review me/voice.md" not in out  # 16.5 says it; the advice is for a ratio above the target
+
+
+
+# ---------------------------------------------------------------- final review before 0.1.0 (D047)
+
+def test_a_client_name_with_a_star_is_still_caught(fixture_vault):
+    (fixture_vault / ".harness" / "clients.txt").write_text("E*Trade\n")
+    rel = "content/drafts/2026-11-28-star.md"
+    (fixture_vault / rel).write_text(ready_draft("We helped E*Trade rebuild onboarding."))
+    assert any("names a client" in f for f in findings(fixture_vault, rel))
+
+
+def test_client_names_in_tags_audience_and_file_name(fixture_vault):
+    rel = "content/drafts/2026-11-29-acme-corp-story.md"
+    (fixture_vault / rel).write_text(ready_draft("A clean body."))
+    assert any("names a client" in f for f in findings(fixture_vault, rel)), "the file name names the client"
+
+
+@pytest.mark.parametrize("notes, bad", [
+    ("- Sources used: wiki/notes/source-note.md and wiki/notes/source-note.md", None),
+    ("- Sources used: wiki/notes/source-note.md; one learning from a page you named, not cited.", None),
+    ("- Sources used: [Source note](wiki/notes/source-note.md)", None),
+    ("- **Sources used**: projects/acme-mission.md", "acme-mission"),
+    ("- Sources used:\n  - projects/acme-mission.md", "acme-mission"),
+])
+def test_the_notes_sources_line_reads_references_not_prose(fixture_vault, notes, bad):
+    rel = "content/drafts/2026-11-30-notes.md"
+    (fixture_vault / rel).write_text(ready_draft(f"A claim.\n<!-- src: wiki/notes/source-note.md -->\n\n## Notes for the owner\n{notes}\n"))
+    found = findings(fixture_vault, rel)
+    if bad:
+        assert any(bad in f and f.startswith("error") for f in found), found
+    else:
+        assert found == [], found
+
+
+def test_sources_with_spaces_angle_brackets_and_relative_links(fixture_vault):
+    (fixture_vault / "raw" / "highlights").mkdir(parents=True)
+    (fixture_vault / "raw" / "highlights" / "The Snow Leopard.md").write_text("highlights\n")
+    rel = "content/drafts/2026-12-01-forms.md"
+    body = ("A claim.\n<!-- src: raw/highlights/The Snow Leopard.md -->\n"
+            "Another.\n<!-- src: [note](<../../wiki/notes/source-note.md>), [web](https://example.com) -->\n")
+    (fixture_vault / rel).write_text(ready_draft(body))
+    assert findings(fixture_vault, rel) == []
+
+
+@pytest.mark.parametrize("text, count", [
+    ("[YOUR STORY: x]", 1), ("[YOUR NUMBERS: churn]", 1), ("see [your story](https://example.com)", 0),
+])
+def test_placeholders_not_links(fixture_vault, text, count):
+    rel = "content/drafts/2026-12-02-ph.md"
+    (fixture_vault / rel).write_text(ready_draft(f"A claim. {text}\n"))
+    assert sum("placeholder" in f for f in findings(fixture_vault, rel)) == count
+
+
+def test_banned_entries_keep_their_inner_spaces_and_quotes(make_vault):
+    root = make_vault({"me/voice.md": page("Voice", "profile", body=r"""
+        ## Banned
+        - " to be honest "
+        - regex:can't\b
+        """)})
+    patterns, _ = lint.banned_patterns(root)
+    assert patterns[0][0] == " to be honest " and patterns[1][1].search("I can't do it")
+
+
+def test_a_one_letter_fix_in_a_long_passage_counts_one_letter():
+    long = "https://example.com/" + "a" * 1200
+    assert content.edit_ratio(long + " end.", long.replace("aaaa", "aaab", 1) + " end.") < 0.01
+    first = " ".join(f"word{i}" for i in range(400))
+    assert content.edit_ratio(first, first.replace("word200", "WORD200")) < 0.01
+
+
+def test_a_moved_source_on_a_published_piece_is_a_warning(make_vault):
+    root = make_vault({
+        "content/channels/linkedin.md": page("LinkedIn", "channel"),
+        "content/published/2026-11-10-x.md": page(
+            "X", "published", channel="linkedin", url="https://example.com", published="2026-11-10",
+            draft="content/drafts/x.md", edit_ratio=0.2, sources=["wiki/notes/gone.md"], body="Text.\n"),
+    })
+    found = findings(root, "content/published/2026-11-10-x.md")
+    assert found and all(f.startswith("warning") for f in found)
+
+
+def test_ideas_catch_a_wrapped_name_and_a_local_raw_document(fixture_vault):
+    (fixture_vault / "raw" / "docs").mkdir(parents=True)
+    (fixture_vault / "raw" / "docs" / "contract.md").write_text("private\n")
+    (fixture_vault / "content" / "ideas.md").write_text(
+        "# Content ideas\n- 2026-11-20 · what Acme\n  Corp taught me · wiki/notes/source-note.md\n"
+        "- 2026-11-21 · a contract lesson · raw/docs/contract.md\n")
+    found = [str(f) for f in lint.check_content(lint.Context(fixture_vault)) if "ideas.md" in str(f)]
+    assert any("names a client" in f for f in found) and any("ideas.md:4: names a local-only source" in f for f in found)

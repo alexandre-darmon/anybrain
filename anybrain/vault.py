@@ -63,6 +63,7 @@ DEFAULT_ROUTING = {
     "default": "frontier",
     "me/": "local",
     "me/preferences.md": "frontier",
+    "me/voice.md": "frontier",
     "journal/": "local",
     "company/": "local",
     "finance/": "local",

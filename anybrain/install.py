@@ -271,6 +271,25 @@ def link_skills(vault: Path, out: Callable[[str], None], ask: Callable[[str], bo
 
 # ---------------------------------------------------------------------------- init
 
+def _anybrain_page(vault: Path, rel: str) -> bool:
+    """A file in the vault layout that anybrain could have made: a page with its frontmatter and a known type,
+    or any file under raw/ next to such pages."""
+    top = rel.split("/", 1)[0]
+    if "/" not in rel or top not in {d.split("/")[0] for d in LAYOUT_DIRS} | {"content"}:
+        return False
+    if top == "raw" or (top in v.CONFIDENTIAL_FOLDERS and rel.endswith(".csv")):
+        return True  # raw inputs; numbers kept as CSV next to the notes (10.2)
+    if not rel.endswith(".md"):
+        return False
+    from . import lint
+
+    try:
+        fm, *_ = v.parse_frontmatter(v.read_text(vault / rel))
+    except (OSError, UnicodeDecodeError):
+        return False
+    return isinstance(fm, dict) and fm.get("type") in lint.TYPES and bool(fm.get("title"))
+
+
 VAULT_ENTRIES = {d.split("/")[0] for d in LAYOUT_DIRS} | {
     "content", "index.md", "log.md", "AGENTS.md", "CLAUDE.md", "opencode.json"}
 
@@ -287,14 +306,20 @@ def refuse_foreign_notes(vault: Path) -> None:
     # In a folder anybrain never initialised, every visible file is someone else's: notes, canvases and
     # attachments, even inside folders named like the vault layout.
     found = []
+    domains = {f"{d}/index.md" for d in v.DOMAINS}
     for directory, dirs, files in os.walk(vault):
-        dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+        for name in sorted(d for d in dirs if not d.startswith(".")):
+            if os.path.islink(os.path.join(directory, name)):  # a link to a folder elsewhere: someone's files
+                found.append(v.rel_path(vault, Path(directory) / name))
+        dirs[:] = sorted(d for d in dirs if not d.startswith(".") and not os.path.islink(os.path.join(directory, d)))
         for name in sorted(files):
             rel = v.rel_path(vault, Path(directory) / name)
-            if name.startswith(".") or rel in VAULT_ENTRIES or name == "index.md":
-                # the vault's own files, which init keeps as the owner wrote them (an AGENTS.md, a hand-written
-                # index.md: Q19), are not someone else's notes
+            if name.startswith(".") or rel in VAULT_ENTRIES or rel in v.APPEND_ONLY_FILES:
                 continue
+            if rel == "index.md" or rel in domains:
+                continue  # a hand-written index, which init keeps as the owner wrote it (Q19)
+            if _anybrain_page(vault, rel):
+                continue  # a page anybrain could have made: a copy of vault.example, a vault restored from backup
             found.append(rel)
     if found == ["Welcome.md"]:
         raise v.VaultError(f"{vault} holds Obsidian's sample page Welcome.md: delete it, then run init again")

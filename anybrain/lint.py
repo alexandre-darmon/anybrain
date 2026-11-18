@@ -33,7 +33,8 @@ CONFIDENCE = ("low", "medium", "high")
 CHANNELS = ("linkedin", "article", "newsletter", "site", "portfolio", "application", "bio", "email")
 TAILORED_CHANNELS = ("application", "bio", "email")  # these need a `brief` in raw/inbox/
 DRAFT_STATUS = ("idea", "drafting", "ready", "published", "dropped")
-PLACEHOLDER_RE = re.compile(r"\[\s*YOUR\s+(?:STORY|NUMBER)\b", re.I)  # [YOUR STORY: ...], [Your story], [YOUR NUMBER]
+# [YOUR STORY: ...], [Your story], [YOUR NUMBERS: ...]; not the text of a Markdown link such as [your story](url)
+PLACEHOLDER_RE = re.compile(r"\[\s*YOUR\s+(?:STOR(?:Y|IES)|NUMBERS?)\b[^\]\n]*\](?!\()", re.I)
 SRC_COMMENT_RE = re.compile(r"<!--\s*(?:src|sources?)\s*:\s*(.*?)\s*-->", re.I | re.S)
 BULLET_RE = re.compile(r"^(?:[-*+]|\d+[.)])\s+")
 HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
@@ -598,7 +599,7 @@ def _client_names(vault: Path) -> list[str]:
 def client_matchers(vault: Path) -> list[tuple[str, re.Pattern]]:
     """One pattern per client name, matching its spaced, joined, kebab, snake, line-wrapped and unaccented
     forms (anonymize.name_pattern, D026)."""
-    return [(name, pii.name_pattern(unicodedata.normalize("NFC", name).translate(QUOTE_FOLD)))
+    return [(name, pii.name_pattern(unicodedata.normalize("NFC", name).translate(QUOTE_FOLD).replace("*", "")))
             for name in _client_names(vault)]
 
 
@@ -700,6 +701,13 @@ def check_icloud(ctx: Context) -> list[Finding]:
 
 # ---------------------------------------------------------------------------- --content (P1b, PRD 15.4, 19.4b)
 
+def _unquote(text: str) -> str:
+    """Remove one pair of matching quotes or backticks around an entry, and nothing else."""
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "`\"'":
+        return text[1:-1]
+    return text
+
+
 def banned_patterns(vault: Path) -> tuple[list[tuple[str, re.Pattern]], list[str]]:
     """The patterns of `## Banned` in me/voice.md (11.13): one per line, a literal (case ignored) or `regex:`
     followed by a Python regex. Returns the patterns and the problems found reading them."""
@@ -713,11 +721,11 @@ def banned_patterns(vault: Path) -> tuple[list[tuple[str, re.Pattern]], list[str
         return [], ["me/voice.md has no `## Banned` section: no banned pattern is checked (11.13)"]
     patterns, problems = [], []
     for line in section.lines:
-        text = BULLET_RE.sub("", HTML_COMMENT_RE.sub("", line).strip()).strip().strip("`\"'").strip()
-        if not text:
+        text = _unquote(BULLET_RE.sub("", HTML_COMMENT_RE.sub("", line).strip()).strip())
+        if not text.strip():
             continue
         if text.lower().startswith("regex:"):
-            source = text[len("regex:"):].strip().strip("`\"'")
+            source = _unquote(text[len("regex:"):].strip())
             try:
                 pattern = re.compile(source)
             except re.error as exc:
@@ -751,32 +759,52 @@ def content_sources(page: v.Page) -> list[str]:
     wikilink or Markdown link in a `<!-- src: ... -->` comment. URLs are left out."""
     found: list[str] = []
     items = [str(x) for x in v.as_list(page.meta.get("sources"))]
-    texts = [m.group(1) for m in SRC_COMMENT_RE.finditer(page.body)]
-    notes = v.find_section(page.body, NOTES_HEADING) if page.type == "draft" else None
-    for line in notes.lines if notes else []:
-        used = re.match(r"^\s*[-*]?\s*sources?(?:\s+used)?\s*:\s*(.*)$", line, re.I)
-        if used:
-            texts.append(re.sub(r"\([^)]*\)", " ", used.group(1)))  # "(your My position)" is a comment
-    for text in texts:
+    for match in SRC_COMMENT_RE.finditer(page.body):
+        text = match.group(1)
         items += LINK_ITEM_RE.findall(text)
-        items += [part for part in re.split(r"[,;\s]+", LINK_ITEM_RE.sub(" ", text)) if part]
+        # paths may hold spaces ("raw/highlights/The Snow Leopard.md"): split on commas, semicolons and lines
+        items += [part for part in re.split(r"[,;\n]+", LINK_ITEM_RE.sub(",", text)) if part.strip()]
+    notes = v.find_section(page.body, NOTES_HEADING) if page.type == "draft" else None
+    lines, inside = notes.lines if notes else [], False
+    for line in lines:
+        label = re.match(r"^(\s*)[-*+]?\s*\**\s*sources?(?:\s+used)?\s*\**\s*:\**\s*(.*)$", line, re.I)
+        if label:
+            inside, text = True, label.group(2)
+        elif inside and re.match(r"^\s{2,}[-*+]\s", line):
+            text = line  # a nested list under "Sources used"
+        else:
+            inside = False
+            continue
+        # from prose, only what looks like a vault reference: links, and tokens with a / or ending in .md
+        items += LINK_ITEM_RE.findall(text)
+        items += [t for t in re.findall(r"[^\s,;()]+", LINK_ITEM_RE.sub(" ", text)) if "/" in t or t.endswith(".md")]
     for item in items:
         item = item.strip().strip("`'\"").rstrip(",;.").strip()
-        if item and not item.startswith(("http://", "https://")) and item not in found:
-            found.append(item)
+        if not item or item.startswith(("http://", "https://", "<http")) or item in found:
+            continue
+        if re.fullmatch(r"\[[^\]]*\]\(\s*<?https?://[^)]*\)", item):
+            continue  # an external source, not a vault page
+        found.append(item)
     return found
 
 
-def resolve_source(ctx: Context, item: str) -> tuple[str | None, str]:
+def resolve_source(ctx: Context, item: str, from_rel: str = "") -> tuple[str | None, str]:
     """A source as written (a path, `[[wikilink]]`, `[text](path)`, with `#anchor` or `|alias`), resolved
     the way links resolve (13.2). Returns (vault path, "") or (None, why it did not resolve)."""
     text = item
     wiki = re.fullmatch(r"\[\[([^\]]+)\]\]", text)
     markdown = re.fullmatch(r"\[[^\]]*\]\(([^)]+)\)", text)
     target = (wiki or markdown).group(1) if (wiki or markdown) else text
-    target = target.split("|", 1)[0].split("#", 1)[0].strip().removeprefix("./")
+    target = target.strip().removeprefix("<").removesuffix(">") if markdown else target
+    if markdown and target.startswith(("http://", "https://")):
+        return None, "is a URL, not a vault page"
+    target = target.split("|", 1)[0].split("#", 1)[0].strip().removeprefix("./").lstrip("/")
     if not target:
         return None, "empty"
+    if markdown and from_rel:
+        relative = ctx.graph.resolver.resolve_md(target, from_rel)
+        if relative:
+            return relative, ""
     norm = posixpath.normpath(target)
     if norm == ".." or norm.startswith("../") or os.path.isabs(norm):
         return None, "outside the vault"
@@ -823,10 +851,11 @@ def content_findings(ctx: Context, page: v.Page, patterns=None, clients=None) ->
     if is_draft and status != "dropped" and not sources:
         add("error", "no `sources`: a draft is built from vault pages (11.10)")
     for source in sources:
-        rel_source, why = resolve_source(ctx, source)
+        rel_source, why = resolve_source(ctx, source, rel)
         if rel_source is None:
-            # fail closed: a source nobody can check must not reach `ready`
-            add("error" if status in ("ready", "published") else "warning", f"source {source} {why}")
+            # fail closed: a source nobody can check must not reach `ready`. A published piece is history: a
+            # source moved later is a warning, since nobody may edit the piece (D047)
+            add("error" if is_draft and status in ("ready", "published") else "warning", f"source {source} {why}")
             continue
         named = source if rel_source == source else f"{source} ({rel_source})"
         if rel_source.split("/", 1)[0].lower() in v.CONFIDENTIAL_FOLDERS:
@@ -841,7 +870,8 @@ def content_findings(ctx: Context, page: v.Page, patterns=None, clients=None) ->
                 target in ctx.graph.nodes and (ctx.graph.nodes[target].page.sensitivity == "confidential"
                                                or ctx.graph.nodes[target].page.meta.get("kind") == "mission")):
             add("error", f"links to confidential page {target} (13.3 rule 5, 19.4b)")
-    shown = "\n".join([str(fm.get(f) or "") for f in ("title", "description", "angle")] + [page.body])
+    fields = [str(x) for value in fm.values() for x in v.as_list(value) if isinstance(x, (str, int, float))]
+    shown = "\n".join([page.stem] + fields + [page.body])
     if any(pattern.search(form) for _, pattern in clients for form in client_texts(shown)):
         add("error", "names a client from .harness/clients.txt (19.4)")
     channel = fm.get("channel")
@@ -857,15 +887,21 @@ def ideas_findings(ctx: Context, clients) -> list[Finding]:
         return []
     rel, findings = "content/ideas.md", []
     text = v.read_text(path)
+    for _, pattern in clients:
+        for form in client_texts(text):
+            match = pattern.search(form)
+            if match:
+                number = form[:match.start()].count("\n") + 1
+                findings.append(Finding("error", "content", f"{rel}:{number}: names a client from .harness/clients.txt (19.4)", rel))
+                break
     for number, line in enumerate(text.split("\n"), start=1):
-        if any(p.search(form) for _, p in clients for form in client_texts(line)):
-            findings.append(Finding("error", "content", f"{rel}:{number}: names a client from .harness/clients.txt (19.4)", rel))
-        for item in re.findall(r"[\w./-]+\.md|\[\[[^\]]+\]\]", line):
+        for item in re.findall(r"\[\[[^\]]+\]\]|[\w.-]+(?:/[\w.-]+)+", line):
             target, _ = resolve_source(ctx, item)
             if target is None:
                 continue
             page = ctx.graph.nodes[target].page if target in ctx.graph.nodes else None
-            if target.split("/", 1)[0] in v.CONFIDENTIAL_FOLDERS or (page and page.local_only):
+            if (target.split("/", 1)[0] in v.CONFIDENTIAL_FOLDERS or v.is_local_only_path(ctx.vault, target)
+                    or (page and page.local_only)):
                 findings.append(Finding("error", "content", f"{rel}:{number}: names a local-only source (19.4b)", rel))
     return findings
 

@@ -1,5 +1,5 @@
 {
-  "generated": "2026-11-18T12:59:13Z",
+  "generated": "2026-11-18T20:22:49Z",
   "pages": {
     "company/admin.md": {
       "title": "Company admin",
@@ -70,7 +70,7 @@
         },
         {
           "from": "me/voice.md",
-          "context": ""
+          "context": "The interviews post: [[2026-11-10-interviews-fail-early]], because it states the claim in the first line."
         }
       ],
       "sources": [
@@ -273,12 +273,12 @@
     "me/voice.md": {
       "title": "Voice",
       "type": "profile",
-      "description": "",
+      "description": "How the owner writes: traits with real examples, signature moves, banned patterns.",
       "sensitivity": "personal",
       "out": [
         {
           "to": "content/published/2026-11-10-interviews-fail-early.md",
-          "context": ""
+          "context": "The interviews post: [[2026-11-10-interviews-fail-early]], because it states the claim in the first line."
         }
       ],
       "in": [],

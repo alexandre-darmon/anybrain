@@ -562,3 +562,31 @@ Format: `D<number> · <title>`, with the build step and the PRD sections involve
   - **lint:** it never edits a fully protected file, and takes content ideas only from pages that are not local-only.
   - **The vault's `AGENTS.md`** says how `content/published/` is written.
 - **Docs.** The judge rubric says the judge sees the draft of a content case (Q38). D043 is now in section 26 (Q39). D045's mention of 15.10 step 3 is completed here: the agent also checked drafts in progress, which the draft skill now asks for.
+
+## D047 · The voice is readable by every model (Q35), and the last fixes before 0.1.0
+
+- **Owner decision, 2026-11-18:** "Yes for Q35, make voice.md readable by Claude."
+  - The default routing gains `"me/voice.md" = "frontier"`, like `me/preferences.md` (Q15). The file holds writing traits and sentences already published, no private facts.
+  - `AGENTS.md`, the shared rule 3 of every skill and PRD 10.3 and 18.2 say so.
+  - The draft skill keeps its fallback for a vault whose owner routes the file local again.
+  - A vault made before this decision keeps its own `models.toml`: its owner adds the line and runs `anybrain update`.
+- **Measured live** with Claude Code 2.1.326 (0.23 USD). With the rendered rules `Read(me/*)`, `Read(!me/preferences.md)`, `Read(!me/voice.md)`, a session read `me/voice.md` and was refused `me/profile.md` ("File is in a directory that is denied by your permission settings"). A second file exception in the same folder works like the first (D027).
+- **Final review before the release.** A last adversarial review tried to break the fixes of D046. It confirmed 6 regressions, and its unverified findings held up when read. All are fixed with regression tests.
+  - **A client name with a star** (`E*Trade`) was no longer found, because stars were removed from the text but not from the name. The name is now normalised the same way.
+  - **The notes' "Sources used" line** turned every word into a source, so ordinary prose blocked `ready`. Only links and path-like tokens are read now, including under a bold label and in a nested list.
+  - **Source forms.**
+    - Paths in `src` comments may hold spaces: items are split on commas, semicolons and lines only.
+    - Markdown links accept `<...>` targets, vault-root and relative paths.
+    - A URL link is an external source and is skipped.
+    - A source moved after publication is a warning on a published piece, which nobody may edit.
+  - **Client names** are also searched in every frontmatter text (tags and audience included) and in the file name.
+  - **`content/ideas.md`** catches a name split across lines, and references to local-only paths such as `raw/docs/`.
+  - **Placeholders.** `[YOUR NUMBERS: ...]` counts, the text of a link such as `[your story](url)` does not.
+  - **The banned list** removes only one pair of matching quotes around an entry, so inner spaces and apostrophes in a regex stay.
+  - **Edit ratio.** The common beginning and end of a changed passage are set aside, so a one-letter fix in a long word or link counts one letter. A long passage is refined by finer words.
+  - **Stats** state every time the ratio did not go down over 8 pieces (16.5). They advise a review only above the 30% target.
+  - **The init guard**:
+    - accepts pages `anybrain` could have made: a copy of `vault.example`, or a vault restored from a backup without `render.json`;
+    - accepts CSV files in `company/` and `finance/`;
+    - refuses a linked folder;
+    - exempts hand-written `index.md` files only at the root and in domain folders.
