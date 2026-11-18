@@ -69,7 +69,7 @@ def test_lint_runs_content_on_every_draft(fixture_vault):
     assert not any("2026-11-05-clean-ready" in f for f in found)
 
 
-def test_published_pieces_get_warnings_not_errors_for_the_owners_own_text(make_vault):
+def test_published_pieces_keep_only_the_safety_checks(make_vault):
     root = make_vault({
         "me/voice.md": page("Voice", "profile", body="## Banned\nleverage\n"),
         "content/channels/linkedin.md": page("LinkedIn", "channel"),
@@ -77,8 +77,12 @@ def test_published_pieces_get_warnings_not_errors_for_the_owners_own_text(make_v
             "X", "published", channel="linkedin", url="https://example.com", published="2026-11-10",
             draft="content/drafts/2026-11-09-x.md", edit_ratio=0.2, body="We leverage it.\n"),
     })
-    found = findings(root, "content/published/2026-11-10-x.md")
-    assert found and all(f.startswith("warning") for f in found)
+    assert findings(root, "content/published/2026-11-10-x.md") == [], "the owner's final text: no style findings"
+    (root / ".harness").mkdir(exist_ok=True)
+    (root / ".harness" / "clients.txt").write_text("Acme Corp\n")
+    path = root / "content" / "published" / "2026-11-10-x.md"
+    path.write_text(path.read_text().replace("We leverage it.", "We helped Acme Corp."))
+    assert any(f.startswith("error") and "names a client" in f for f in findings(root, "content/published/2026-11-10-x.md"))
 
 
 # ---------------------------------------------------------------- schema of the new types
@@ -122,7 +126,8 @@ def test_edit_ratio_on_known_pairs(first, final, expected):
 def test_edit_ratio_on_the_fixture_pair():
     first = (CONTENT / "edit-pair" / "first.md").read_text().strip()
     final = (CONTENT / "edit-pair" / "final.md").read_text().strip()
-    # "They are planned around" became "We plan them around": 11 of 93 characters changed
+    # "They are planned around" became "We plan them around": aligned word by word, then letter by letter
+    # inside the changed passage, 11 of 93 characters changed
     assert content.edit_ratio(first, final) == pytest.approx(11 / 93)
 
 
@@ -233,3 +238,106 @@ def test_an_unresolved_source_blocks_ready_and_warns_before(fixture_vault):
     assert any(f.startswith("error") and "not found" in f for f in findings(fixture_vault, rel))
     (fixture_vault / rel).write_text(ready_draft("A claim.\n<!-- src: ../outside.md -->\n").replace("status: ready", "status: drafting"))
     assert any(f.startswith("warning") and "outside the vault" in f for f in findings(fixture_vault, rel))
+
+
+
+def test_edit_ratio_is_fast_on_an_article():
+    import time
+    words = " ".join(f"word{i % 97}" for i in range(3000))
+    edited = words.replace("word5 ", "WORD5 ", 40)
+    start = time.perf_counter()
+    ratio = content.edit_ratio(words, edited)
+    assert time.perf_counter() - start < 2.0 and 0 < ratio < 0.05
+
+
+@pytest.mark.parametrize("comment", [
+    "<!-- SRC: projects/acme-mission.md -->", "<!-- source: projects/acme-mission.md -->",
+    "<!-- src: wiki/notes/source-note.md,\n     projects/acme-mission.md -->",
+])
+def test_src_comment_forms_are_read(fixture_vault, comment):
+    rel = "content/drafts/2026-11-23-forms.md"
+    (fixture_vault / rel).write_text(ready_draft(f"A claim.\n{comment}\n"))
+    assert any("acme-mission" in f and "confidential" in f for f in findings(fixture_vault, rel))
+
+
+def test_sources_used_in_the_notes_and_links_in_the_body_are_checked(fixture_vault):
+    rel = "content/drafts/2026-11-24-notes.md"
+    body = "A claim, see [[acme-mission]].\n\n## Notes for the owner\n- Sources used: company/plan.md (your plan)\n"
+    (fixture_vault / rel).write_text(ready_draft(body))
+    found = findings(fixture_vault, rel)
+    assert any("links to confidential page projects/acme-mission.md" in f for f in found)
+    assert any("company/plan.md is confidential" in f for f in found)
+
+
+@pytest.mark.parametrize("text", ["[YOUR STORY]", "[Your story: the launch]", "[ your number: churn ]"])
+def test_placeholder_forms_block_ready(fixture_vault, text):
+    rel = "content/drafts/2026-11-25-ph.md"
+    (fixture_vault / rel).write_text(ready_draft(f"A claim.\n\n{text}\n"))
+    assert any("placeholder" in f for f in findings(fixture_vault, rel))
+
+
+def test_banned_list_forms_and_problems(make_vault):
+    root = make_vault({"me/voice.md": page("Voice", "profile", body="""
+        ## Banned
+        1. `leverage`
+        + "synergy"
+        - `regex:\\bdelve\\w*`
+        - regex:a*
+        - regex:(unclosed
+        """)})
+    patterns, problems = lint.banned_patterns(root)
+    assert [label for label, _ in patterns] == ["leverage", "synergy", "regex:\\bdelve\\w*"]
+    assert any("matches an empty text" in p for p in problems) and any("not a valid regex" in p for p in problems)
+    missing = make_vault({}, name="nothing")
+    assert lint.banned_patterns(missing)[1] == ["me/voice.md not found: no banned pattern is checked (11.13)"]
+
+
+def test_content_ideas_are_checked_for_clients_and_local_sources(fixture_vault):
+    (fixture_vault / "content" / "ideas.md").write_text(
+        "# Content ideas\n- 2026-11-20 · what Acme Corp taught me · wiki/notes/source-note.md\n"
+        "- 2026-11-21 · a mission lesson · projects/acme-mission.md\n- 2026-11-22 · fine · wiki/notes/source-note.md\n")
+    found = [str(f) for f in lint.check_content(lint.Context(fixture_vault)) if "ideas.md" in str(f)]
+    assert any("ideas.md:2: names a client" in f for f in found)
+    assert any("ideas.md:3: names a local-only source" in f for f in found)
+    assert not any("ideas.md:4" in f for f in found)
+
+
+def test_the_folder_decides_the_type_and_holds_no_subfolder(make_vault):
+    root = make_vault({
+        "content/drafts/2026-11-01-note.md": page("Note in drafts", "note"),
+        "content/drafts/old/2026-11-01-x.md": page("X", "draft", channel="linkedin", audience="A.", angle="B.",
+                                                    status="idea", sources=["wiki/notes/a.md"]),
+    })
+    found = " ".join(str(f) for f in lint.check_schema(lint.Context(root)))
+    assert "must have `type: draft`" in found and "holds no subfolder" in found
+
+
+def test_a_nan_edit_ratio_is_a_schema_error_not_a_crash(make_vault, capsys):
+    root = make_vault({"content/published/2026-11-10-x.md": page(
+        "X", "published", channel="linkedin", url="https://example.com", published="2026-11-10",
+        draft="content/drafts/x.md", edit_ratio=".nan")})
+    assert any("`edit_ratio`" in str(f) for f in lint.check_schema(lint.Context(root)))
+    assert stats.run(root) == 0
+
+
+def test_content_check_reports_invalid_yaml_and_hides_a_local_only_draft(fixture_vault, monkeypatch, capsys):
+    rel = "content/drafts/2026-11-26-broken.md"
+    (fixture_vault / rel).write_text("---\ntitle: a: b\n---\nText.\n")
+    assert cli.main(["content", str(fixture_vault), "check", rel]) == 1
+    assert "invalid YAML" in capsys.readouterr().out
+    secret = "content/drafts/2026-11-27-secret.md"
+    (fixture_vault / secret).write_text(ready_draft("We helped Acme Corp.").replace("sensitivity: public", "sensitivity: confidential"))
+    monkeypatch.setenv("ANYBRAIN_PROFILE", "frontier")
+    cli.main(["content", str(fixture_vault), "check", secret])
+    out = capsys.readouterr().out
+    assert "details hidden" in out and "Acme" not in out
+
+
+def test_stats_stays_quiet_when_the_ratio_is_flat_and_under_target(make_vault, capsys, monkeypatch):
+    monkeypatch.setenv("ANYBRAIN_TODAY", "2026-12-31")
+    root = make_vault({f"content/published/2026-11-{i:02d}-p{i}.md": page(
+        f"P{i}", "published", channel="linkedin", url="https://example.com", published=f"2026-11-{i:02d}",
+        draft=f"content/drafts/p{i}.md", edit_ratio=0.1) for i in range(1, 9)})
+    stats.run(root)
+    out = capsys.readouterr().out
+    assert "met (10%)" in out and "did not go down" not in out

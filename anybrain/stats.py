@@ -97,7 +97,7 @@ def published_pieces(vault: Path) -> list[dict]:
             "rel": v.rel_path(vault, path),
             "date": v.as_date(fm.get("published")),
             "channel": str(fm.get("channel") or "?"),
-            "ratio": float(ratio) if isinstance(ratio, (int, float)) and not isinstance(ratio, bool) else None,
+            "ratio": float(ratio) if isinstance(ratio, (int, float)) and not isinstance(ratio, bool) and 0 <= ratio <= 1 else None,
             **{m: fm.get(m) for m in METRICS if isinstance(fm.get(m), int) and not isinstance(fm.get(m), bool)},
         })
     return sorted(pieces, key=lambda p: (str(p["date"] or ""), p["rel"]))
@@ -131,5 +131,6 @@ def print_content(vault: Path) -> None:
         print(f"edit ratio target (at most {_percent(EDIT_RATIO_TARGET)} by the 8th piece): {verdict} ({_percent(eighth)})")
         last = ratios[-CONVERGENCE_PIECES:]
         older, newer = last[:CONVERGENCE_PIECES // 2], last[CONVERGENCE_PIECES // 2:]
-        if sum(newer) / len(newer) >= sum(older) / len(older):
+        newer_mean = sum(newer) / len(newer)
+        if newer_mean >= sum(older) / len(older) and newer_mean > EDIT_RATIO_TARGET:
             print("the edit ratio did not go down over the last 8 pieces: review me/voice.md and the channel guides (16.5)")

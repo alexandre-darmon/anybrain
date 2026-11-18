@@ -27,8 +27,8 @@ def _draft_rel(vault: Path, draft: str) -> str:
         rel = v.rel_path(vault.resolve(), full.resolve())
     except ValueError as exc:
         raise v.VaultError(f"{draft} is not inside the vault") from exc
-    if not rel.startswith(DRAFTS) or not rel.endswith(".md"):
-        raise v.VaultError(f"{rel} is not a draft: drafts live in {DRAFTS}")
+    if not rel.startswith(DRAFTS) or not rel.endswith(".md") or rel.count("/") != 2:
+        raise v.VaultError(f"{rel} is not a draft: drafts live directly in {DRAFTS}, with no subfolder")
     return rel
 
 
@@ -70,21 +70,40 @@ def reader_text(text: str, is_draft: bool) -> str:
     return "\n\n".join(p for p in paragraphs if p)
 
 
+TOKEN_RE = re.compile(r"\S+\s*|\s+")  # a word with the spaces after it
+
+
+def _changed_chars(a: list[str], b: list[str]) -> int:
+    changed = 0
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if op != "equal":
+            changed += max(sum(map(len, a[i1:i2])), sum(map(len, b[j1:j2])))
+    return changed
+
+
 def edit_ratio(first: str, final: str) -> float:
     """Share of the text changed, by characters (PRD section 6): characters deleted, inserted or replaced,
     a replacement counting as its longer side, over the length of the longer text. 0 means unchanged, 1 means
-    rewritten. Additions count, so a draft the owner had to lengthen a lot is not scored as close."""
+    rewritten. Additions count, so a draft the owner had to lengthen a lot is not scored as close.
+
+    The texts are aligned word by word, then each changed passage is refined character by character, so an
+    article-length text takes milliseconds instead of seconds and a one-letter fix still counts one letter.
+    """
     if not first and not final:
         return 0.0
-    matcher = difflib.SequenceMatcher(None, first, final, autojunk=False)
+    a, b = TOKEN_RE.findall(first), TOKEN_RE.findall(final)
     changed = 0
-    for op, i1, i2, j1, j2 in matcher.get_opcodes():
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
         if op == "replace":
-            changed += max(i2 - i1, j2 - j1)
+            old, new = "".join(a[i1:i2]), "".join(b[j1:j2])
+            if len(old) + len(new) <= 400:
+                changed += _changed_chars(list(old), list(new))
+            else:
+                changed += max(len(old), len(new))
         elif op == "delete":
-            changed += i2 - i1
+            changed += sum(map(len, a[i1:i2]))
         elif op == "insert":
-            changed += j2 - j1
+            changed += sum(map(len, b[j1:j2]))
     return min(1.0, changed / max(len(first), len(final)))
 
 
@@ -134,6 +153,12 @@ def diff(vault: Path, draft: str) -> int:
     ratio = edit_ratio(first, final)
     against = v.rel_path(vault, final_path)
     print(f"edit ratio {ratio:.2f} ({round(ratio * 100)}%): {v.rel_path(vault, first_path)} -> {against}")
+    from . import graph
+
+    page = v.load_page(vault, vault / rel)
+    if graph.current_profile() != "local" and (page.local_only or v.is_local_only_path(vault, against)):
+        print("changed passages hidden (local-only draft: local profile only)")
+        return 0
     changes = passages(first, final)
     for line in changes[:MAX_PASSAGES]:
         print(line)
@@ -157,14 +182,21 @@ def check(vault: Path, file: str) -> int:
     except ValueError as exc:
         raise v.VaultError(f"{file} is not inside the vault") from exc
     page = v.load_page(vault, vault / rel)
+    schema = [lint.Finding("error", "schema", f"{rel}: {p}", rel) for p in lint._check_page_schema(page)]
+    if page.error:
+        for finding in schema:
+            print(finding)
+        print(f"content: {len(schema)} error(s), 0 warning(s)")
+        return 1
     if page.type not in ("draft", "published"):
         raise v.VaultError(f"{rel} is not a draft or a published piece (type: {page.type or 'none'})")
     ctx = lint.Context(vault)
-    findings = lint.content_findings(ctx, page)
-    schema = [lint.Finding("error", "schema", f"{rel}: {p}", rel) for p in lint._check_page_schema(page)]
-    for finding in schema + findings:
-        print(finding)
-    errors = sum(f.level == "error" for f in schema + findings)
-    warnings = len(schema + findings) - errors
+    patterns, problems = lint.banned_patterns(vault)
+    voice = [lint.Finding("warning", "content", message, "me/voice.md") for message in problems]
+    findings = lint.content_findings(ctx, page, patterns)
+    for finding in schema + voice + findings:
+        print(lint.masked(finding, ctx, ctx.local))
+    errors = sum(f.level == "error" for f in schema + voice + findings)
+    warnings = len(schema + voice + findings) - errors
     print(f"content: {errors} error(s), {warnings} warning(s)")
     return 1 if errors else 0

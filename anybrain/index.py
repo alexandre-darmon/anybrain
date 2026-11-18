@@ -81,7 +81,8 @@ def page_line(page: v.Page, link: str, graph: g.Graph, domain: str = "") -> str:
     elif page.type == "published":
         date = v.as_date(fm.get("published"))
         ratio = fm.get("edit_ratio")
-        edit = f"edit {round(ratio * 100)}%" if isinstance(ratio, (int, float)) and not isinstance(ratio, bool) else None
+        edit = (f"edit {round(ratio * 100)}%" if isinstance(ratio, (int, float)) and not isinstance(ratio, bool)
+                and 0 <= ratio <= 1 else None)  # .nan or .inf in YAML is a --schema error, not a crash
         parts = [_text(fm.get("channel")), date.isoformat() if date else None, edit]
     else:
         parts = []

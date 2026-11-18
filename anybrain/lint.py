@@ -33,8 +33,9 @@ CONFIDENCE = ("low", "medium", "high")
 CHANNELS = ("linkedin", "article", "newsletter", "site", "portfolio", "application", "bio", "email")
 TAILORED_CHANNELS = ("application", "bio", "email")  # these need a `brief` in raw/inbox/
 DRAFT_STATUS = ("idea", "drafting", "ready", "published", "dropped")
-PLACEHOLDER_RE = re.compile(r"\[YOUR (?:STORY|NUMBER):")
-SRC_COMMENT_RE = re.compile(r"<!--\s*src:\s*(.*?)\s*-->")
+PLACEHOLDER_RE = re.compile(r"\[\s*YOUR\s+(?:STORY|NUMBER)\b", re.I)  # [YOUR STORY: ...], [Your story], [YOUR NUMBER]
+SRC_COMMENT_RE = re.compile(r"<!--\s*(?:src|sources?)\s*:\s*(.*?)\s*-->", re.I | re.S)
+BULLET_RE = re.compile(r"^(?:[-*+]|\d+[.)])\s+")
 HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
 NOTES_HEADING = "notes for the owner"
 LANGUAGES = ("fr", "en")
@@ -188,10 +189,15 @@ def _check_page_schema(page: v.Page) -> list[str]:
         problems += _draft_schema(fm, missing)
     elif page_type == "published":
         problems += _published_schema(fm, missing)
-    if page_type in ("draft", "published", "channel"):
-        folder = {"draft": "content/drafts/", "published": "content/published/", "channel": "content/channels/"}[page_type]
-        if not page.rel.startswith(folder):
-            problems.append(f"a page of type {page_type} belongs in {folder}")
+    folders = {"draft": "content/drafts/", "published": "content/published/", "channel": "content/channels/"}
+    if page_type in folders and not page.rel.startswith(folders[page_type]):
+        problems.append(f"a page of type {page_type} belongs in {folders[page_type]}")
+    for wanted, folder in folders.items():
+        if page.rel.startswith(folder):
+            if page_type != wanted:
+                problems.append(f"a page in {folder} must have `type: {wanted}`, so the content checks see it")
+            if page.rel.count("/") != 2:
+                problems.append(f"{folder} holds no subfolder: put the page directly in it")
     return problems
 
 
@@ -239,7 +245,7 @@ def _published_schema(fm: dict, missing) -> list[str]:
     ratio = fm.get("edit_ratio")
     if ratio is None:
         problems.append("missing `edit_ratio`")
-    elif isinstance(ratio, bool) or not isinstance(ratio, (int, float)) or not 0 <= ratio <= 1:
+    elif isinstance(ratio, bool) or not isinstance(ratio, (int, float)) or not 0 <= ratio <= 1 or ratio != ratio:
         problems.append(f"`edit_ratio` is {ratio!r}, expected a number from 0 to 1")
     for field in ("impressions", "reactions", "comments", "leads"):
         value = fm.get(field)
@@ -699,22 +705,30 @@ def banned_patterns(vault: Path) -> tuple[list[tuple[str, re.Pattern]], list[str
     followed by a Python regex. Returns the patterns and the problems found reading them."""
     path = vault / "me" / "voice.md"
     if not path.is_file():
-        return [], []
-    section = v.find_section(v.parse_frontmatter(v.read_text(path))[1], "Banned")
+        return [], ["me/voice.md not found: no banned pattern is checked (11.13)"]
+    body = v.parse_frontmatter(v.read_text(path))[1]
+    section = v.find_section(body, "Banned") or next(
+        (sec for sec in v.sections(body) if v.normalise_heading(sec.title).startswith("banned")), None)
+    if section is None:
+        return [], ["me/voice.md has no `## Banned` section: no banned pattern is checked (11.13)"]
     patterns, problems = [], []
-    for line in (section.lines if section else []):
-        text = re.sub(r"^[-*]\s+", "", HTML_COMMENT_RE.sub("", line).strip()).strip()
+    for line in section.lines:
+        text = BULLET_RE.sub("", HTML_COMMENT_RE.sub("", line).strip()).strip().strip("`\"'").strip()
         if not text:
             continue
-        if text.startswith("regex:"):
+        if text.lower().startswith("regex:"):
+            source = text[len("regex:"):].strip().strip("`\"'")
             try:
-                patterns.append((text, re.compile(text[len("regex:"):].strip())))
+                pattern = re.compile(source)
             except re.error as exc:
-                problems.append(f"me/voice.md: banned pattern {text!r} is not a valid regex ({exc})")
+                problems.append(f"me/voice.md: banned pattern {text!r} is not a valid regex ({exc}); it is not checked")
+                continue
+            if pattern.search("") is not None:
+                problems.append(f"me/voice.md: banned pattern {text!r} matches an empty text; it is not checked")
+                continue
+            patterns.append((text, pattern))
         else:
-            literal = text.strip("`\"'")
-            if literal:
-                patterns.append((literal, re.compile(re.escape(literal), re.I)))
+            patterns.append((text, re.compile(re.escape(text), re.I)))
     return patterns, problems
 
 
@@ -737,8 +751,13 @@ def content_sources(page: v.Page) -> list[str]:
     wikilink or Markdown link in a `<!-- src: ... -->` comment. URLs are left out."""
     found: list[str] = []
     items = [str(x) for x in v.as_list(page.meta.get("sources"))]
-    for match in SRC_COMMENT_RE.finditer(page.body):
-        text = match.group(1)
+    texts = [m.group(1) for m in SRC_COMMENT_RE.finditer(page.body)]
+    notes = v.find_section(page.body, NOTES_HEADING) if page.type == "draft" else None
+    for line in notes.lines if notes else []:
+        used = re.match(r"^\s*[-*]?\s*sources?(?:\s+used)?\s*:\s*(.*)$", line, re.I)
+        if used:
+            texts.append(re.sub(r"\([^)]*\)", " ", used.group(1)))  # "(your My position)" is a comment
+    for text in texts:
         items += LINK_ITEM_RE.findall(text)
         items += [part for part in re.split(r"[,;\s]+", LINK_ITEM_RE.sub(" ", text)) if part]
     for item in items:
@@ -789,16 +808,17 @@ def content_findings(ctx: Context, page: v.Page, patterns=None, clients=None) ->
     def add(level: str, message: str) -> None:
         findings.append(Finding(level, "content", f"{rel}: {message}", rel))
 
-    if not is_draft or status not in ("published", "dropped"):
-        level = "error" if is_draft and status == "ready" else "warning"
+    # A published piece is the owner's final text, out in the world and fully protected: banned patterns and
+    # placeholders there would be findings nobody can act on. Only the safety checks below apply (D046).
+    if is_draft and status not in ("published", "dropped"):
+        level = "error" if status == "ready" else "warning"
         for label, pattern in patterns:
             match = pattern.search(text)
             if match:
                 add(level, f"banned pattern {label!r} from me/voice.md: {match.group(0)!r}")
         placeholders = len(PLACEHOLDER_RE.findall(text))
-        if placeholders and (status == "ready" or not is_draft):
-            add("error" if is_draft else "warning",
-                f"{placeholders} placeholder(s) [YOUR STORY: ...] or [YOUR NUMBER: ...] left")
+        if placeholders and status == "ready":
+            add("error", f"{placeholders} placeholder(s) [YOUR STORY: ...] or [YOUR NUMBER: ...] left")
     sources = content_sources(page)
     if is_draft and status != "dropped" and not sources:
         add("error", "no `sources`: a draft is built from vault pages (11.10)")
@@ -815,7 +835,13 @@ def content_findings(ctx: Context, page: v.Page, patterns=None, clients=None) ->
             other = v.load_page(ctx.vault, ctx.vault / rel_source)
             if other.sensitivity == "confidential" or other.meta.get("kind") == "mission":
                 add("error", f"source {named} is a confidential or mission page (19.4b)")
-    shown = "\n".join([str(fm.get(f) or "") for f in ("title", "description", "angle")] + [text])
+    node = ctx.graph.nodes.get(rel)
+    for _, target in node.targets if node else []:
+        if target.split("/", 1)[0] in v.CONFIDENTIAL_FOLDERS or (
+                target in ctx.graph.nodes and (ctx.graph.nodes[target].page.sensitivity == "confidential"
+                                               or ctx.graph.nodes[target].page.meta.get("kind") == "mission")):
+            add("error", f"links to confidential page {target} (13.3 rule 5, 19.4b)")
+    shown = "\n".join([str(fm.get(f) or "") for f in ("title", "description", "angle")] + [page.body])
     if any(pattern.search(form) for _, pattern in clients for form in client_texts(shown)):
         add("error", "names a client from .harness/clients.txt (19.4)")
     channel = fm.get("channel")
@@ -824,14 +850,36 @@ def content_findings(ctx: Context, page: v.Page, patterns=None, clients=None) ->
     return findings
 
 
+def ideas_findings(ctx: Context, clients) -> list[Finding]:
+    """content/ideas.md is read by frontier models: no client name and no local-only source in it."""
+    path = ctx.vault / "content" / "ideas.md"
+    if not path.is_file():
+        return []
+    rel, findings = "content/ideas.md", []
+    text = v.read_text(path)
+    for number, line in enumerate(text.split("\n"), start=1):
+        if any(p.search(form) for _, p in clients for form in client_texts(line)):
+            findings.append(Finding("error", "content", f"{rel}:{number}: names a client from .harness/clients.txt (19.4)", rel))
+        for item in re.findall(r"[\w./-]+\.md|\[\[[^\]]+\]\]", line):
+            target, _ = resolve_source(ctx, item)
+            if target is None:
+                continue
+            page = ctx.graph.nodes[target].page if target in ctx.graph.nodes else None
+            if target.split("/", 1)[0] in v.CONFIDENTIAL_FOLDERS or (page and page.local_only):
+                findings.append(Finding("error", "content", f"{rel}:{number}: names a local-only source (19.4b)", rel))
+    return findings
+
+
 def check_content(ctx: Context) -> list[Finding]:
     patterns, problems = banned_patterns(ctx.vault)
     clients = client_matchers(ctx.vault)
-    findings = [Finding("warning", "content", message, "me/voice.md") for message in problems]
-    for page in ctx.pages:
-        if page.type in ("draft", "published") and page.rel.startswith(("content/drafts/", "content/published/")):
+    pieces = [p for p in ctx.pages if p.rel.startswith(("content/drafts/", "content/published/"))]
+    findings = [Finding("warning", "content", message, "me/voice.md")
+                for message in problems if any(p.type == "draft" for p in pieces)]
+    for page in pieces:
+        if page.type in ("draft", "published"):
             findings += content_findings(ctx, page, patterns, clients)
-    return findings
+    return findings + ideas_findings(ctx, clients)
 
 
 CHECKS = {
