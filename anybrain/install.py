@@ -269,6 +269,38 @@ def link_skills(vault: Path, out: Callable[[str], None], ask: Callable[[str], bo
 
 # ---------------------------------------------------------------------------- init
 
+VAULT_ENTRIES = {d.split("/")[0] for d in LAYOUT_DIRS} | {
+    "content", "index.md", "log.md", "AGENTS.md", "CLAUDE.md", "opencode.json"}
+
+
+def refuse_foreign_notes(vault: Path) -> None:
+    """Refuse to create a vault in a folder that already holds notes anybrain did not create.
+
+    A legacy vault pasted into the target folder would be mixed with the new one: its folders next to
+    `library/` and `wiki/`, and no way to snapshot it, because a snapshot of a folder inside the vault is
+    refused (21.2). The notes go to a separate folder and come in through the migration (docs/decisions.md D043).
+    """
+    if not vault.is_dir() or (vault / RENDER).exists():
+        return
+    found = []
+    for entry in sorted(vault.iterdir()):
+        if entry.name.startswith(".") or entry.name in VAULT_ENTRIES:
+            continue
+        if entry.is_file() and entry.suffix == ".md":
+            found.append(entry.name)
+        elif entry.is_dir():
+            found += [v.rel_path(vault, p) for p in sorted(entry.rglob("*.md"))
+                      if not any(part.startswith(".") for part in p.relative_to(vault).parts)]
+    if found:
+        legacy = vault.parent / f"{vault.name}-legacy"
+        raise v.VaultError(
+            f"{vault} already holds {len(found)} note(s) that anybrain did not create (for example "
+            f"{', '.join(found[:3])}). init does not mix them with a new vault. Move them to a separate folder, "
+            f"for example {legacy}, run init again on the empty folder, then migrate them: "
+            f"anybrain migrate \"{vault}\" inventory \"{legacy}\"")
+
+
+
 def init(target: str, owner: str | None = None, role: str | None = None, lang: str | None = None,
          out: Callable[[str], None] = print) -> int:
     vault = Path(target).expanduser().resolve()
@@ -276,6 +308,7 @@ def init(target: str, owner: str | None = None, role: str | None = None, lang: s
         raise v.VaultError(f"not a folder: {vault}")
     v.check_eval_copy(vault)
     refuse_if_evicted(vault)
+    refuse_foreign_notes(vault)
     written = 0
 
     def say(line: str) -> None:

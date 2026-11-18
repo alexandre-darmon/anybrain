@@ -354,3 +354,25 @@ def test_doctor_reaches_a_local_endpoint(brain, capsys):
         assert "ok    local model endpoint answers" in capsys.readouterr().out
     finally:
         server.shutdown()
+
+
+def test_init_refuses_a_folder_holding_a_pasted_legacy_vault(tmp_path, home, capsys):
+    brain = tmp_path / "brain"
+    (brain / "Readwise" / "Books").mkdir(parents=True)
+    (brain / "Readwise" / "Books" / "The Snow Leopard.md").write_text("highlights\n")
+    (brain / "Deep Work.md").write_text("my notes\n")
+    (brain / ".obsidian").mkdir()
+    assert cli.main(["init", str(brain)]) == 2
+    err = capsys.readouterr().err
+    assert "already holds 2 note(s) that anybrain did not create" in err and "brain-legacy" in err
+    assert not (brain / "library").exists() and not (brain / "AGENTS.md").exists(), "nothing written"
+
+
+def test_init_accepts_an_empty_obsidian_vault_and_an_existing_anybrain_vault(tmp_path, home):
+    brain = tmp_path / "brain"
+    (brain / ".obsidian").mkdir(parents=True)
+    assert cli.main(["init", str(brain)]) == 0
+    (brain / "library" / "my-book.md").write_text(
+        "---\ntitle: My book\ntype: book\ndescription: Says one thing.\ntags: []\nlanguage: en\n"
+        "created: 2026-11-18\nupdated: 2026-11-18\nsources: []\nsensitivity: public\nauthor: A B\nstatus: to-read\n---\n")
+    assert cli.main(["init", str(brain)]) == 0, "a vault anybrain made is not foreign, whatever it holds"

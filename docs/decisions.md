@@ -473,3 +473,13 @@ Format: `D<number> · <title>`, with the build step and the PRD sections involve
   - The local profile is not exercised by any real run. Claude Code always runs the frontier profile, and confidential folders are kept from it by the deny rules (D027).
   - The `local` judge path is tested with stand-ins only.
 - **Release.** Step 13 no longer waits for step 9. Its criterion "init on a clean macOS user works" is checked in CI by a job on a fresh macOS runner with an empty home folder. It installs the package as an owner would, not in editable mode, runs `init` twice in an iCloud-style path, then `doctor`, `index --check` and `lint`.
+
+## D043 · init refuses a folder that already holds someone's notes
+
+- **What happened, 2026-11-18.** The owner pasted a copy of the legacy Obsidian vault into `Documents/brain`, the folder meant for the new vault.
+- **Why it is a problem.** `init` would have created `library/`, `wiki/` and the rest next to `Readwise/`, `summaries/` and the other legacy folders. The migration could not snapshot them either, because a legacy folder inside the vault is refused (D035).
+- **Decision.** `init` refuses a folder that `anybrain` never initialised (no `.harness/render.json`) when it holds Markdown notes outside the vault layout. Hidden folders such as `.obsidian/` are allowed, and so is an empty Obsidian vault. The message says what to do instead:
+  1. move the notes to a separate folder, for example `brain-legacy` next to it;
+  2. run `init` on the empty folder;
+  3. bring the notes in with `anybrain migrate <vault> inventory <legacy folder>`.
+- **Scope.** A vault `anybrain` already initialised is never refused, whatever it holds.
