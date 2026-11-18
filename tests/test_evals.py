@@ -438,3 +438,14 @@ def test_the_judge_sees_the_draft_of_a_content_case(tmp_path):
     assert "draft_written" not in json.loads(evals.judge_payload(case, "An answer."))
     grade, text = evals.grade_content(tmp_path, ["wiki/notes/x.md"])
     assert grade == {"pass": False, "detail": "no draft written in content/drafts/"} and text == ""
+
+
+
+def test_content_cases_do_not_count_in_the_files_read_gate(vault):
+    def case(i, tags):
+        return evals.Case(i, "q", tags, {})
+
+    answer = evals.Result(case("a1", ["concept"]), "pass", trace={"files_read": ["x"] * 3, "tool_calls_seen": True})
+    draft = evals.Result(case("d1", ["content"]), "pass", trace={"files_read": ["x"] * 14, "tool_calls_seen": True})
+    cost = next(g for g in evals.gates([answer, draft], vault) if g["name"].startswith("median files read"))
+    assert cost["value"] == 3 and cost["pass"] is True

@@ -453,7 +453,10 @@ def gates(results: list[Result], vault: Path) -> list[dict]:
     needle = [r for r in scored if "needle" in r.case.tags]
     needle_share = len(needle) / len(scored) if scored else None
     needle_pass = rate(needle)
-    reads = [len(r.trace["files_read"]) for r in scored if r.trace and r.trace.get("tool_calls_seen", True)]
+    # The cost gate is about answers (17.3, the `ask` cap of 8 files). A draft reads its voice, guide and template
+    # on top of up to 10 material files by design (15.10), so content cases do not count (docs/decisions.md D045).
+    reads = [len(r.trace["files_read"]) for r in scored
+             if r.trace and r.trace.get("tool_calls_seen", True) and "content" not in r.case.tags]
     median = statistics.median(reads) if reads else None
     weight = index_weight(vault)
 

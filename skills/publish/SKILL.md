@@ -25,7 +25,7 @@ The draft (path or title), the URL where it was published, and the final text: p
 ## Method
 
 1. **Take the final text** exactly as the owner gives it: pasted, or the body of the edited draft without the HTML comments and without `## Notes for the owner`.
-2. **Write** `content/published/YYYY-MM-DD-<slug>.md` from `.harness/templates/published.md`: `channel` and `sources` from the draft, `url`, `published` (the date it went out, today unless the owner says otherwise), `draft` (the draft's path), and the final text verbatim as the body. Leave `edit_ratio` empty for now.
+2. **Write** `content/published/YYYY-MM-DD-<slug>.md` (the publication date) from `.harness/templates/published.md`. File names are unique in the vault: if the draft has the same name, because it was written the same day, name the published piece `YYYY-MM-DD-<slug>-published.md`. Fill it with `channel` and `sources` from the draft, `url`, `published` (the date it went out, today unless the owner says otherwise), `draft` (the draft's path), and the final text verbatim as the body. Leave `edit_ratio` empty for now.
 3. **Set the draft's `status: published`.**
 4. **Measure.** Run `anybrain content . diff content/drafts/<file>`. Write the ratio it prints into `edit_ratio` (for example `0.41`). This is the only field you write in the published page after step 2.
 5. **Learn.** From the changed passages `diff` prints, summarise the owner's edits as at most 5 voice corrections, each in one line ("removed the warm-up intro", "replaced 'leverage' with 'use'"). Log each one: `anybrain feedback . add --skill draft --topic voice-<slug> --note "<correction>"`, reusing a topic from `anybrain feedback . topics` when one fits.

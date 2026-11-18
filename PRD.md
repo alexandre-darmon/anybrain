@@ -1389,6 +1389,8 @@ P2, P3, P4 are planned only after step 18 and the 4-week measure.
 | Q32 | The dashboard of 22.7 is P2, with continuous observability. Should it come earlier, fed only by eval runs (P1) and the vault's own figures? | P2, with 22.6; the owner asked for it on 2026-11-18 without a date |
 | Q33 | P1b was built before the owner's real migration (step 14), which section 7 and 24 put first. Does P1b's exit still wait for step 14? | Yes: the code is built (owner decision, 2026-11-18), the exit criteria (4 pieces published, edit ratio measured, content evals) need real use after step 14 (D044) |
 | Q34 | How is the edit ratio counted, and how strict are content checks on text the owner already published? | Characters inserted, deleted or replaced over the longer text; banned patterns and placeholders are warnings on published pieces, which are the owner's protected text (D044) |
+| Q35 | `me/voice.md` sits in `me/`, which the default routing keeps local, so a Claude Code session (frontier) cannot read the voice traits when drafting. Should it be readable by frontier models, like `me/preferences.md` (Q15)? It holds writing traits and sentences already published, no private facts | Left local until the owner decides. Meanwhile the draft skill writes from the channel guide and the learned rules in `me/preferences.md`, and `anybrain content check` still applies the banned list (D045) |
+| Q36 | A draft written and published the same day gets the same file name in `content/drafts/` and `content/published/` (11.10, 11.11), which 13.2 forbids. | The published piece takes the suffix `-published` in that case only (D045) |
 
 ---
 

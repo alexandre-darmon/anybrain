@@ -512,3 +512,25 @@ Format: `D<number> · <title>`, with the build step and the PRD sections involve
   - `anybrain stats` prints each published piece's edit ratio and totals per channel.
   - It also prints whether the 8th piece meets the 30% target, and whether the ratio went down over the last 8 pieces: the newer half's mean must be below the older half's.
 - **A reference fixed.** 10.3 pointed to a section 19.7 that does not exist; the rule it meant is 19.4b.
+
+## D045 · Steps 16 and 17: first real runs of the content skills
+
+- **Setup.** Claude Code 2.1.326, frontier profile, on a copy of `vault.example/` set up by `anybrain init`. The stand-in owner edited the draft between the two skills.
+- **Draft, run 1 (0.28 USD).** Asked for a post on naming a category, the agent wrote nothing. A draft on that topic already exists (`content/drafts/2026-11-15-name-the-category.md`), so it offered to finish that one or take one of its alternative angles. This is the repetition check of 15.10 step 3 working.
+- **Draft, run 2 (0.44 USD).** Asked for a post on niching until price stops being the comparison, it wrote `content/drafts/2026-11-18-niche-until-price-stops.md`. The step 16 criterion is met:
+  - 2 sources and 4 `src` comments;
+  - 1 placeholder in place of a story;
+  - the owner's position from the category design page used, and the overlap with the other draft named;
+  - `content check` clean, and the first version saved.
+- **Publish (0.26 USD).** After the owner's edits, the agent wrote the published piece verbatim, set the draft to `published`, stored `edit_ratio: 0.30` from `content diff`, and logged 4 voice corrections with `feedback add`: cut the framework label, shorter sentences, a real story, a plainer closing question.
+- **Eval, case `g010` (0.30 USD, then 0.44 USD).**
+  - **First run.** It failed because the agent rightly refused to repeat the existing draft. The example golden case asked for that same topic, so it now asks for the niche topic.
+  - **Second run.** It passed: `content_check` clean, and the judge, who now sees the draft written, confirmed the owner's position, 4 `src` comments and a placeholder instead of an invented story.
+  - **Cost gate.** Content cases no longer count in the "median files read" gate. That gate measures answers (17.3, the `ask` cap of 8 files), and a draft reads its guide, template and voice on top of up to 10 material files.
+- **Finding: the voice is local (Q35).** `me/voice.md` is in `me/`, routed local, so a frontier session cannot read it.
+  - The agent behaved inconsistently: it wrote without the voice in one run, and stopped to ask in another.
+  - The draft skill now says: when the profile may not read `me/voice.md`, write from the channel guide and the learned rules, and say so in the notes.
+  - The banned list is still enforced by `anybrain content check`, which reads the file itself.
+  - Whether to route `me/voice.md` to frontier is the owner's decision.
+- **Finding: same-day file names (Q36).** A draft published the day it was written gave the published piece the same file name as the draft. 13.2 forbids that, and lint reported a duplicate. The publish skill now adds `-published` to the published piece's name in that case only.
+- **Total cost of these runs:** 1.72 USD.

@@ -30,7 +30,7 @@ A topic or a brief, and a channel (`linkedin`, `article`, `newsletter`, `site`, 
 
 ## Method
 
-1. **Load the voice.** Read `me/voice.md`, `me/preferences.md` (its learned rules apply to every draft) and `content/channels/<channel>.md`. Without a channel guide, stop and ask the owner to write one from `.harness/templates/channel.md`.
+1. **Load the voice.** Read `me/voice.md`, `me/preferences.md` (its learned rules apply to every draft) and `content/channels/<channel>.md`. Without a channel guide, stop and ask the owner to write one from `.harness/templates/channel.md`. If your profile may not read `me/voice.md` (shared rule 3), do not stop: write from the channel guide and `me/preferences.md`, and say so in the notes for the owner. `anybrain content check` still applies its banned list.
 2. **Gather material** with the `ask` procedure (index seeds, then `anybrain neighbors . <page>`), at most 10 files. Prefer the owner's own words: `My position`, `My take`, `Why`, `Decisions`, published pieces; then concept summaries; then book key ideas; then external sources. If the only material is summaries of other people's ideas, say so and ask the owner for their angle before writing.
 3. **Avoid repetition.** Read `content/index.md`. If a published piece already makes the same point, say so and propose another angle, or a follow-up that links to it.
 4. **Pick the angle**: one claim for one audience, the strongest one the owner's own words support. Keep two alternatives for the notes.
