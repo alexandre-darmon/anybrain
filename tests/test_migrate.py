@@ -129,3 +129,65 @@ def test_owner_text_moved_to_raw_inbox_counts_as_preserved(vault, capsys):
 def test_check_without_snapshot(vault, capsys):
     assert cli.main(["migrate", str(vault), "check"]) == 2
     assert "run anybrain migrate" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------- review dates by code (D037)
+
+def legacy_projects(tmp_path):
+    root = tmp_path / "old"
+    (root / "Projets").mkdir(parents=True)
+    (root / "Projets" / "Alpha.md").write_text("---\nnext_review: 2027-01-15\n---\nNotes on alpha, written by me.\n")
+    (root / "Projets" / "Beta.md").write_text("Beta project notes, written by me.\n\n- Échéance:: 2026-12-05\n")
+    (root / "Projets" / "Gamma.md").write_text("Gamma project notes, written by me.\n")
+    (root / "Projets" / "Delta.md").write_text("---\nreview: next spring\n---\nDelta project notes, written by me.\n")
+    return root
+
+
+def set_status(vault, mapping):
+    path = report(vault)
+    text = path.read_text()
+    for rel, target in mapping.items():
+        line = next(line for line in text.splitlines() if line.startswith(f"- `{rel}`"))
+        text = text.replace(line, line.replace("status: pending", f"status: mapped to {target}"))
+    path.write_text(text)
+
+
+def project_page(vault, slug, review):
+    fields = {"status": "idea", "kind": "personal"}
+    if review:
+        fields["next_review"] = review
+    (vault / "projects").mkdir(exist_ok=True)
+    (vault / "projects" / f"{slug}.md").write_text(page(slug.title(), "project", **fields) + "\n" + "\n".join(
+        f"{name} project notes, written by me." if name != "Alpha" else "Notes on alpha, written by me."
+        for name in [slug.title()]) + "\n")
+
+
+def test_inventory_lists_the_review_date_already_on_a_legacy_note(vault, tmp_path):
+    cli.main(["migrate", str(vault), "inventory", str(legacy_projects(tmp_path))])
+    text = report(vault).read_text()
+    assert "- `Projets/Alpha.md` · owner text: 1 · suggested: ask the owner · review date: 2027-01-15 (from `next_review`)" in text
+    assert "review date: 2026-12-05 (from `Échéance::`)" in text
+    assert "- `Projets/Gamma.md` · owner text: 1 · suggested: ask the owner · status: pending" in text
+    assert 'review date: not a YYYY-MM-DD date (`review`: "next spring"), ask the owner' in text
+    assert "with none, `next_review: 2026-12-16` (30 days after this migration)" in text
+
+
+def test_check_verifies_project_review_dates(vault, tmp_path, capsys):
+    cli.main(["migrate", str(vault), "inventory", str(legacy_projects(tmp_path))])
+    set_status(vault, {"Projets/Alpha.md": "projects/alpha.md", "Projets/Beta.md": "projects/alpha.md",
+                       "Projets/Gamma.md": "projects/gamma.md", "Projets/Delta.md": "projects/delta.md"})
+    project_page(vault, "alpha", "2027-01-15")  # wrong: Beta's date is earlier
+    project_page(vault, "gamma", "2026-12-17")  # wrong: the default is 2026-12-16
+    project_page(vault, "delta", "2027-04-01")  # the owner chose it: not checked
+    capsys.readouterr()
+    assert cli.main(["migrate", str(vault), "check"]) == 1
+    out = capsys.readouterr().out
+    assert "next_review of projects/alpha.md: 2027-01-15, expected 2026-12-05 (from the legacy note)" in out
+    assert "next_review of projects/gamma.md: 2026-12-17, expected 2026-12-16 (default, 30 days after the migration)" in out
+    assert "delta" not in out.split("migrate:")[0]
+    assert "2 project review date(s) to fix" in out
+    project_page(vault, "alpha", "2026-12-05")
+    project_page(vault, "gamma", "2026-12-16")
+    capsys.readouterr()
+    cli.main(["migrate", str(vault), "check"])
+    assert "0 project review date(s) to fix" in capsys.readouterr().out

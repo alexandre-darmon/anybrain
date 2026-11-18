@@ -7,13 +7,14 @@ wrote in the legacy notes exists verbatim in the vault outside `raw/`, and that 
 """
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import os
 import re
 import shutil
 import stat
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import graph as g
@@ -24,6 +25,14 @@ STATUS_RE = re.compile(r"^- `(?P<path>[^`]+)` · .*· status: (?P<status>.+)$")
 LINK_RE = re.compile(r"\[\[[^\[\]\n]+\]\]|\[[^\[\]\n]*\]\([^()\s]+\)")
 FOLD = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"', " ": " ", " ": " "})
 MIN_WORDS = 3
+# A project's review date is decided by code, never by the agent (docs/decisions.md D037): the date already on
+# the legacy note under one of these keys (frontmatter, or a Dataview `key:: value` line), else the default.
+REVIEW_KEYS = {"next_review", "nextreview", "review", "review_date", "reviewdate", "revue", "prochaine_revue",
+               "prochainerevue", "date_revue", "daterevue", "due", "due_date", "duedate", "deadline", "echeance"}
+DEFAULT_REVIEW_DAYS = 30
+INLINE_FIELD_RE = re.compile(r"^\s*[-*]?\s*([^:\n`]{2,40})::\s*(.+?)\s*$", re.M)
+ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+MAPPED_RE = re.compile(r"mapped to `?([^\s`;,]+\.md)")
 
 # Table of 21.1, by top-level folder name (accents and case ignored).
 FOLDER_TARGETS = {
@@ -131,6 +140,28 @@ class Entry:
     owner: list[str]
     links: int
     keys: list[str]
+    review: tuple[str, str] | None = None  # (value as written, where it was found)
+
+
+def _review_key(name: str) -> bool:
+    folded = _fold_name(str(name)).replace(" ", "_").replace("-", "_")
+    return folded in REVIEW_KEYS or folded.replace("_", "") in REVIEW_KEYS
+
+
+def review_date(fm: dict | None, body: str) -> tuple[str, str] | None:
+    """The review or due date already written on a legacy note: frontmatter first, then Dataview inline fields."""
+    for key, value in (fm or {}).items():
+        if _review_key(key) and value not in (None, ""):
+            text = value.isoformat() if isinstance(value, (_dt.date, _dt.datetime)) else str(value).strip()
+            return text[:10] if isinstance(value, _dt.datetime) else text, f"`{key}`"
+    for match in INLINE_FIELD_RE.finditer(body or ""):
+        if _review_key(match.group(1).strip()):
+            return match.group(2).strip(), f"`{match.group(1).strip()}::`"
+    return None
+
+
+def default_review(day: str) -> str:
+    return (_dt.date.fromisoformat(day) + _dt.timedelta(days=DEFAULT_REVIEW_DAYS)).isoformat()
 
 
 def _snapshot_entries(snapshot: Path) -> list[Entry]:
@@ -143,7 +174,8 @@ def _snapshot_entries(snapshot: Path) -> list[Entry]:
         text = v.read_text(path) if is_md else ""
         fm, body, _, _ = v.parse_frontmatter(text) if is_md else (None, "", 0, None)
         entries.append(Entry(rel, path.stat().st_size, is_md, owner_paragraphs(rel, text) if is_md else [],
-                             len(LINK_RE.findall(body)) if is_md else 0, sorted((fm or {}).keys())))
+                             len(LINK_RE.findall(body)) if is_md else 0, sorted(str(k) for k in (fm or {}).keys()),
+                             review_date(fm, body) if is_md else None))
     return entries
 
 
@@ -202,6 +234,9 @@ def write_inventory(vault: Path, snapshot: Path, legacy_name: str, hidden: list[
         "Each paragraph goes into the vault verbatim (21.2 step 5); `anybrain migrate . check` verifies it.",
         "- Not copied: " + (", ".join(f"`{h}`" for h in hidden) or "nothing") + ". Hidden folders are not snapshotted: "
         "`.obsidian/` can hold plugin tokens. Its settings are merged by `anybrain init` and stay in the legacy vault.",
+        f"- Review dates: a project page takes the `review date` listed on its legacy file below, the earliest if "
+        f"several files make one page; with none, `next_review: {default_review(day)}` ({DEFAULT_REVIEW_DAYS} days "
+        "after this migration). Copy the date as it is; `anybrain migrate . check` verifies it.",
         "",
         "## Folders",
         "",
@@ -221,7 +256,13 @@ def write_inventory(vault: Path, snapshot: Path, legacy_name: str, hidden: list[
     ]
     for entry in entries:
         owner = f"owner text: {len(entry.owner)}" if entry.owner else "no owner text"
-        lines.append(f"- `{entry.rel}` · {owner} · suggested: {suggested_target(entry.rel, entry.size)} · status: pending")
+        review = ""
+        if entry.review:
+            value, where = entry.review
+            review = (f" · review date: {value} (from {where})" if ISO_DATE_RE.match(value)
+                      else f" · review date: not a YYYY-MM-DD date ({where}: {json.dumps(value, ensure_ascii=False)}), ask the owner")
+        lines.append(f"- `{entry.rel}` · {owner} · suggested: {suggested_target(entry.rel, entry.size)}{review}"
+                     " · status: pending")
     lines.append("")
     path = report_path(vault, day)
     v.write_text(path, "\n".join(lines))
@@ -283,9 +324,11 @@ def check(vault: Path) -> int:
                 if match:
                     status_of[match.group("path")] = match.group("status").strip()
     pending = [(rel, s) for rel, s in status_of.items() if not s.startswith(("mapped", "skipped"))]
+    entries = _snapshot_entries(snapshot)
+    wrong_dates = check_review_dates(vault, day, entries, status_of)
     haystack = _vault_text(vault)
     missing, kept_in_snapshot, total = [], [], 0
-    for entry in _snapshot_entries(snapshot):
+    for entry in entries:
         for paragraph in entry.owner:
             total += 1
             if paragraph in haystack:
@@ -303,6 +346,36 @@ def check(vault: Path) -> int:
         print(f"not migrated yet: {rel} (status: {status})")
     if not status_of:
         print(f"note: no migration report for {day} in journal/ or journal/reports/")
+    for line in wrong_dates:
+        print(line)
     print(f"migrate: {total - len(missing) - len(kept_in_snapshot)} of {total} owner paragraph(s) found in the vault, "
-          f"{len(kept_in_snapshot)} kept only in the snapshot, {len(missing)} missing; {len(pending)} file(s) still pending")
-    return 1 if missing or pending else 0
+          f"{len(kept_in_snapshot)} kept only in the snapshot, {len(missing)} missing; {len(pending)} file(s) still pending; "
+          f"{len(wrong_dates)} project review date(s) to fix")
+    return 1 if missing or pending or wrong_dates else 0
+
+
+def check_review_dates(vault: Path, day: str, entries: list[Entry], status_of: dict[str, str]) -> list[str]:
+    """Each project page made from legacy files has the review date the inventory computed for it."""
+    reviews = {e.rel: e.review for e in entries}
+    sources: dict[str, list[str]] = {}
+    for rel, status in status_of.items():
+        match = MAPPED_RE.search(status)
+        if match and match.group(1).startswith("projects/"):
+            sources.setdefault(match.group(1), []).append(rel)
+    problems = []
+    for page_rel, legacy in sorted(sources.items()):
+        found = [reviews[r][0] for r in legacy if reviews.get(r)]
+        dates = sorted(value for value in found if ISO_DATE_RE.match(value))
+        if found and not dates:
+            continue  # the owner gives the date (the report asks them)
+        expected = dates[0] if dates else default_review(day)
+        why = "from the legacy note" if dates else f"default, {DEFAULT_REVIEW_DAYS} days after the migration"
+        path = vault / page_rel
+        if not path.is_file():
+            continue  # a missing page is reported by the owner-text check or lint
+        fm, *_ = v.parse_frontmatter(v.read_text(path))
+        value = (fm or {}).get("next_review")
+        actual = value.isoformat() if isinstance(value, _dt.date) else str(value or "")
+        if actual != expected:
+            problems.append(f"next_review of {page_rel}: {actual or 'missing'}, expected {expected} ({why})")
+    return problems
