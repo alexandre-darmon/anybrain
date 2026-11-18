@@ -242,3 +242,57 @@ def test_writes_into_the_real_vault_are_escapes(vault, tmp_path):
     run = t.ClaudeAdapter().parse(stream, copy, origin=vault)
     assert run.escaped_writes == [str(vault / "wiki/x.md"), str(vault / "log.md")]
     assert t.build_record(run, copy, "frontier", "eval", "x", origin=vault)["escaped_writes"] == run.escaped_writes
+
+
+@pytest.fixture
+def copy_and_origin(vault, tmp_path):
+    import shutil
+    copy = tmp_path / "copy"
+    shutil.copytree(vault, copy)
+    return copy, vault
+
+
+@pytest.mark.parametrize("command", [
+    "cp index.md {o}/wiki/b.md", "mv log.md {o}/log.md", "rm {o}/log.md", "sed -i s/a/b/ {o}/log.md",
+    "touch {o}/new.md", "python3 -c \"open('{o}/log.md', 'w').write('x')\"", "ls {o}", "cd {o} && rm log.md",
+    "cd .. && rm {name}/log.md",
+])
+def test_any_command_naming_the_real_vault_is_an_escape(copy_and_origin, command):
+    copy, origin = copy_and_origin
+    # the copy and the real vault are siblings here, so `..` from the copy reaches the real vault by name
+    command = command.format(o=origin, name=origin.name)
+    assert t.shell_escapes(command, copy, origin), command
+
+
+@pytest.mark.parametrize("command", [
+    "cat > notes.md <<'EOF'\n{o}/log.md is mentioned in the text\nEOF\necho done > log.md",
+    "(cd /tmp && echo x > y.txt); echo z > out.md",
+    "cd - && echo z > out.md",
+    "echo x > log.md; grep -r foo .",
+])
+def test_writes_inside_the_copy_are_not_escapes(copy_and_origin, command):
+    copy, origin = copy_and_origin
+    assert t.shell_escapes(command.format(o=origin), copy, origin) == [], command
+
+
+def test_a_link_in_the_copy_into_the_real_vault_is_an_escape(copy_and_origin):
+    copy, origin = copy_and_origin
+    (copy / "wiki" / "mine").symlink_to(origin / "me")
+    assert t.escapes(str(copy / "wiki" / "mine" / "x.md"), copy, origin, str(copy))
+    assert t.shell_escapes("echo x > wiki/mine/x.md", copy, origin)
+    stream = claude_stream(copy, [("NotebookEdit", {"notebook_path": str(origin / "n.ipynb")}, None)])
+    assert t.ClaudeAdapter().parse(stream, copy, origin=origin).escaped_writes == [str(origin / "n.ipynb")]
+
+
+def test_opencode_escapes_and_shell_reads(copy_and_origin):
+    copy, origin = copy_and_origin
+    events = [
+        {"type": "tool", "part": {"type": "tool", "tool": "write", "state": {"status": "completed",
+                                  "input": {"filePath": str(origin / "wiki/x.md")}}}},
+        {"type": "tool", "part": {"type": "tool", "tool": "bash", "state": {"status": "completed",
+                                  "input": {"command": "cat me/profile.md; cp index.md " + str(origin / "y.md")}}}},
+        {"type": "text", "part": {"type": "text", "text": "done"}},
+    ]
+    run = t.OpenCodeAdapter().parse("\n".join(json.dumps(e) for e in events), copy, origin=origin)
+    assert run.escaped_writes == [str(origin / "wiki/x.md"), str(origin / "y.md")]
+    assert "me/profile.md" in run.files_read

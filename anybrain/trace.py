@@ -148,15 +148,25 @@ def relative(target: str, root: Path, origin: Path | None = None, cwd: str | Non
 
 
 def escapes(target: str, root: Path, origin: Path | None, cwd: str | None = None) -> bool:
-    """True when a written path lands in the owner's real vault (`origin`) rather than in the run's copy."""
-    raw = os.path.expanduser((target or "").strip())
-    if not raw or origin is None:
+    """True when a path lands in the owner's real vault (`origin`) rather than in the run's copy.
+
+    The resolved path decides first, so a link in the copy that points into the real vault is caught; the
+    plain path decides for a path that does not exist yet. `cwd` None means the folder is unknown: only an
+    absolute path can then be judged.
+    """
+    raw = os.path.expanduser(os.path.expandvars((target or "").strip()))
+    if not raw or origin is None or "$" in raw or (cwd is None and not os.path.isabs(raw)):
         return False
-    full = os.path.normpath(raw if os.path.isabs(raw) else os.path.join(cwd or str(root), raw))
+    full = os.path.normpath(raw if os.path.isabs(raw) else os.path.join(cwd, raw))
+    origin_bases, copy_bases = _bases(origin, None), _bases(root, None)
+
+    def lands(path: str, bases: list[str]) -> bool:
+        return any(_inside(path, base) is not None for base in bases)
+
     real = os.path.realpath(full)
-    in_copy = any(_inside(form, base) is not None for form in (full, real) for base in _bases(root, None))
-    in_origin = any(_inside(form, base) is not None for form in (full, real) for base in _bases(origin, None))
-    return in_origin and not in_copy
+    if lands(real, origin_bases) and not lands(real, copy_bases):
+        return True
+    return lands(full, origin_bases) and not lands(full, copy_bases) and not lands(real, copy_bases)
 
 
 def resolved_rel(rel: str, root: Path, origin: Path | None = None) -> str | None:
@@ -174,8 +184,26 @@ def _add(items: list[str], value: str) -> None:
         items.append(value)
 
 
+HEREDOC_RE = re.compile(r"(?<!<)<<(?!<)-?\s*(['\"]?)([A-Za-z_][\w.-]*)\1")
+
+
+def _strip_heredocs(command: str) -> str:
+    """Drop the bodies of here-documents: their lines are data written to a file, not commands."""
+    lines, kept, i = command.split("\n"), [], 0
+    while i < len(lines):
+        kept.append(lines[i])
+        delimiters = [m.group(2) for m in HEREDOC_RE.finditer(lines[i])]
+        i += 1
+        for delimiter in delimiters:
+            while i < len(lines) and lines[i].strip() != delimiter:
+                i += 1
+            i += 1
+    return "\n".join(kept)
+
+
 def _shell_words(command: str) -> list[str]:
     """Shell tokens with quotes honoured; operators and newlines come back as separate tokens."""
+    command = _strip_heredocs(command)
     lexer = shlex.shlex(command, posix=True, punctuation_chars=SHELL_PUNCTUATION)
     lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
@@ -186,15 +214,16 @@ def _shell_words(command: str) -> list[str]:
         return re.findall(r"[;&|()<>\n]+|[^\s;&|()<>]+", command)
 
 
-def _segments(command: str) -> list[tuple[list[str], list[str], list[str]]]:
-    """(words, input redirections, output redirections) of each simple command."""
-    segments, words, inputs, outputs = [], [], [], []
+def _segments(command: str) -> list[tuple[list[str], list[str], list[str], int, int]]:
+    """(words, input redirections, output redirections, subshells opened before, subshells closed after) of
+    each simple command."""
+    segments, words, inputs, outputs, opens = [], [], [], [], 0
     tokens = _shell_words(command)
     i = 0
     while i < len(tokens):
         token = tokens[i]
         if token and all(c in SHELL_PUNCTUATION for c in token):
-            if "<" in token or ">" in token:
+            if ("<" in token or ">" in token) and not ("(" in token or ")" in token):
                 target = tokens[i + 1] if i + 1 < len(tokens) else ""
                 if target and not all(c in SHELL_PUNCTUATION for c in target):
                     if words and words[-1].isdigit():
@@ -202,15 +231,38 @@ def _segments(command: str) -> list[tuple[list[str], list[str], list[str]]]:
                     (inputs if "<" in token else outputs).append(target)
                     i += 2
                     continue
-            if words or inputs or outputs:
-                segments.append((words, inputs, outputs))
+            closes = token.count(")")
+            if words or inputs or outputs or closes:
+                segments.append((words, inputs, outputs, opens, closes))
+                opens = 0
+            opens += token.count("(")
             words, inputs, outputs = [], [], []
         else:
             words.append(token)
         i += 1
     if words or inputs or outputs:
-        segments.append((words, inputs, outputs))
+        segments.append((words, inputs, outputs, opens, 0))
     return segments
+
+
+def _walk(command: str, root: Path):
+    """Each simple command with the folder it runs in: `cd` and `pushd` are followed, a subshell restores the
+    folder when it closes, and a folder that cannot be known (`cd -`, `popd`, an unexpanded variable) is None."""
+    cwd: str | None = str(root)
+    stack: list[str | None] = []
+    for words, inputs, outputs, opens, closes in _segments(command):
+        stack.extend([cwd] * opens)
+        here = cwd
+        if words and Path(words[0]).name in ("cd", "pushd", "popd"):
+            args = [w for w in words[1:] if w == "-" or not w.startswith("-")]
+            dest = os.path.expandvars(os.path.expanduser(args[0])) if args else os.path.expanduser("~")
+            if Path(words[0]).name == "popd" or dest == "-" or "$" in dest or (cwd is None and not os.path.isabs(dest)):
+                cwd = None
+            else:
+                cwd = os.path.normpath(os.path.join(cwd or "/", dest))
+        yield words, inputs, outputs, here
+        for _ in range(closes):
+            cwd = stack.pop() if stack else cwd
 
 
 def _is_file(rel: str, root: Path, origin: Path | None) -> bool:
@@ -279,18 +331,20 @@ def _search(name: str, words: list[str], root: Path, origin: Path | None, cwd: s
 
 
 def shell_escapes(command: str, root: Path, origin: Path | None) -> list[str]:
-    """Write targets of a shell command (redirections, `tee`) that land in the owner's real vault."""
-    found, cwd = [], str(root)
-    for words, _, outputs in _segments(command):
-        targets = list(outputs)
-        if words and Path(words[0]).name == "cd":
-            cwd = os.path.normpath(os.path.join(cwd, os.path.expanduser(words[1] if len(words) > 1 else str(root))))
-            continue
-        if words and Path(words[0]).name == "tee":
-            targets += [w for w in words[1:] if not w.startswith("-")]
-        for target in targets:
-            if not target.isdigit() and not target.startswith(("&", "/dev/")) and escapes(target, root, origin, cwd):
-                _add(found, os.path.normpath(os.path.join(cwd, target)))
+    """Paths in the owner's real vault that a shell command names, whatever the command does.
+
+    Conservative on purpose: an eval case has no reason to name the real vault, and a write can take any form
+    (`cp`, `mv`, `rm`, `sed -i`, a script), so naming it is enough (docs/decisions.md D038).
+    """
+    found: list[str] = []
+    if origin is None:
+        return found
+    for words, inputs, outputs, cwd in _walk(command, root):
+        for word in words + inputs + outputs:
+            expanded = os.path.expandvars(os.path.expanduser(word))
+            for candidate in [expanded] + [m for m in PATHISH_RE.findall(expanded) if m != expanded]:
+                if escapes(candidate, root, origin, cwd):
+                    _add(found, os.path.normpath(candidate if os.path.isabs(candidate) else os.path.join(cwd, candidate)))
     return found
 
 
@@ -303,8 +357,8 @@ def files_from_shell(command: str, root: Path, origin: Path | None = None) -> tu
     path at run time is not seen (docs/decisions.md D036).
     """
     read, written, searches = [], [], []
-    cwd = str(root)
-    for words, inputs, outputs in _segments(command):
+    for words, inputs, outputs, here in _walk(command, root):
+        cwd = here or str(root)  # an unknown folder: read paths as relative to the vault, best effort
         for target in outputs:
             if target.isdigit() or target.startswith(("&", "/dev/")):
                 continue
@@ -316,9 +370,7 @@ def files_from_shell(command: str, root: Path, origin: Path | None = None) -> tu
         if not words:
             continue
         name = Path(words[0]).name
-        if name == "cd":
-            dest = words[1] if len(words) > 1 else str(root)
-            cwd = os.path.normpath(os.path.join(cwd, os.path.expanduser(dest)))
+        if name in ("cd", "pushd", "popd"):
             continue
         if name == "tee":
             for word in words[1:]:
@@ -391,7 +443,7 @@ class ClaudeAdapter(Adapter):
                         continue
                     data = item.get("input") or {}
                     tool = item.get("name", "")
-                    target = data.get("file_path") or data.get("command") or data.get("path") or \
+                    target = data.get("file_path") or data.get("notebook_path") or data.get("command") or data.get("path") or \
                         data.get("pattern") or data.get("skill") or data.get("description") or ""
                     call = ToolCall(tool, relative(str(target), root, origin)
                                     if tool in ("Read", "Write", "Edit", "NotebookEdit") else str(target), raw=str(target))
@@ -450,7 +502,7 @@ class ClaudeAdapter(Adapter):
                 _add(run.files_read, call.target)
             elif call.tool in ("Write", "Edit", "NotebookEdit"):
                 _add(run.files_written, call.target)
-                if call.raw and escapes(call.raw, root, origin):
+                if call.raw and escapes(call.raw, root, origin, str(root)):
                     _add(run.escaped_writes, call.raw)
         return run
 
@@ -487,14 +539,30 @@ class OpenCodeAdapter(Adapter):
                 data = state.get("input") or part.get("input") or {}
                 target = data.get("filePath") or data.get("path") or data.get("command") or ""
                 status = str(state.get("status") or "")
-                call = ToolCall(str(part.get("tool")), relative(str(target), root, origin),
-                                "error" if status == "error" else "ok")
+                tool = str(part.get("tool"))
+                is_shell = tool in ("bash", "shell")
+                call = ToolCall(tool, str(target) if is_shell else relative(str(target), root, origin),
+                                "error" if status == "error" else "ok", raw=str(target))
                 run.tool_calls.append(call)
                 run.parsed_tool_calls = True
-                if call.result == "ok" and call.tool == "read":
+                if is_shell:
+                    read, written, searches = files_from_shell(call.raw, root, origin)
+                    for item in read:
+                        _add(run.files_read, item)
+                    for item in written:
+                        _add(run.files_written, item)
+                    for search in searches:
+                        _add(run.files_searched, search.folder)
+                        if search not in run.searches:
+                            run.searches.append(search)
+                    for item in shell_escapes(call.raw, root, origin):
+                        _add(run.escaped_writes, item)
+                elif call.result == "ok" and tool == "read":
                     _add(run.files_read, call.target)
-                elif call.result == "ok" and call.tool in ("write", "edit", "patch"):
+                elif call.result == "ok" and tool in ("write", "edit", "patch"):
                     _add(run.files_written, call.target)
+                    if escapes(call.raw, root, origin, str(root)):
+                        _add(run.escaped_writes, call.raw)
             usage = part.get("tokens") if isinstance(part.get("tokens"), dict) else None
             if usage:
                 run.tokens["input"] += int(usage.get("input") or 0)
