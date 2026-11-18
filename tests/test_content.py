@@ -190,3 +190,46 @@ def test_init_creates_the_content_folders_voice_and_ideas(tmp_path, monkeypatch)
     assert problems == [] and len(patterns) == 9
     for name in ("draft", "published", "channel", "voice"):
         assert (brain / ".harness" / "templates" / f"{name}.md").is_file()
+
+
+# ---------------------------------------------------------------- review of P1b (D046)
+
+def ready_draft(body="The claim.", title="Ready draft", sources=("wiki/notes/source-note.md",)):
+    return page(title, "draft", channel="linkedin", audience="PMs.", angle="One claim.", status="ready",
+                sources=list(sources), body=body)
+
+
+@pytest.mark.parametrize("body, title", [
+    ("We helped Acme\nCorp rebuild.", "T"),
+    ("We helped Acme" + chr(0xA0) + "Corp rebuild.", "T"),
+    ("We helped Societe Generale.", "T"),
+    ("We helped L" + chr(0x2019) + "Oréal.", "T"),
+    ("We helped " + __import__("unicodedata").normalize("NFD", "Société Générale") + ".", "T"),
+    ("We helped **Acme** Corp.", "T"),
+    ("A clean body.", "What Acme Corp taught me"),
+])
+def test_client_names_are_caught_in_every_form(fixture_vault, body, title):
+    (fixture_vault / ".harness" / "clients.txt").write_text("Acme Corp\nSociété Générale\nL'Oréal\n")
+    rel = "content/drafts/2026-11-20-client.md"
+    (fixture_vault / rel).write_text(ready_draft(body, title))
+    assert any("names a client" in f for f in findings(fixture_vault, rel)), (body, title)
+
+
+@pytest.mark.parametrize("source", [
+    "[[acme-mission]]", "[[projects/acme-mission]]", "projects/acme-mission", "projects/acme-mission.md#Decisions",
+    "[[projects/acme-mission.md|the mission]]", "[mission](projects/acme-mission.md)", '"projects/acme-mission.md"',
+    "`projects/acme-mission.md`", "[[Acme mission]]", "wiki/../company/plan.md",
+])
+def test_a_mission_or_company_source_is_caught_in_every_form(fixture_vault, source):
+    rel = "content/drafts/2026-11-21-source.md"
+    (fixture_vault / rel).write_text(ready_draft(f"A claim.\n<!-- src: {source} -->\n"))
+    found = findings(fixture_vault, rel)
+    assert any(f.startswith("error") and ("confidential" in f) for f in found), (source, found)
+
+
+def test_an_unresolved_source_blocks_ready_and_warns_before(fixture_vault):
+    rel = "content/drafts/2026-11-22-missing.md"
+    (fixture_vault / rel).write_text(ready_draft("A claim.\n<!-- src: wiki/notes/nowhere.md -->\n"))
+    assert any(f.startswith("error") and "not found" in f for f in findings(fixture_vault, rel))
+    (fixture_vault / rel).write_text(ready_draft("A claim.\n<!-- src: ../outside.md -->\n").replace("status: ready", "status: drafting"))
+    assert any(f.startswith("warning") and "outside the vault" in f for f in findings(fixture_vault, rel))

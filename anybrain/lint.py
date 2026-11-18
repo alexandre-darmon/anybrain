@@ -12,6 +12,7 @@ from __future__ import annotations
 import datetime as _dt
 import difflib
 import os
+import posixpath
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -588,8 +589,19 @@ def _client_names(vault: Path) -> list[str]:
     return sorted({n for n in names if n and not n.startswith("#")}, key=len, reverse=True)
 
 
-def _name_re(name: str) -> re.Pattern:
-    return re.compile(r"(?<!\w)" + re.escape(name) + r"(?!\w)", re.I)
+def client_matchers(vault: Path) -> list[tuple[str, re.Pattern]]:
+    """One pattern per client name, matching its spaced, joined, kebab, snake, line-wrapped and unaccented
+    forms (anonymize.name_pattern, D026)."""
+    return [(name, pii.name_pattern(unicodedata.normalize("NFC", name).translate(QUOTE_FOLD)))
+            for name in _client_names(vault)]
+
+
+def client_texts(text: str) -> list[str]:
+    """The text as a client-name search must see it: composed accents, plain spaces and apostrophes, no
+    emphasis stars; and the same text without accents. Both keep every line break, so line numbers hold."""
+    base = unicodedata.normalize("NFC", pii.fold_spaces(text)).translate(QUOTE_FOLD).replace("*", "")
+    plain = unicodedata.normalize("NFKD", base).encode("ascii", "ignore").decode("ascii")
+    return [base] if plain == base else [base, plain]
 
 
 def _slug_in_path(name: str, rel: str) -> bool:
@@ -608,7 +620,7 @@ def _line_of(text: str, index: int) -> int:
 
 def check_secrets(ctx: Context) -> list[Finding]:
     findings = []
-    clients = [(name, _name_re(name)) for name in _client_names(ctx.vault)]
+    clients = client_matchers(ctx.vault)
     mission_pages = {p.rel for p in ctx.pages if p.folder == "projects" and p.meta.get("kind") == "mission"}
     page_rels = {p.rel for p in ctx.pages}
     for path in v.iter_files(ctx.vault):
@@ -635,7 +647,8 @@ def check_secrets(ctx: Context) -> list[Finding]:
             hits += [(_line_of(scan, start), "phone number") for start, _ in pii.find_phones(scan)]
         if rel in page_rels and rel not in mission_pages:
             for name, pattern in clients:
-                hits += [(_line_of(scan, m.start()), "client name from .harness/clients.txt") for m in pattern.finditer(scan)]
+                lines = {_line_of(form, m.start()) for form in client_texts(scan) for m in pattern.finditer(form)}
+                hits += [(line, "client name from .harness/clients.txt") for line in sorted(lines)]
         if v.in_raw(rel):
             for name, pattern in clients:
                 if pattern.search(rel) or _slug_in_path(name, rel):
@@ -716,17 +729,44 @@ def content_text(page: v.Page) -> str:
     return HTML_COMMENT_RE.sub("", body)
 
 
+LINK_ITEM_RE = re.compile(r"\[\[[^\]]+\]\]|\[[^\]]*\]\([^)]+\)")
+
+
 def content_sources(page: v.Page) -> list[str]:
-    """Vault paths a draft or published piece names as sources: `sources` and every `<!-- src: path -->`."""
+    """The sources a draft or published piece names, as written: each item of `sources`, and each path,
+    wikilink or Markdown link in a `<!-- src: ... -->` comment. URLs are left out."""
     found: list[str] = []
     items = [str(x) for x in v.as_list(page.meta.get("sources"))]
     for match in SRC_COMMENT_RE.finditer(page.body):
-        items += [part for part in re.split(r"[,\s]+", match.group(1)) if part]
+        text = match.group(1)
+        items += LINK_ITEM_RE.findall(text)
+        items += [part for part in re.split(r"[,;\s]+", LINK_ITEM_RE.sub(" ", text)) if part]
     for item in items:
-        rel = item.strip().strip("[]").removeprefix("./")
-        if rel and not rel.startswith(("http://", "https://")) and rel not in found:
-            found.append(rel)
+        item = item.strip().strip("`'\"").rstrip(",;.").strip()
+        if item and not item.startswith(("http://", "https://")) and item not in found:
+            found.append(item)
     return found
+
+
+def resolve_source(ctx: Context, item: str) -> tuple[str | None, str]:
+    """A source as written (a path, `[[wikilink]]`, `[text](path)`, with `#anchor` or `|alias`), resolved
+    the way links resolve (13.2). Returns (vault path, "") or (None, why it did not resolve)."""
+    text = item
+    wiki = re.fullmatch(r"\[\[([^\]]+)\]\]", text)
+    markdown = re.fullmatch(r"\[[^\]]*\]\(([^)]+)\)", text)
+    target = (wiki or markdown).group(1) if (wiki or markdown) else text
+    target = target.split("|", 1)[0].split("#", 1)[0].strip().removeprefix("./")
+    if not target:
+        return None, "empty"
+    norm = posixpath.normpath(target)
+    if norm == ".." or norm.startswith("../") or os.path.isabs(norm):
+        return None, "outside the vault"
+    if (ctx.vault / norm).is_file():
+        return norm, ""
+    if not norm.endswith(".md") and (ctx.vault / f"{norm}.md").is_file():
+        return f"{norm}.md", ""
+    found = ctx.graph.resolver.resolve_wiki(norm)
+    return (found, "") if found else (None, "not found in the vault")
 
 
 def content_findings(ctx: Context, page: v.Page, patterns=None, clients=None) -> list[Finding]:
@@ -740,7 +780,7 @@ def content_findings(ctx: Context, page: v.Page, patterns=None, clients=None) ->
     if patterns is None:
         patterns = banned_patterns(ctx.vault)[0]
     if clients is None:
-        clients = [(name, _name_re(name)) for name in _client_names(ctx.vault)]
+        clients = client_matchers(ctx.vault)
     rel, fm, findings = page.rel, page.meta, []
     is_draft = page.type == "draft"
     status = fm.get("status") if is_draft else "published"
@@ -763,20 +803,21 @@ def content_findings(ctx: Context, page: v.Page, patterns=None, clients=None) ->
     if is_draft and status != "dropped" and not sources:
         add("error", "no `sources`: a draft is built from vault pages (11.10)")
     for source in sources:
-        target = ctx.vault / source
-        top = source.split("/", 1)[0]
-        if top in v.CONFIDENTIAL_FOLDERS:
-            add("error", f"source {source} is confidential (19.4b)")
-        elif v.is_page_path(source) and target.is_file():
-            other = v.load_page(ctx.vault, target)
+        rel_source, why = resolve_source(ctx, source)
+        if rel_source is None:
+            # fail closed: a source nobody can check must not reach `ready`
+            add("error" if status in ("ready", "published") else "warning", f"source {source} {why}")
+            continue
+        named = source if rel_source == source else f"{source} ({rel_source})"
+        if rel_source.split("/", 1)[0].lower() in v.CONFIDENTIAL_FOLDERS:
+            add("error", f"source {named} is confidential (19.4b)")
+        elif v.is_page_path(rel_source) and (ctx.vault / rel_source).is_file():
+            other = v.load_page(ctx.vault, ctx.vault / rel_source)
             if other.sensitivity == "confidential" or other.meta.get("kind") == "mission":
-                add("error", f"source {source} is a confidential or mission page (19.4b)")
-        elif not target.exists():
-            add("warning", f"source {source} not found in the vault")
-    for name, pattern in clients:
-        if pattern.search(text):
-            add("error", "names a client from .harness/clients.txt (19.4)")
-            break
+                add("error", f"source {named} is a confidential or mission page (19.4b)")
+    shown = "\n".join([str(fm.get(f) or "") for f in ("title", "description", "angle")] + [text])
+    if any(pattern.search(form) for _, pattern in clients for form in client_texts(shown)):
+        add("error", "names a client from .harness/clients.txt (19.4)")
     channel = fm.get("channel")
     if isinstance(channel, str) and channel and not (ctx.vault / "content" / "channels" / f"{channel}.md").is_file():
         add("error", f"no channel guide content/channels/{channel}.md")
@@ -785,7 +826,7 @@ def content_findings(ctx: Context, page: v.Page, patterns=None, clients=None) ->
 
 def check_content(ctx: Context) -> list[Finding]:
     patterns, problems = banned_patterns(ctx.vault)
-    clients = [(name, _name_re(name)) for name in _client_names(ctx.vault)]
+    clients = client_matchers(ctx.vault)
     findings = [Finding("warning", "content", message, "me/voice.md") for message in problems]
     for page in ctx.pages:
         if page.type in ("draft", "published") and page.rel.startswith(("content/drafts/", "content/published/")):
