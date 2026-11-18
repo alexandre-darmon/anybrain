@@ -590,3 +590,8 @@ Format: `D<number> · <title>`, with the build step and the PRD sections involve
     - accepts CSV files in `company/` and `finance/`;
     - refuses a linked folder;
     - exempts hand-written `index.md` files only at the root and in domain folders.
+
+## D048 · Step 13: release 0.1.0
+
+- **Acceptance.** CI is green on Python 3.11 and 3.12. `init` passes on a fresh macOS runner with an empty home, installed the way an owner installs it (D041). The version is 0.1.0, merged to `main` in pull request #4.
+- **The tag.** The build session could not push the `v0.1.0` tag: its git proxy accepts pushes to the working branch only and cut the tag push off. The owner creates the tag and the release on GitHub, on the merge commit of pull request #4, with the notes the session prepared.
