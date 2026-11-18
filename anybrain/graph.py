@@ -288,8 +288,13 @@ class Graph:
             node.inbound.sort(key=lambda e: e.other)
 
     def orphans(self) -> list[str]:
-        """Compiled pages (library/, wiki/, projects/) with no incoming link."""
-        return [rel for rel, n in self.nodes.items() if n.page.is_compiled and not n.inbound]
+        """Compiled pages (library/, wiki/, projects/) that no other compiled page links to.
+
+        A link from journal/, me/, content/ or a generated index does not connect a page to its source, author,
+        theme or similar pages, so it does not count (owner decision on Q28, docs/decisions.md D039).
+        """
+        return [rel for rel, n in self.nodes.items()
+                if n.page.is_compiled and not any(self.nodes[e.other].page.is_compiled for e in n.inbound)]
 
     def stats(self) -> dict:
         return {

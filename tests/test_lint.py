@@ -55,9 +55,38 @@ def test_graph_confidential_leak(broken):
     assert has(broken, "error", "library/a-book.md:22: public page links to confidential page company/secret-plan.md")
 
 
-def test_graph_orphan_with_seven_day_grace(broken):
-    assert has(broken, "warning", "library/orphan-book.md: orphan")
-    assert not has(broken, "library/new-book.md: orphan")
+def test_graph_orphan_is_a_warning_for_seven_days_then_an_error(broken):
+    assert has(broken, "error", "library/orphan-book.md: orphan, no page in library/, wiki/ or projects/ links to it")
+    assert has(broken, "warning", "library/new-book.md: orphan")
+    assert has(broken, "warning", "(an error from ")
+
+
+def test_orphan_candidates_come_from_facts(make_vault, monkeypatch):
+    monkeypatch.setenv("ANYBRAIN_TODAY", "2026-11-16")
+    old = {"created": "2026-01-01"}
+    root = make_vault({
+        "library/deep-work.md": page("Deep Work", "book", author="Cal Newport", tags=["livre", "focus"], **old),
+        "library/slow-productivity.md": page("Slow Productivity", "book", author="Cal Newport", tags=["livre"], **old),
+        "library/mystery.md": page("Mystery", "book", author="Unknown", tags=["livre"], **old),
+        "library/other.md": page("Other", "book", author="unknown", tags=["livre"], **old),
+        "wiki/notes/focus-blocks.md": page("Focus blocks", "note", tags=["focus"], **old,
+                                           body="Same habit as in [[slow-productivity]]."),
+        "wiki/notes/plugins.md": page("Plugins", "note", tags=["tools"], **old,
+                                      body="Highlights of [[other]] come through Readwise."),
+        "finance/plan.md": page("Plan", "note", tags=["focus"], **old),
+    })
+    found = [str(f) for f in lint.check_graph(lint.Context(root))]
+
+    def line(rel):
+        return next(f for f in found if f"{rel}: orphan" in f)
+
+    deep = line("library/deep-work.md")
+    assert deep.startswith("error") and "same author: library/slow-productivity.md" in deep
+    assert "shares the tag focus with wiki/notes/focus-blocks.md" in deep and "finance/plan.md" not in deep
+    assert "livre" not in deep, "a tag on most books is generic"
+    assert "it links to library/other.md (state the relation back there if it is real)" in line("wiki/notes/plugins.md")
+    assert "same author" not in line("library/mystery.md"), "a placeholder author is no relation"
+    assert "no candidate found: ask the owner" in line("library/mystery.md")
 
 
 def test_graph_naked_link(broken):

@@ -230,6 +230,60 @@ def _near_duplicates(concepts: list[v.Page]) -> list[tuple[v.Page, v.Page]]:
     return pairs
 
 
+PLACEHOLDER_AUTHORS = {"unknown", "inconnu", "inconnue", "anonymous", "anonyme", "n-a", "na", "tbd", "author"}
+MAX_CANDIDATES = 3
+GENERIC_TAG_PAGES = 10  # a tag on more pages, or on more than half the pages of the type, is generic
+
+
+def _author_slugs(page: v.Page) -> set[str]:
+    slugs = set()
+    for name in v.as_list(page.meta.get("author")):
+        text = str(name).strip()
+        if not text or "{{" in text:
+            continue
+        try:
+            slug = v.slugify(text)
+        except ValueError:
+            continue
+        if slug and slug not in PLACEHOLDER_AUTHORS:
+            slugs.add(slug)
+    return slugs
+
+
+def orphan_candidates(ctx: Context, rel: str) -> str:
+    """Pages an orphan may relate to, from facts in the vault: the same author, the pages it links to (the
+    relation can be stated back), and tags it shares that most pages do not carry. Code never writes the link;
+    the agent writes one only when the relation is real, or asks the owner (Q28, D039)."""
+    graph = ctx.graph
+    node = graph.nodes[rel]
+    page = node.page
+    visible = [n.page for other, n in graph.nodes.items()
+               if other != rel and n.page.is_compiled and (ctx.local or not n.page.local_only)]
+    parts = []
+    authors = _author_slugs(page)
+    same_author = [p.rel for p in visible if authors & _author_slugs(p)][:MAX_CANDIDATES]
+    if same_author:
+        parts.append("same author: " + ", ".join(same_author))
+    linked = [e.other for e in node.out if graph.nodes[e.other].page.is_compiled
+              and (ctx.local or not graph.nodes[e.other].page.local_only)][:MAX_CANDIDATES]
+    if linked:
+        parts.append("it links to " + ", ".join(linked) + " (state the relation back there if it is real)")
+    def tags(p: v.Page) -> set[str]:
+        return {str(t).lower() for t in v.as_list(p.meta.get("tags"))}
+
+    same_type = [p for p in visible + [page] if p.type == page.type]
+    for tag in sorted(tags(page)):
+        carriers = [p for p in visible + [page] if tag in tags(p)]
+        typed = sum(tag in tags(p) for p in same_type)
+        # a tag most pages carry ("book", "livre") says nothing about a relation
+        if len(carriers) > GENERIC_TAG_PAGES or (len(same_type) >= 4 and typed * 2 > len(same_type)):
+            continue
+        sharing = [p.rel for p in carriers if p.rel != rel]
+        if sharing:
+            parts.append(f"shares the tag {tag} with " + ", ".join(sharing[:MAX_CANDIDATES]))
+    return "candidates: " + "; ".join(parts) if parts else ""
+
+
 def check_graph(ctx: Context) -> list[Finding]:
     graph = ctx.graph
     findings = check_links(ctx)
@@ -257,10 +311,15 @@ def check_graph(ctx: Context) -> list[Finding]:
                                         f"{rel}:{link.line}: {node.sensitivity} page links to confidential {kind} {target}",
                                         rel))
     for rel in graph.orphans():
-        age = _days_since(graph.nodes[rel].page.meta.get("created"), ctx.today)
-        if age is not None and age < ORPHAN_GRACE_DAYS:
-            continue
-        findings.append(Finding("warning", "graph", f"{rel}: orphan, no page links to it", rel))
+        page = graph.nodes[rel].page
+        created = v.as_date(page.meta.get("created"))
+        young = created is not None and (ctx.today - created).days < ORPHAN_GRACE_DAYS
+        hint = orphan_candidates(ctx, rel)
+        message = f"{rel}: orphan, no page in library/, wiki/ or projects/ links to it"
+        if young:
+            message += f" (an error from {(created + _dt.timedelta(days=ORPHAN_GRACE_DAYS)).isoformat()})"
+        message += f"; {hint}" if hint else "; no candidate found: ask the owner which page it relates to"
+        findings.append(Finding("warning" if young else "error", "graph", message, rel))
     for rel, node in graph.nodes.items():
         for line, text in _naked_links(node.page):
             findings.append(Finding("warning", "graph", f"{rel}:{line}: naked link, say why: {text}", rel))

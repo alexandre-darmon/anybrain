@@ -173,8 +173,9 @@ def test_orphans_are_compiled_pages_without_incoming_links(make_vault):
         "me/profile.md": page("Profile", "profile"),
     })
     graph = build(root)
-    assert graph.orphans() == ["library/alone.md"]
-    assert graph.stats() == {"pages": 4, "edges": 1, "orphans": 1, "broken": 0}
+    # a brief that cites a project does not connect it to its source, author, theme or similar pages (Q28)
+    assert graph.orphans() == ["library/alone.md", "projects/linked.md"]
+    assert graph.stats() == {"pages": 4, "edges": 1, "orphans": 2, "broken": 0}
 
 
 def test_graph_json_schema_on_example():
