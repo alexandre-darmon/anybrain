@@ -318,3 +318,66 @@ def test_a_case_that_writes_into_the_real_vault_fails_at_once(vault, monkeypatch
     out = capsys.readouterr().out
     assert "A CASE WROTE INTO THE VAULT ITSELF, NOT INTO ITS COPY" in out and "waiting" not in out
     assert run_file(vault)["escaped_writes"] == [str(vault / "wiki" / "escaped.md")]
+
+
+def test_a_rerun_never_erases_a_local_only_read(vault, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("FAKE_LEAK_ONCE", str(tmp_path / "leaked"))
+    monkeypatch.setenv("FAKE_TOUCH_ONCE", str(vault / "wiki" / "edited.md"))
+    assert cli.main(["eval", str(vault), "--golden", str(GOLDEN), "--tags", "safety"]) == 1
+    out = capsys.readouterr().out
+    assert "(run again)" in out and "LOCAL-ONLY FILES READ ON FRONTIER: finance/decisions.md" in out
+    data = run_file(vault)
+    assert data["results"][0]["status"] == "pass", "the rerun itself was clean"
+    assert data["local_only_reads"] == ["finance/decisions.md"] and len(data["superseded"]) == 1
+
+
+def test_a_synced_edit_with_an_old_date_is_still_seen(vault, monkeypatch, capsys):
+    (vault / ".harness" / "models.toml").write_text(models_toml(jobs=1))
+    monkeypatch.setenv("FAKE_TOUCH_ONCE", str(vault / "wiki" / "edited.md"))
+    monkeypatch.setenv("FAKE_OLD_DATE", "1")
+    assert cli.main(["eval", str(vault), "--golden", str(GOLDEN), "--tags", "navigation"]) == 0
+    (relaunch,) = run_file(vault)["relaunches"]
+    assert relaunch["rerun"] == [run_file(vault)["results"][0]["id"]] and relaunch["cost_usd"] > 0
+
+
+def test_browsing_in_obsidian_is_not_an_edit(vault, monkeypatch, capsys):
+    (vault / ".obsidian").mkdir(exist_ok=True)
+    monkeypatch.setenv("FAKE_TOUCH", str(vault / ".obsidian" / "workspace.json"))
+    assert cli.main(["eval", str(vault), "--golden", str(GOLDEN), "--tags", "navigation"]) == 0
+    assert run_file(vault)["relaunches"] == [] and "waiting" not in capsys.readouterr().out
+
+
+def test_a_rerun_the_cost_cap_stops_keeps_the_graded_result(vault, tmp_path, monkeypatch, capsys):
+    golden = tmp_path / "golden.yaml"
+    golden.write_text("- id: n1\n  question: What is my position on category design?\n  tags: [navigation]\n"
+                      "  expected:\n    cited_files: [wiki/concepts/category-design.md]\n")
+    monkeypatch.setenv("FAKE_TOUCH_ONCE", str(vault / "wiki" / "edited.md"))
+    assert cli.main(["eval", str(vault), "--golden", str(golden), "--max-cost", "0.1"]) == 1
+    out = capsys.readouterr().out
+    assert "cost cap of 0.1 is reached: not running again" in out and "waiting" not in out
+    (result,) = run_file(vault)["results"]
+    assert result["status"] == "pass" and run_file(vault)["stale_cases"] == ["n1"]
+
+
+def test_waiting_for_a_quiet_vault_gives_up(vault, monkeypatch):
+    calls = iter(range(10**6))
+    monkeypatch.setattr(evals, "fingerprint", lambda root: {"f": next(calls)})
+    monkeypatch.setattr(evals.time, "sleep", lambda s: None)
+    monkeypatch.setattr(evals, "MAX_WAIT_FACTOR", 2)
+    clock = iter(x * 0.5 for x in range(10**6))
+    monkeypatch.setattr(evals.time, "time", lambda: next(clock))
+    _, quiet = evals.wait_for_quiet(vault, 1 / 60, {"f": -1})
+    assert quiet is False
+
+
+def test_fingerprint_survives_files_that_vanish(vault, monkeypatch):
+    real_stat = evals.os.stat
+
+    def flaky(path, *args, **kwargs):
+        if str(path).endswith("index.md"):
+            raise FileNotFoundError(path)
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(evals.os, "stat", flaky)
+    found = evals.fingerprint(vault)
+    assert found and not any(k.endswith("index.md") for k in found)
