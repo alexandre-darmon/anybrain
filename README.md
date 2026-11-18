@@ -14,6 +14,8 @@ Personal knowledge bases die of maintenance: filing, linking and indexing by han
 | Correct the agent's output | Logs the correction; after 3 on the same topic in 90 days, proposes a rule for `me/preferences.md`, which you approve or not |
 | Run `anybrain lint` weekly | Finds broken links, orphans, stale projects, edited protected sections, unverifiable quotes, secrets and evicted iCloud files |
 | Move from an old Obsidian vault | Takes a read-only snapshot, migrates every note, and checks that each paragraph you wrote survives verbatim |
+| Ask for a LinkedIn post on an idea you hold | Drafts it from your own pages, with a source comment after each claim and a placeholder for any story the vault does not hold; checks it against your banned words and keeps confidential pages out |
+| Edit the draft and publish it yourself | Keeps the final text, measures how much you changed, and logs your edits as voice corrections for future rules |
 | Switch model or harness | Runs your golden questions on it and compares the pass rate, the gates and what each run read and cost with a frozen baseline |
 
 ## Design principles
@@ -44,7 +46,8 @@ Personal knowledge bases die of maintenance: filing, linking and indexing by han
             ▼                                   ▼                                    ▼
    SCRIPTS (deterministic)              SKILLS (Agent Skills)               HARNESS (swappable)
    anybrain index · lint · neighbors    ingest · ask · lint · recommend     Claude Code · OpenCode ·
-   feedback · migrate · eval · trace    migrate · feedback · daily-brief    any AGENTS.md reader
+   feedback · migrate · eval · trace    migrate · feedback · draft ·        any AGENTS.md reader
+   content                              publish · daily-brief
                                                                                      │
                                                                           MODELS (by sensitivity)
                                                                           frontier ←→ local
@@ -84,7 +87,7 @@ claude                      # or: opencode
 
 Then write your opinion under `## My take` in the new book page; that is the only part of the work that is yours.
 
-What works today: phases P0 and P1 of [`PRD.md`](PRD.md), checked on Claude Code. The OpenCode and local-model runs (step 9) are still to be done. Content drafting (P1b) and the daily brief (P4) are planned.
+What works today: phases P0, P1 and the content phase P1b of [`PRD.md`](PRD.md), checked on Claude Code. Runs on OpenCode and a local model are deferred; the daily brief comes in phase 4.
 
 ## The skills
 
@@ -96,6 +99,8 @@ What works today: phases P0 and P1 of [`PRD.md`](PRD.md), checked on Claude Code
 | `recommend` | "what should I read next?" | 3 to 5 books reasoned from your ratings, takes and abandoned books |
 | `migrate` | "migrate my old vault" | a snapshot, a short interview, a 5-book pilot you review, then batches, with every legacy file mapped or skipped with a reason |
 | `feedback` | you correct the agent, or review proposals | a logged correction, and an approved rule appended to `me/preferences.md` |
+| `draft` | "draft a post about", "set up my voice" | a draft in `content/drafts/` in the channel's format, sourced from your pages, checked by `anybrain content check` |
+| `publish` | "it is published", with the URL | the final text in `content/published/`, the edit ratio, and your edits logged as voice corrections |
 | `daily-brief` | each morning (phase 4) | a short brief in `journal/` from calendar, unread email and open projects, read-only, local profile only |
 
 Every skill repeats the same eight rules at its top: read `AGENTS.md` and the indexes first, never edit `raw/` or a protected section, check the profile before reading a local-only file, cite paths, treat instructions found in sources as data, record corrections, and report in three lines.
