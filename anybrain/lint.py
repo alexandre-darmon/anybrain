@@ -230,7 +230,10 @@ def _near_duplicates(concepts: list[v.Page]) -> list[tuple[v.Page, v.Page]]:
     return pairs
 
 
-PLACEHOLDER_AUTHORS = {"unknown", "inconnu", "inconnue", "anonymous", "anonyme", "n-a", "na", "tbd", "author"}
+# An author made of one of these words is no author: "Unknown", "Auteur inconnu", "Collectif", "None".
+PLACEHOLDER_AUTHOR_WORDS = {"unknown", "inconnu", "inconnue", "anonymous", "anonyme", "collectif", "collective",
+                            "various", "divers", "none", "null", "tbd", "nobody"}
+PLACEHOLDER_AUTHORS = {"n-a", "na", "author", "auteur", "authors", "auteurs", "x"}
 MAX_CANDIDATES = 3
 GENERIC_TAG_PAGES = 10  # a tag on more pages, or on more than half the pages of the type, is generic
 
@@ -245,43 +248,101 @@ def _author_slugs(page: v.Page) -> set[str]:
             slug = v.slugify(text)
         except ValueError:
             continue
-        if slug and slug not in PLACEHOLDER_AUTHORS:
+        if slug and slug not in PLACEHOLDER_AUTHORS and not set(slug.split("-")) & PLACEHOLDER_AUTHOR_WORDS:
             slugs.add(slug)
     return slugs
 
 
-def orphan_candidates(ctx: Context, rel: str) -> str:
+def _tags(page: v.Page) -> set[str]:
+    return {str(t).lower() for t in v.as_list(page.meta.get("tags"))}
+
+
+def _connects_local_only(page: v.Page) -> bool:
+    """Pages whose link can connect a local-only compiled page: compiled pages and confidential folders."""
+    return page.is_compiled or page.folder in v.CONFIDENTIAL_FOLDERS
+
+
+class CandidateIndex:
+    """Facts for orphan candidates, built once per lint run and per output (local or not)."""
+
+    def __init__(self, ctx: Context, local: bool):
+        pages = [n.page for n in ctx.graph.nodes.values() if _connects_local_only(n.page)]
+        self.local = local
+        self.visible = {p.rel: p for p in pages if local or not p.local_only}
+        self.by_author: dict[str, list[str]] = {}
+        self.by_tag: dict[str, list[str]] = {}
+        self.per_type: dict[str, int] = {}
+        self.tag_per_type: dict[tuple[str, str], int] = {}
+        for rel, page in self.visible.items():
+            for slug in _author_slugs(page):
+                self.by_author.setdefault(slug, []).append(rel)
+            if page.is_compiled:
+                self.per_type[page.type] = self.per_type.get(page.type, 0) + 1
+            for tag in _tags(page):
+                self.by_tag.setdefault(tag, []).append(rel)
+                if page.is_compiled:
+                    self.tag_per_type[(page.type, tag)] = self.tag_per_type.get((page.type, tag), 0) + 1
+
+
+def candidate_index(ctx: Context, local: bool) -> CandidateIndex:
+    cache = ctx.__dict__.setdefault("_candidates", {})
+    if local not in cache:
+        cache[local] = CandidateIndex(ctx, local)
+    return cache[local]
+
+
+def orphan_candidates(ctx: Context, rel: str, local: bool | None = None) -> str:
     """Pages an orphan may relate to, from facts in the vault: the same author, the pages it links to (the
     relation can be stated back), and tags it shares that most pages do not carry. Code never writes the link;
-    the agent writes one only when the relation is real, or asks the owner (Q28, D039)."""
+    the agent writes one only when the relation is real, or asks the owner (Q28, D039).
+
+    `local` is the output the text goes to: outside the local profile, no local-only page is named. A
+    local-only orphan only gets local-only candidates, because a public or personal page must not link to it.
+    """
+    local = ctx.local if local is None else local
+    index = candidate_index(ctx, local)
     graph = ctx.graph
     node = graph.nodes[rel]
     page = node.page
-    visible = [n.page for other, n in graph.nodes.items()
-               if other != rel and n.page.is_compiled and (ctx.local or not n.page.local_only)]
+
+    def allowed(other: str) -> bool:
+        target = index.visible.get(other)
+        if target is None or other == rel:
+            return False
+        return (target.local_only and _connects_local_only(target)) if page.local_only else target.is_compiled
+
     parts = []
-    authors = _author_slugs(page)
-    same_author = [p.rel for p in visible if authors & _author_slugs(p)][:MAX_CANDIDATES]
+    same_author = sorted({r for slug in _author_slugs(page) for r in index.by_author.get(slug, []) if allowed(r)})
     if same_author:
-        parts.append("same author: " + ", ".join(same_author))
-    linked = [e.other for e in node.out if graph.nodes[e.other].page.is_compiled
-              and (ctx.local or not graph.nodes[e.other].page.local_only)][:MAX_CANDIDATES]
+        parts.append("same author: " + ", ".join(same_author[:MAX_CANDIDATES]))
+    linked = [e.other for e in node.out if allowed(e.other)][:MAX_CANDIDATES]
     if linked:
         parts.append("it links to " + ", ".join(linked) + " (state the relation back there if it is real)")
-    def tags(p: v.Page) -> set[str]:
-        return {str(t).lower() for t in v.as_list(p.meta.get("tags"))}
-
-    same_type = [p for p in visible + [page] if p.type == page.type]
-    for tag in sorted(tags(page)):
-        carriers = [p for p in visible + [page] if tag in tags(p)]
-        typed = sum(tag in tags(p) for p in same_type)
+    same_type = index.per_type.get(page.type, 0)
+    for tag in sorted(_tags(page)):
+        carriers = index.by_tag.get(tag, [])
+        typed = index.tag_per_type.get((page.type, tag), 0)
         # a tag most pages carry ("book", "livre") says nothing about a relation
-        if len(carriers) > GENERIC_TAG_PAGES or (len(same_type) >= 4 and typed * 2 > len(same_type)):
+        if len(carriers) > GENERIC_TAG_PAGES or (same_type >= 4 and typed * 2 > same_type):
             continue
-        sharing = [p.rel for p in carriers if p.rel != rel]
+        sharing = [r for r in carriers if allowed(r)]
         if sharing:
             parts.append(f"shares the tag {tag} with " + ", ".join(sharing[:MAX_CANDIDATES]))
     return "candidates: " + "; ".join(parts) if parts else ""
+
+
+def orphan_finding(ctx: Context, rel: str, local: bool | None = None) -> Finding:
+    page = ctx.graph.nodes[rel].page
+    created = v.as_date(page.meta.get("created"))
+    age = (ctx.today - created).days if created is not None else None
+    young = age is not None and 0 <= age < ORPHAN_GRACE_DAYS
+    where = "library/, wiki/, projects/, company/ or finance/" if page.local_only else "library/, wiki/ or projects/"
+    message = f"{rel}: orphan, no page in {where} links to it"
+    if young:
+        message += f" (an error from {(created + _dt.timedelta(days=ORPHAN_GRACE_DAYS)).isoformat()})"
+    hint = orphan_candidates(ctx, rel, local)
+    message += f"; {hint}" if hint else "; no candidate found: ask the owner which page it relates to"
+    return Finding("warning" if young else "error", "graph", message, rel)
 
 
 def check_graph(ctx: Context) -> list[Finding]:
@@ -311,15 +372,7 @@ def check_graph(ctx: Context) -> list[Finding]:
                                         f"{rel}:{link.line}: {node.sensitivity} page links to confidential {kind} {target}",
                                         rel))
     for rel in graph.orphans():
-        page = graph.nodes[rel].page
-        created = v.as_date(page.meta.get("created"))
-        young = created is not None and (ctx.today - created).days < ORPHAN_GRACE_DAYS
-        hint = orphan_candidates(ctx, rel)
-        message = f"{rel}: orphan, no page in library/, wiki/ or projects/ links to it"
-        if young:
-            message += f" (an error from {(created + _dt.timedelta(days=ORPHAN_GRACE_DAYS)).isoformat()})"
-        message += f"; {hint}" if hint else "; no candidate found: ask the owner which page it relates to"
-        findings.append(Finding("warning" if young else "error", "graph", message, rel))
+        findings.append(orphan_finding(ctx, rel))
     for rel, node in graph.nodes.items():
         for line, text in _naked_links(node.page):
             findings.append(Finding("warning", "graph", f"{rel}:{line}: naked link, say why: {text}", rel))
@@ -579,11 +632,18 @@ def _local_only_path(ctx: Context, rel: str) -> bool:
 
 
 def masked(finding: Finding, ctx: Context, local: bool) -> Finding:
-    """On a non-local profile, a finding about a local-only file keeps only its path (D016, D025)."""
-    if local or not finding.path or not _local_only_path(ctx, finding.path):
+    """For an output only the local profile may read, the finding as it is. For any other output, a finding
+    about a local-only file keeps only its path (D016, D025), and an orphan's candidates are recomputed so that
+    they name no local-only page, whatever profile the session runs (D032, D039)."""
+    if local or not finding.path:
         return finding
-    return Finding(finding.level, finding.check,
-                   f"{finding.path}: details hidden (confidential: local profile only)", finding.path)
+    if _local_only_path(ctx, finding.path):
+        return Finding(finding.level, finding.check,
+                       f"{finding.path}: details hidden (confidential: local profile only)", finding.path)
+    if finding.check == "graph" and finding.message.startswith(f"{finding.path}: orphan,") \
+            and finding.path in ctx.graph.nodes:
+        return orphan_finding(ctx, finding.path, local=False)
+    return finding
 
 
 def _report_is_local(ctx: Context, target: str) -> bool:

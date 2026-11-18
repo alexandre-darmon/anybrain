@@ -293,8 +293,17 @@ class Graph:
         A link from journal/, me/, content/ or a generated index does not connect a page to its source, author,
         theme or similar pages, so it does not count (owner decision on Q28, docs/decisions.md D039).
         """
-        return [rel for rel, n in self.nodes.items()
-                if n.page.is_compiled and not any(self.nodes[e.other].page.is_compiled for e in n.inbound)]
+        found = []
+        for rel, n in self.nodes.items():
+            if not n.page.is_compiled:
+                continue
+            # a local-only page may also be connected from company/ or finance/: a public or personal page
+            # must not link to it (13.3 rule 5)
+            local = n.page.local_only
+            if not any(self.nodes[e.other].page.is_compiled
+                       or (local and self.nodes[e.other].page.folder in v.CONFIDENTIAL_FOLDERS) for e in n.inbound):
+                found.append(rel)
+        return found
 
     def stats(self) -> dict:
         return {

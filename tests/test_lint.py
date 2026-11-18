@@ -310,3 +310,57 @@ def test_a_symlinked_report_file_is_masked(leaky_company, monkeypatch):
 def test_frontier_report_is_masked_wherever_it_goes(leaky_company):
     cli.main(["lint", str(leaky_company), "--links", "--report-only", "--report", "journal/reports/lint-2026-11-16.md"])
     assert "project-falcon-acquisition" not in (leaky_company / "journal" / "reports" / "lint-2026-11-16.md").read_text()
+
+
+@pytest.fixture
+def confidential_neighbours(make_vault, monkeypatch):
+    monkeypatch.setenv("ANYBRAIN_TODAY", "2026-11-18")
+    old = {"created": "2026-01-01"}
+    return make_vault({
+        "library/open-book.md": page("Open book", "book", author="Zed Writer", tags=["zeta-merger"], **old),
+        "library/hidden-a.md": page("Hidden A", "book", author="Zed Writer", tags=["zeta-merger"],
+                                    sensitivity="confidential", **old, body="Pairs with [[hidden-b]] on terms."),
+        "library/hidden-b.md": page("Hidden B", "book", author="Zed Writer", tags=["zeta-merger"],
+                                    sensitivity="confidential", **old, body="Pairs with [[hidden-a]] on terms."),
+        "projects/acme-mission.md": page("Acme mission", "project", kind="mission", status="active",
+                                         next_review="2027-01-01", tags=["zeta-merger"], **old),
+        "projects/lone-mission.md": page("Lone mission", "project", kind="mission", status="active",
+                                         next_review="2027-01-01", tags=["zeta-merger"], **old),
+        "company/clients/acme.md": page("Acme", "note", **old, body="The mission: [[acme-mission]]."),
+    })
+
+
+def test_a_local_report_for_the_frontier_names_no_local_only_candidate(confidential_neighbours, monkeypatch, capsys):
+    root = confidential_neighbours
+    monkeypatch.setenv("ANYBRAIN_PROFILE", "local")
+    lint.run(root, ["graph"], report_only=True, report="journal/reports/lint-x.md")
+    assert "hidden-a" in capsys.readouterr().out, "the local session itself sees every candidate"
+    report = (root / "journal" / "reports" / "lint-x.md").read_text()
+    line = next(l for l in report.splitlines() if "library/open-book.md: orphan" in l)
+    assert "hidden" not in line and "mission" not in line
+
+
+def test_a_confidential_page_is_connected_from_company_and_gets_only_local_candidates(confidential_neighbours, monkeypatch):
+    monkeypatch.setenv("ANYBRAIN_PROFILE", "local")
+    ctx = lint.Context(confidential_neighbours)
+    assert "projects/acme-mission.md" not in ctx.graph.orphans(), "company/ may connect a confidential page"
+    lone = str(lint.orphan_finding(ctx, "projects/lone-mission.md"))
+    assert "open-book" not in lone, "a public page must never be asked to link to a confidential one"
+    assert "library/hidden-a.md" in lone and "no page in library/, wiki/, projects/, company/ or finance/" in lone
+
+
+@pytest.mark.parametrize("author", ["Collectif", "Auteur inconnu", "None", "Unknown Author", "Various", "n/a"])
+def test_placeholder_authors_are_no_relation(make_vault, monkeypatch, author):
+    monkeypatch.setenv("ANYBRAIN_TODAY", "2026-11-18")
+    old = {"created": "2026-01-01"}
+    root = make_vault({
+        "library/a.md": page("A", "book", author=author, **old),
+        "library/b.md": page("B", "book", author=author, **old),
+    })
+    assert "same author" not in str(lint.orphan_finding(lint.Context(root), "library/a.md"))
+
+
+def test_a_future_created_date_does_not_postpone_the_error(make_vault, monkeypatch):
+    monkeypatch.setenv("ANYBRAIN_TODAY", "2026-11-18")
+    root = make_vault({"library/typo.md": page("Typo", "book", author="X Y", created="2062-01-01")})
+    assert lint.orphan_finding(lint.Context(root), "library/typo.md").level == "error"
