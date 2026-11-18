@@ -364,7 +364,7 @@ def test_init_refuses_a_folder_holding_a_pasted_legacy_vault(tmp_path, home, cap
     (brain / ".obsidian").mkdir()
     assert cli.main(["init", str(brain)]) == 2
     err = capsys.readouterr().err
-    assert "already holds 2 note(s) that anybrain did not create" in err and "brain-legacy" in err
+    assert "already holds 2 file(s) that anybrain did not create" in err and "brain-legacy" in err
     assert not (brain / "library").exists() and not (brain / "AGENTS.md").exists(), "nothing written"
 
 
@@ -376,3 +376,25 @@ def test_init_accepts_an_empty_obsidian_vault_and_an_existing_anybrain_vault(tmp
         "---\ntitle: My book\ntype: book\ndescription: Says one thing.\ntags: []\nlanguage: en\n"
         "created: 2026-11-18\nupdated: 2026-11-18\nsources: []\nsensitivity: public\nauthor: A B\nstatus: to-read\n---\n")
     assert cli.main(["init", str(brain)]) == 0, "a vault anybrain made is not foreign, whatever it holds"
+
+
+
+def test_the_guard_sees_legacy_files_in_layout_named_folders_and_update_keeps_it(tmp_path, home, capsys):
+    brain = tmp_path / "brain"
+    (brain / "library").mkdir(parents=True)
+    (brain / "library" / "Old Book.md").write_text("legacy notes, no frontmatter\n")
+    assert cli.main(["init", str(brain)]) == 2
+    assert "library/Old Book.md" in capsys.readouterr().err
+    assert cli.main(["update", str(brain), "--yes"]) == 2, "update must not mark the folder as initialised"
+    assert not (brain / ".harness" / "render.json").exists()
+    assert cli.main(["init", str(brain)]) == 2, "still refused"
+
+
+def test_a_fresh_obsidian_vault_says_to_delete_its_welcome_page(tmp_path, home, capsys):
+    brain = tmp_path / "brain"
+    (brain / ".obsidian").mkdir(parents=True)
+    (brain / "Welcome.md").write_text("Obsidian's welcome page\n")
+    assert cli.main(["init", str(brain)]) == 2
+    assert "sample page Welcome.md: delete it" in capsys.readouterr().err
+    (brain / "Welcome.md").unlink()
+    assert cli.main(["init", str(brain)]) == 0

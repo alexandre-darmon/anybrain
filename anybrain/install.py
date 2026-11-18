@@ -284,19 +284,24 @@ def refuse_foreign_notes(vault: Path) -> None:
     """
     if not vault.is_dir() or (vault / RENDER).exists():
         return
+    # In a folder anybrain never initialised, every visible file is someone else's: notes, canvases and
+    # attachments, even inside folders named like the vault layout.
     found = []
-    for entry in sorted(vault.iterdir()):
-        if entry.name.startswith(".") or entry.name in VAULT_ENTRIES:
-            continue
-        if entry.is_file() and entry.suffix == ".md":
-            found.append(entry.name)
-        elif entry.is_dir():
-            found += [v.rel_path(vault, p) for p in sorted(entry.rglob("*.md"))
-                      if not any(part.startswith(".") for part in p.relative_to(vault).parts)]
+    for directory, dirs, files in os.walk(vault):
+        dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+        for name in sorted(files):
+            rel = v.rel_path(vault, Path(directory) / name)
+            if name.startswith(".") or rel in VAULT_ENTRIES or name == "index.md":
+                # the vault's own files, which init keeps as the owner wrote them (an AGENTS.md, a hand-written
+                # index.md: Q19), are not someone else's notes
+                continue
+            found.append(rel)
+    if found == ["Welcome.md"]:
+        raise v.VaultError(f"{vault} holds Obsidian's sample page Welcome.md: delete it, then run init again")
     if found:
         legacy = vault.parent / f"{vault.name}-legacy"
         raise v.VaultError(
-            f"{vault} already holds {len(found)} note(s) that anybrain did not create (for example "
+            f"{vault} already holds {len(found)} file(s) that anybrain did not create (for example "
             f"{', '.join(found[:3])}). init does not mix them with a new vault. Move them to a separate folder, "
             f"for example {legacy}, run init again on the empty folder, then migrate them: "
             f"anybrain migrate \"{vault}\" inventory \"{legacy}\"")
@@ -422,6 +427,8 @@ def update(target: str | None, yes: bool = False, out: Callable[[str], None] = p
            ask: Callable[[str], bool] | None = None) -> int:
     vault = v.resolve_vault(target)
     refuse_if_evicted(vault)
+    if not (vault / RENDER).exists():
+        refuse_foreign_notes(vault)  # update never makes a folder look initialised (D043)
     ask = ask or _ask_tty
     render = load_render(vault)
     params = render["params"] or {"owner": DEFAULT_OWNER, "role": DEFAULT_ROLE, "lang": DEFAULT_LANG}
