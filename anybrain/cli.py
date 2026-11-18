@@ -13,7 +13,6 @@ from . import __version__
 # Commands listed in PRD 9.3 that belong to later build steps. They are registered so that
 # `anybrain --help` shows the full surface, and they say plainly that they are not built yet.
 PLANNED = {
-    "content": ("Draft snapshots, edit ratio and content checks", "P1b, PRD section 24 step 15"),
     "transcribe": ("Transcribe new audio in raw/voice/ locally", "P3"),
 }
 
@@ -68,7 +67,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     return install.doctor(vault_arg(args.vault))
 
 
-LINT_CHECKS = ("schema", "links", "graph", "stale", "protected", "quotes", "secrets", "feedback", "icloud")
+LINT_CHECKS = ("schema", "content", "links", "graph", "stale", "protected", "quotes", "secrets", "feedback", "icloud")
 
 
 def _cmd_lint(args: argparse.Namespace) -> int:
@@ -141,6 +140,21 @@ def _cmd_migrate(args: argparse.Namespace) -> int:
     if len(words) == 2 and words[1] == "check":
         return migrate.check(vault.resolve_vault(words[0]))
     raise UsageError("usage: anybrain migrate [vault] inventory <legacy_path> | anybrain migrate [vault] check")
+
+
+CONTENT_ACTIONS = ("snapshot", "diff", "check")
+
+
+def _cmd_content(args: argparse.Namespace) -> int:
+    from . import content, vault
+
+    words = list(args.args)
+    if words and words[0] in CONTENT_ACTIONS:
+        words.insert(0, vault_arg(None))
+    if len(words) != 3 or words[1] not in CONTENT_ACTIONS:
+        raise UsageError("usage: anybrain content [vault] {snapshot,diff} <draft> | anybrain content [vault] check <file>")
+    root = vault.resolve_vault(words[0])
+    return {"snapshot": content.snapshot, "diff": content.diff, "check": content.check}[words[1]](root, words[2])
 
 
 def _cmd_stats(args: argparse.Namespace) -> int:
@@ -223,6 +237,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("migrate", help="Snapshot a legacy vault and check that the owner's text survived")
     p.add_argument("args", nargs="+", metavar="[vault] {inventory <legacy_path>,check}")
     p.set_defaults(func=_cmd_migrate)
+
+    p = sub.add_parser("content", help="Draft snapshots, edit ratio and content checks")
+    p.add_argument("args", nargs="+", metavar="[vault] {snapshot,diff,check} <file>")
+    p.set_defaults(func=_cmd_content)
 
     p = sub.add_parser("eval", help="Run the golden set on a harness, with a run trace per case, and print the gates")
     p.add_argument("vault", nargs="?")

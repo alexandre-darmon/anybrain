@@ -137,7 +137,7 @@ def test_stats(capsys):
     assert run(EXAMPLE, "--check", "--stats") == 0
     out = capsys.readouterr().out
     assert "library      4 pages" in out
-    assert "edges 20, orphans 0, broken links 0" in out
+    assert "edges 22, orphans 0, broken links 0" in out  # 2 links from me/voice.md and the LinkedIn guide
     assert "root index ~" in out and "largest domain index" in out
 
 

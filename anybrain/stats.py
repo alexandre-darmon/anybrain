@@ -2,7 +2,8 @@
 
 Log lines look like `YYYY-MM-DD · <skill> · <what> · <files>`. Weeks are ISO weeks, the current one last.
 Section 6 sets the usage target (at least 2 `ingest` and 3 `ask` per week) and the kill criterion (fewer
-than 2 ingests per week for 4 weeks in a row). Edit ratios and published-piece metrics arrive with P1b.
+than 2 ingests per week for 4 weeks in a row). For content (P1b), it prints the edit ratio of each published
+piece, totals per channel, and whether the ratio is going down (16.5).
 """
 from __future__ import annotations
 
@@ -15,6 +16,9 @@ from . import vault as v
 LOG_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\s*·\s*([^\s·]+)\s*·")
 TARGETS = {"ingest": 2, "ask": 3}
 KILL_WEEKS = 4
+EDIT_RATIO_TARGET = 0.30  # section 6: at most 30% by the 8th published piece
+CONVERGENCE_PIECES = 8  # 16.5: the ratio should decrease over 8 pieces
+METRICS = ("impressions", "reactions", "comments", "leads")
 
 
 def read_log(vault: Path) -> tuple[list[tuple[_dt.date, str]], int]:
@@ -76,4 +80,56 @@ def run(vault: Path, weeks: int = 4) -> int:
               "in a row; stop adding features and run a retro in journal/")
     if skipped:
         print(f"{skipped} line(s) of log.md do not follow `YYYY-MM-DD · <skill> · ...` and were skipped")
+    print_content(vault)
     return 0
+
+
+def published_pieces(vault: Path) -> list[dict]:
+    """Published pieces, oldest first, with their date, channel, edit ratio and owner metrics."""
+    folder = vault / "content" / "published"
+    pieces = []
+    for path in sorted(folder.glob("*.md")) if folder.is_dir() else []:
+        fm, *_ = v.parse_frontmatter(v.read_text(path))
+        if not fm or fm.get("type") != "published":
+            continue
+        ratio = fm.get("edit_ratio")
+        pieces.append({
+            "rel": v.rel_path(vault, path),
+            "date": v.as_date(fm.get("published")),
+            "channel": str(fm.get("channel") or "?"),
+            "ratio": float(ratio) if isinstance(ratio, (int, float)) and not isinstance(ratio, bool) else None,
+            **{m: fm.get(m) for m in METRICS if isinstance(fm.get(m), int) and not isinstance(fm.get(m), bool)},
+        })
+    return sorted(pieces, key=lambda p: (str(p["date"] or ""), p["rel"]))
+
+
+def _percent(ratio: float | None) -> str:
+    return "?" if ratio is None else f"{round(ratio * 100)}%"
+
+
+def print_content(vault: Path) -> None:
+    pieces = published_pieces(vault)
+    if not pieces:
+        return
+    print(f"content: {len(pieces)} published piece(s), oldest first")
+    for piece in pieces:
+        date = piece["date"].isoformat() if piece["date"] else "?"
+        print(f"  {date}  {piece['channel']:<11} edit {_percent(piece['ratio']):>4}  {piece['rel']}")
+    by_channel: dict[str, list[dict]] = {}
+    for piece in pieces:
+        by_channel.setdefault(piece["channel"], []).append(piece)
+    for channel, items in sorted(by_channel.items()):
+        ratios = sorted(p["ratio"] for p in items if p["ratio"] is not None)
+        median = ratios[len(ratios) // 2] if len(ratios) % 2 else (
+            (ratios[len(ratios) // 2 - 1] + ratios[len(ratios) // 2]) / 2 if ratios else None)
+        totals = [f"{m} {sum(p.get(m, 0) for p in items)}" for m in METRICS if any(m in p for p in items)]
+        print(f"  {channel}: {len(items)} piece(s), median edit {_percent(median)}" + (f", {', '.join(totals)}" if totals else ""))
+    ratios = [p["ratio"] for p in pieces if p["ratio"] is not None]
+    if len(ratios) >= CONVERGENCE_PIECES:
+        eighth = ratios[CONVERGENCE_PIECES - 1]
+        verdict = "met" if eighth <= EDIT_RATIO_TARGET else "not met"
+        print(f"edit ratio target (at most {_percent(EDIT_RATIO_TARGET)} by the 8th piece): {verdict} ({_percent(eighth)})")
+        last = ratios[-CONVERGENCE_PIECES:]
+        older, newer = last[:CONVERGENCE_PIECES // 2], last[CONVERGENCE_PIECES // 2:]
+        if sum(newer) / len(newer) >= sum(older) / len(older):
+            print("the edit ratio did not go down over the last 8 pieces: review me/voice.md and the channel guides (16.5)")

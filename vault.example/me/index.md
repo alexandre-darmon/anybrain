@@ -2,6 +2,7 @@
 # me
 
 - [Preferences](preferences.md): How the agent should work for the owner; owner rules first, then rules learned from corrections.
+- [Voice](voice.md): How the owner writes: traits with real examples, signature moves, banned patterns.
 - [Aspirations](aspirations.md): Goals at 1, 3 and 5 years. Owner-written, fully protected.
 - [CV](cv.md): Source of truth for roles, missions and skills used in tailored documents. Owner-written.
 - [Principles](principles.md): How the owner decides; rules the agent applies when weighing options. Owner-written, fully protected.

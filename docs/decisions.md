@@ -483,3 +483,32 @@ Format: `D<number> · <title>`, with the build step and the PRD sections involve
   2. run `init` on the empty folder;
   3. bring the notes in with `anybrain migrate <vault> inventory <legacy folder>`.
 - **Scope.** A vault `anybrain` already initialised is never refused, whatever it holds.
+
+## D044 · Content, phase P1b (step 15)
+
+- **When.** The owner asked on 2026-11-18 to move on while the real migration (step 14) waits for them. The P1b code is built now. Its exit criteria still need real use after step 14: 4 pieces published, the edit ratio measured, content evals passing (Q33).
+- **Pages.** Three types join `type` (11.1): `draft` in `content/drafts/`, `published` in `content/published/`, `channel` in `content/channels/`. The voice profile is `me/voice.md`, `type: profile`. `--schema` checks the fields of 11.10 and 11.11:
+  - a channel from the list;
+  - `audience`, `angle` and `status`;
+  - a `brief` in `raw/inbox/` for an application, bio or email;
+  - `url`, `published`, `draft` and an `edit_ratio` from 0 to 1 on a published piece.
+  `content/ideas.md` is an append-only file, like `log.md`, not a page.
+- **init.** It creates `content/channels/`, `content/drafts/`, `content/published/`, `.harness/drafts/`, `content/ideas.md`, and `me/voice.md` with the default banned list of 11.13. The em dash is written `regex:—`, a Python escape, so no file holds the character itself. A vault made before P1b gets the folders by running `init` again, which changes nothing else.
+- **`lint --content`** (15.4, 19.4b) reads the text a reader sees: the body without HTML comments, and for a draft without `## Notes for the owner`.
+  - **Banned patterns.** An error on a draft at `ready`, the status the checks gate. A warning on a draft still in progress.
+  - **Placeholders.** An error on a draft at `ready`.
+  - **Published pieces.** Banned patterns and placeholders are only warnings there, because a published piece is the owner's final text and fully protected (Q34).
+  - **Drafts already published or dropped** are history, and these two checks skip them.
+  - **Sources.** A source in `company/` or `finance/`, or a confidential or mission page, is an error. Sources are `sources` plus every `<!-- src: path -->`.
+  - **Other errors.** A client name from `.harness/clients.txt`, a draft without sources, and a channel without a guide.
+  - **Exit code.** `anybrain content check` exits 1 only on errors, since an error blocks `ready` and a warning does not.
+- **Edit ratio** (section 6, Q34). The characters inserted, deleted or replaced (a replacement counts as its longer side), over the length of the longer text. 0 is unchanged and 1 is rewritten. Additions count, so a draft the owner had to lengthen is not scored as close.
+  - Both texts are compared as a reader sees them, with whitespace normalised so that reflowing a paragraph is not an edit.
+  - `content diff` compares the snapshot with the published piece whose `draft` field names the draft, or else with the current draft.
+  - It prints the changed passages word by word, for the `publish` skill's summary of corrections.
+  - `content snapshot` keeps the first version saved: the ratio measures the owner's edits against what the agent first wrote.
+- **Index and stats** (14.2, 16.5).
+  - `content/index.md` lists drafts by status, then published pieces by date, then the rest, in the line formats of 14.2.
+  - `anybrain stats` prints each published piece's edit ratio and totals per channel.
+  - It also prints whether the 8th piece meets the 30% target, and whether the ratio went down over the last 8 pieces: the newer half's mean must be below the older half's.
+- **A reference fixed.** 10.3 pointed to a section 19.7 that does not exist; the rule it meant is 19.4b.

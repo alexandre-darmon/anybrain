@@ -34,12 +34,14 @@ ICLOUD_HINT = "Right-click the vault folder in Finder and choose Keep Downloaded
 DEFAULT_SKILL_DIRS = ["~/.agents/skills", "~/.claude/skills"]
 HARNESS_CONFIGS = (".claude/settings.json", "opencode.json")
 
-# PRD 10.2, phase P0. content/ and .harness/drafts/ arrive with P1b (docs/decisions.md D019).
+# PRD 10.2. content/ and .harness/drafts/ came with P1b (docs/decisions.md D019, D044).
 LAYOUT_DIRS = [
     "me", "raw/inbox", "raw/highlights", "raw/articles", "raw/voice", "raw/docs", "raw/attachments",
     "raw/archive", "raw/legacy", "library", "wiki/concepts", "wiki/notes", "projects", "company", "finance",
-    "journal", ".harness/templates",
+    "journal", "content/channels", "content/drafts", "content/published", ".harness/templates", ".harness/drafts",
 ]
+IDEAS_STARTER = ("# Content ideas\n\n<!-- Append-only. The weekly lint adds ideas here: one line each, with the angle "
+                 "and its source paths. -->\n")
 
 STARTER_ME = {
     "me/profile.md": ("Profile", "Who the owner is, in stable facts that stay true for a year. Owner-written.",
@@ -373,6 +375,17 @@ def init(target: str, owner: str | None = None, role: str | None = None, lang: s
                     .replace("{{language}}", params["lang"]).replace("{{created}}", day).replace("{{updated}}", day))
         v.write_text(vault / rel, page + "\n" + body)
         say(f"wrote {rel}")
+
+    voice = vault / "me" / "voice.md"
+    if not voice.exists():
+        text = v.read_text(v.framework_root() / "templates" / "pages" / "voice.md")
+        v.write_text(voice, text.replace("{{language}}", params["lang"]).replace("{{created}}", day)
+                     .replace("{{updated}}", day))
+        say("wrote me/voice.md")
+    ideas = vault / "content" / "ideas.md"
+    if not ideas.exists():
+        v.write_text(ideas, IDEAS_STARTER)
+        say("wrote content/ideas.md")
 
     merge_obsidian(vault, say)
     link_skills(vault, say)

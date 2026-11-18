@@ -1,5 +1,5 @@
 {
-  "generated": "2026-11-17T21:37:17Z",
+  "generated": "2026-11-18T12:59:13Z",
   "pages": {
     "company/admin.md": {
       "title": "Company admin",
@@ -14,6 +14,69 @@
       ],
       "in": [],
       "sources": [],
+      "broken": []
+    },
+    "content/channels/linkedin.md": {
+      "title": "LinkedIn",
+      "type": "channel",
+      "description": "Posts of 150 to 250 words for product people: one claim, one story, one question.",
+      "sensitivity": "public",
+      "out": [
+        {
+          "to": "content/published/2026-11-10-interviews-fail-early.md",
+          "context": "[[2026-11-10-interviews-fail-early]]: the claim is in the first line and the story is mine."
+        }
+      ],
+      "in": [],
+      "sources": [],
+      "broken": []
+    },
+    "content/drafts/2026-11-09-interviews-fail-early.md": {
+      "title": "Interviews fail early",
+      "type": "draft",
+      "description": "LinkedIn post: most customer interviews fail on hypothetical questions.",
+      "sensitivity": "public",
+      "out": [],
+      "in": [],
+      "sources": [
+        "wiki/notes/discovery-interviews.md",
+        "library/continuous-discovery-habits.md"
+      ],
+      "broken": []
+    },
+    "content/drafts/2026-11-15-name-the-category.md": {
+      "title": "Name the category",
+      "type": "draft",
+      "description": "LinkedIn post: naming a category is half of creating it.",
+      "sensitivity": "public",
+      "out": [],
+      "in": [],
+      "sources": [
+        "wiki/concepts/category-design.md",
+        "wiki/concepts/languaging.md"
+      ],
+      "broken": []
+    },
+    "content/published/2026-11-10-interviews-fail-early.md": {
+      "title": "Interviews fail early",
+      "type": "published",
+      "description": "Most interviews fail before the first question, because they ask about the future.",
+      "sensitivity": "public",
+      "out": [],
+      "in": [
+        {
+          "from": "content/channels/linkedin.md",
+          "context": "[[2026-11-10-interviews-fail-early]]: the claim is in the first line and the story is mine."
+        },
+        {
+          "from": "me/voice.md",
+          "context": ""
+        }
+      ],
+      "sources": [
+        "wiki/notes/discovery-interviews.md",
+        "library/continuous-discovery-habits.md"
+      ],
       "broken": []
     },
     "finance/decisions.md": {
@@ -207,6 +270,21 @@
       "sources": [],
       "broken": []
     },
+    "me/voice.md": {
+      "title": "Voice",
+      "type": "profile",
+      "description": "",
+      "sensitivity": "personal",
+      "out": [
+        {
+          "to": "content/published/2026-11-10-interviews-fail-early.md",
+          "context": ""
+        }
+      ],
+      "in": [],
+      "sources": [],
+      "broken": []
+    },
     "projects/example-tool.md": {
       "title": "Example tool",
       "type": "project",
@@ -364,8 +442,8 @@
     }
   },
   "stats": {
-    "pages": 17,
-    "edges": 20,
+    "pages": 22,
+    "edges": 22,
     "orphans": 0,
     "broken": 0
   }

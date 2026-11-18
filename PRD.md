@@ -420,7 +420,7 @@ brain/
 | `projects/` | Agent and owner | personal; `kind: mission` → confidential | frontier with `anonymize`, missions → local | |
 | `company/`, `finance/` | Owner; agent reads, may append to `decisions.md` on request | confidential | local only | |
 | `journal/` | Agent | personal | local | |
-| `content/drafts/`, `content/ideas.md` | Agent writes, owner edits | public | frontier | Allowed sources limited by section 19.7. Drafts of `channel: application` are personal |
+| `content/drafts/`, `content/ideas.md` | Agent writes, owner edits | public | frontier | Allowed sources limited by section 19.4b. Drafts of `channel: application` are personal |
 | `content/published/`, `content/channels/` | Owner (published text arrives through `publish`) | public | frontier | Fully protected |
 | `.harness/` | Scripts and owner | n/a | n/a | Agent reads `models.toml`, `graph.json`; writes only through CLI commands |
 
@@ -435,7 +435,7 @@ All pages are Markdown with YAML frontmatter delimited by `---`. Scripts read fr
 | Field | Type | Required | Rule |
 | --- | --- | --- | --- |
 | `title` | string | yes | Human title, any language |
-| `type` | enum | yes | `book`, `concept`, `note`, `project`, `profile`, `brief`, `report` |
+| `type` | enum | yes | `book`, `concept`, `note`, `project`, `profile`, `brief`, `report`, and with P1b `draft`, `published`, `channel` |
 | `description` | string | yes | ≤ 150 characters. Becomes the index line. States what the page says, not what it is ("Win by creating the category you are judged in", not "A page about category design") |
 | `tags` | list[str] | yes (may be empty) | kebab-case, reuse existing tags first |
 | `aliases` | list[str] | no | Other names used in links (`[[Snow Leopard]]`) |
@@ -1387,6 +1387,8 @@ P2, P3, P4 are planned only after step 18 and the 4-week measure.
 | Q30 | What counts as a file read in a shell command, for `files_read` and `local_only_read_on_frontier` (22.5)? | **Decided by the owner (2026-11-18): yes.** Conservative: every file a command names, in any word or quoted code, except for a short list of commands that show no content; a recursive search reads the local-only files under its folders; a failed command that ran counts. Records also carry `files_searched` and `attempts` (D036) |
 | Q31 | A project migrated from a legacy note without a review date gets one computed by code (owner decision, 2026-11-18). How far ahead? | 30 days after the migration, the date the inventory prints and `migrate check` verifies (D037) |
 | Q32 | The dashboard of 22.7 is P2, with continuous observability. Should it come earlier, fed only by eval runs (P1) and the vault's own figures? | P2, with 22.6; the owner asked for it on 2026-11-18 without a date |
+| Q33 | P1b was built before the owner's real migration (step 14), which section 7 and 24 put first. Does P1b's exit still wait for step 14? | Yes: the code is built (owner decision, 2026-11-18), the exit criteria (4 pieces published, edit ratio measured, content evals) need real use after step 14 (D044) |
+| Q34 | How is the edit ratio counted, and how strict are content checks on text the owner already published? | Characters inserted, deleted or replaced over the longer text; banned patterns and placeholders are warnings on published pieces, which are the owner's protected text (D044) |
 
 ---
 

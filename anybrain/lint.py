@@ -23,11 +23,19 @@ from . import graph as g
 from . import protect
 from . import vault as v
 
-TYPES = ("book", "concept", "note", "project", "profile", "brief", "report")
+TYPES = ("book", "concept", "note", "project", "profile", "brief", "report", "draft", "published", "channel")
 BOOK_STATUS = ("to-read", "reading", "read", "abandoned")
 PROJECT_STATUS = ("idea", "active", "paused", "shipped", "dropped")
 PROJECT_KIND = ("portfolio", "mission", "venture", "personal")
 CONFIDENCE = ("low", "medium", "high")
+# P1b content (PRD 11.10 to 11.12)
+CHANNELS = ("linkedin", "article", "newsletter", "site", "portfolio", "application", "bio", "email")
+TAILORED_CHANNELS = ("application", "bio", "email")  # these need a `brief` in raw/inbox/
+DRAFT_STATUS = ("idea", "drafting", "ready", "published", "dropped")
+PLACEHOLDER_RE = re.compile(r"\[YOUR (?:STORY|NUMBER):")
+SRC_COMMENT_RE = re.compile(r"<!--\s*src:\s*(.*?)\s*-->")
+HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
+NOTES_HEADING = "notes for the owner"
 LANGUAGES = ("fr", "en")
 DESCRIPTION_MAX = 150
 YEAR_MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
@@ -175,6 +183,67 @@ def _check_page_schema(page: v.Page) -> list[str]:
             problems.append("missing `next_review`")
         elif v.as_date(fm["next_review"]) is None:
             problems.append("`next_review` is not a valid date (YYYY-MM-DD)")
+    elif page_type == "draft":
+        problems += _draft_schema(fm, missing)
+    elif page_type == "published":
+        problems += _published_schema(fm, missing)
+    if page_type in ("draft", "published", "channel"):
+        folder = {"draft": "content/drafts/", "published": "content/published/", "channel": "content/channels/"}[page_type]
+        if not page.rel.startswith(folder):
+            problems.append(f"a page of type {page_type} belongs in {folder}")
+    return problems
+
+
+def _draft_schema(fm: dict, missing) -> list[str]:
+    """PRD 11.10."""
+    problems = []
+    channel = fm.get("channel")
+    if missing("channel"):
+        problems.append("missing `channel`")
+    elif channel not in CHANNELS:
+        problems.append(f"`channel` is {channel!r}, expected one of {', '.join(CHANNELS)}")
+    for field in ("audience", "angle"):
+        if missing(field):
+            problems.append(f"missing `{field}`")
+    if missing("status"):
+        problems.append("missing `status`")
+    elif fm["status"] not in DRAFT_STATUS:
+        problems.append(f"`status` is {fm['status']!r}, expected one of {', '.join(DRAFT_STATUS)}")
+    length = fm.get("target_length")
+    if length is not None and (isinstance(length, bool) or not isinstance(length, int) or length <= 0):
+        problems.append(f"`target_length` is {length!r}, expected a number of words")
+    if channel in TAILORED_CHANNELS:
+        brief = fm.get("brief")
+        if missing("brief"):
+            problems.append(f"missing `brief`: a {channel} needs the brief file in raw/inbox/")
+        elif not str(brief).removeprefix("./").startswith("raw/inbox/"):
+            problems.append(f"`brief` is {brief!r}, expected a file in raw/inbox/")
+    return problems
+
+
+def _published_schema(fm: dict, missing) -> list[str]:
+    """PRD 11.11."""
+    problems = []
+    if missing("channel"):
+        problems.append("missing `channel`")
+    elif fm["channel"] not in CHANNELS:
+        problems.append(f"`channel` is {fm['channel']!r}, expected one of {', '.join(CHANNELS)}")
+    for field in ("url", "draft"):
+        if missing(field):
+            problems.append(f"missing `{field}`")
+    if missing("published"):
+        problems.append("missing `published`")
+    elif v.as_date(fm["published"]) is None:
+        problems.append("`published` is not a valid date (YYYY-MM-DD)")
+    ratio = fm.get("edit_ratio")
+    if ratio is None:
+        problems.append("missing `edit_ratio`")
+    elif isinstance(ratio, bool) or not isinstance(ratio, (int, float)) or not 0 <= ratio <= 1:
+        problems.append(f"`edit_ratio` is {ratio!r}, expected a number from 0 to 1")
+    for field in ("impressions", "reactions", "comments", "leads"):
+        value = fm.get(field)
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
+            problems.append(f"`{field}` is {value!r}, expected a whole number")
     return problems
 
 
@@ -610,8 +679,123 @@ def check_icloud(ctx: Context) -> list[Finding]:
 
 # ---------------------------------------------------------------------------- runner and report
 
+# ---------------------------------------------------------------------------- --content (P1b, PRD 15.4, 19.4b)
+
+def banned_patterns(vault: Path) -> tuple[list[tuple[str, re.Pattern]], list[str]]:
+    """The patterns of `## Banned` in me/voice.md (11.13): one per line, a literal (case ignored) or `regex:`
+    followed by a Python regex. Returns the patterns and the problems found reading them."""
+    path = vault / "me" / "voice.md"
+    if not path.is_file():
+        return [], []
+    section = v.find_section(v.parse_frontmatter(v.read_text(path))[1], "Banned")
+    patterns, problems = [], []
+    for line in (section.lines if section else []):
+        text = re.sub(r"^[-*]\s+", "", HTML_COMMENT_RE.sub("", line).strip()).strip()
+        if not text:
+            continue
+        if text.startswith("regex:"):
+            try:
+                patterns.append((text, re.compile(text[len("regex:"):].strip())))
+            except re.error as exc:
+                problems.append(f"me/voice.md: banned pattern {text!r} is not a valid regex ({exc})")
+        else:
+            literal = text.strip("`\"'")
+            if literal:
+                patterns.append((literal, re.compile(re.escape(literal), re.I)))
+    return patterns, problems
+
+
+def content_text(page: v.Page) -> str:
+    """The text a reader sees: the body without HTML comments, and for a draft without its notes for the owner."""
+    body = page.body
+    if page.type == "draft":
+        notes = v.find_section(body, NOTES_HEADING)
+        if notes:
+            lines = body.split("\n")
+            body = "\n".join(lines[:notes.heading_line] + lines[notes.end_line:])
+    return HTML_COMMENT_RE.sub("", body)
+
+
+def content_sources(page: v.Page) -> list[str]:
+    """Vault paths a draft or published piece names as sources: `sources` and every `<!-- src: path -->`."""
+    found: list[str] = []
+    items = [str(x) for x in v.as_list(page.meta.get("sources"))]
+    for match in SRC_COMMENT_RE.finditer(page.body):
+        items += [part for part in re.split(r"[,\s]+", match.group(1)) if part]
+    for item in items:
+        rel = item.strip().strip("[]").removeprefix("./")
+        if rel and not rel.startswith(("http://", "https://")) and rel not in found:
+            found.append(rel)
+    return found
+
+
+def content_findings(ctx: Context, page: v.Page, patterns=None, clients=None) -> list[Finding]:
+    """The checks of `lint --content` on one draft or published piece (15.4, 19.4b).
+
+    Banned patterns and placeholders are errors on a draft at `ready`, the status the checks gate (19.4b);
+    banned patterns are warnings on a draft still in progress. A published piece is the owner's final, fully
+    protected text: those two are warnings there. A draft already published or dropped is history: they are
+    not checked (docs/decisions.md D044).
+    """
+    if patterns is None:
+        patterns = banned_patterns(ctx.vault)[0]
+    if clients is None:
+        clients = [(name, _name_re(name)) for name in _client_names(ctx.vault)]
+    rel, fm, findings = page.rel, page.meta, []
+    is_draft = page.type == "draft"
+    status = fm.get("status") if is_draft else "published"
+    text = content_text(page)
+
+    def add(level: str, message: str) -> None:
+        findings.append(Finding(level, "content", f"{rel}: {message}", rel))
+
+    if not is_draft or status not in ("published", "dropped"):
+        level = "error" if is_draft and status == "ready" else "warning"
+        for label, pattern in patterns:
+            match = pattern.search(text)
+            if match:
+                add(level, f"banned pattern {label!r} from me/voice.md: {match.group(0)!r}")
+        placeholders = len(PLACEHOLDER_RE.findall(text))
+        if placeholders and (status == "ready" or not is_draft):
+            add("error" if is_draft else "warning",
+                f"{placeholders} placeholder(s) [YOUR STORY: ...] or [YOUR NUMBER: ...] left")
+    sources = content_sources(page)
+    if is_draft and status != "dropped" and not sources:
+        add("error", "no `sources`: a draft is built from vault pages (11.10)")
+    for source in sources:
+        target = ctx.vault / source
+        top = source.split("/", 1)[0]
+        if top in v.CONFIDENTIAL_FOLDERS:
+            add("error", f"source {source} is confidential (19.4b)")
+        elif v.is_page_path(source) and target.is_file():
+            other = v.load_page(ctx.vault, target)
+            if other.sensitivity == "confidential" or other.meta.get("kind") == "mission":
+                add("error", f"source {source} is a confidential or mission page (19.4b)")
+        elif not target.exists():
+            add("warning", f"source {source} not found in the vault")
+    for name, pattern in clients:
+        if pattern.search(text):
+            add("error", "names a client from .harness/clients.txt (19.4)")
+            break
+    channel = fm.get("channel")
+    if isinstance(channel, str) and channel and not (ctx.vault / "content" / "channels" / f"{channel}.md").is_file():
+        add("error", f"no channel guide content/channels/{channel}.md")
+    return findings
+
+
+def check_content(ctx: Context) -> list[Finding]:
+    patterns, problems = banned_patterns(ctx.vault)
+    clients = [(name, _name_re(name)) for name in _client_names(ctx.vault)]
+    findings = [Finding("warning", "content", message, "me/voice.md") for message in problems]
+    for page in ctx.pages:
+        if page.type in ("draft", "published") and page.rel.startswith(("content/drafts/", "content/published/")):
+            findings += content_findings(ctx, page, patterns, clients)
+    return findings
+
+
 CHECKS = {
     "schema": check_schema,
+    "content": check_content,
     "links": check_links,
     "graph": check_graph,
     "stale": check_stale,
