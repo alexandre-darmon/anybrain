@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "anybrain"
-version = "0.0.1"
+version = "0.1.0"
 description = "Your second brain in Markdown. Any model, any agent."
 readme = "README.md"
 license = "MIT"
