@@ -168,7 +168,7 @@ def test_inventory_lists_the_review_date_already_on_a_legacy_note(vault, tmp_pat
     assert "- `Projets/Alpha.md` · owner text: 1 · suggested: ask the owner · review date: 2027-01-15 (from `next_review`)" in text
     assert "review date: 2026-12-05 (from `Échéance::`)" in text
     assert "- `Projets/Gamma.md` · owner text: 1 · suggested: ask the owner · status: pending" in text
-    assert 'review date: not a YYYY-MM-DD date (`review`: "next spring"), ask the owner' in text
+    assert 'review date: not a valid YYYY-MM-DD date (`review`: "next spring"), ask the owner' in text
     assert "with none, `next_review: 2026-12-16` (30 days after this migration)" in text
 
 
@@ -191,3 +191,44 @@ def test_check_verifies_project_review_dates(vault, tmp_path, capsys):
     capsys.readouterr()
     cli.main(["migrate", str(vault), "check"])
     assert "0 project review date(s) to fix" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("---\ndeadline: 2026-12-01\nnext_review: 2027-02-01\n---\nBody.\n", ("2027-02-01", "`next_review`")),
+    ("---\ndue: 2026-12-01\n---\nBody.\n\nRevue:: 2027-03-01\n", ("2027-03-01", "`Revue::`")),
+    ("Body with an inline [Échéance:: 2026-12-24] in a sentence.\n", ("2026-12-24", "`Échéance::`")),
+    ("Body (next_review:: 2027-01-02) in parentheses.\n", ("2027-01-02", "`next_review::`")),
+    ("- **Prochaine revue**:: 2027-01-03\n", ("2027-01-03", "`Prochaine revue::`")),
+    ("---\nreview: [2027-01-01, 2027-02-01]\n---\nBody.\n", ('["2027-01-01", "2027-02-01"]', "`review`")),
+    ("No date here.\n", None),
+])
+def test_review_date_forms_and_ranking(text, expected):
+    fm, body, _, _ = v.parse_frontmatter(text)
+    assert migrate.review_date(fm, body) == expected
+
+
+def test_an_impossible_date_goes_to_the_owner_and_is_not_checked(vault, tmp_path, capsys):
+    root = tmp_path / "old"
+    (root / "Projets").mkdir(parents=True)
+    (root / "Projets" / "Epsilon.md").write_text("---\nnext_review: '2026-02-30'\n---\nEpsilon notes, written by me.\n")
+    (root / "Projets" / "Zeta.md").write_text("Zeta notes, written by me.\n")
+    cli.main(["migrate", str(vault), "inventory", str(root)])
+    assert "review date: not a valid YYYY-MM-DD date (`next_review`: \"2026-02-30\"), ask the owner" in report(vault).read_text()
+    # one page made from both notes: the owner gives its date, so check does not impose the default
+    set_status(vault, {"Projets/Epsilon.md": "[[projects/epsilon]]", "Projets/Zeta.md": "projects/epsilon.md"})
+    project_page(vault, "epsilon", "2027-05-01")
+    capsys.readouterr()
+    cli.main(["migrate", str(vault), "check"])
+    assert "0 project review date(s) to fix" in capsys.readouterr().out
+
+
+def test_check_reads_every_project_named_in_a_status(vault, tmp_path, capsys):
+    cli.main(["migrate", str(vault), "inventory", str(legacy_projects(tmp_path))])
+    set_status(vault, {"Projets/Alpha.md": "library/alpha.md and [[projects/alpha]]",
+                       "Projets/Beta.md": "projects/beta.md", "Projets/Gamma.md": "projects/gamma.md",
+                       "Projets/Delta.md": "projects/delta.md"})
+    project_page(vault, "alpha", "2026-12-31")
+    capsys.readouterr()
+    cli.main(["migrate", str(vault), "check"])
+    out = capsys.readouterr().out
+    assert "next_review of projects/alpha.md: 2026-12-31, expected 2027-01-15 (from the legacy note)" in out

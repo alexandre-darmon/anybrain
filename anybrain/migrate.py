@@ -27,12 +27,18 @@ FOLD = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"', " ": " ",
 MIN_WORDS = 3
 # A project's review date is decided by code, never by the agent (docs/decisions.md D037): the date already on
 # the legacy note under one of these keys (frontmatter, or a Dataview `key:: value` line), else the default.
-REVIEW_KEYS = {"next_review", "nextreview", "review", "review_date", "reviewdate", "revue", "prochaine_revue",
-               "prochainerevue", "date_revue", "daterevue", "due", "due_date", "duedate", "deadline", "echeance"}
+# Ranked: a note's own next review date wins over a review date, which wins over a due date or deadline.
+REVIEW_KEY_RANKS = (
+    {"next_review", "nextreview", "prochaine_revue", "prochainerevue"},
+    {"review", "review_date", "reviewdate", "revue", "date_revue", "daterevue"},
+    {"due", "due_date", "duedate", "deadline", "echeance"},
+)
 DEFAULT_REVIEW_DAYS = 30
-INLINE_FIELD_RE = re.compile(r"^\s*[-*]?\s*([^:\n`]{2,40})::\s*(.+?)\s*$", re.M)
+# Dataview inline fields: `key:: value` on its own line, or `[key:: value]` / `(key:: value)` anywhere in a line.
+INLINE_FIELD_RE = re.compile(r"^\s*[-*]?\s*([^:\n`\[\]()]{2,40})::\s*(.+?)\s*$", re.M)
+BRACKET_FIELD_RE = re.compile(r"[\[(]\s*([^:\n`\[\]()]{2,40})::\s*([^\])\n]+?)\s*[\])]")
 ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-MAPPED_RE = re.compile(r"mapped to `?([^\s`;,]+\.md)")
+PROJECT_PATH_RE = re.compile(r"projects/[\w.-]+")
 
 # Table of 21.1, by top-level folder name (accents and case ignored).
 FOLDER_TARGETS = {
@@ -143,21 +149,53 @@ class Entry:
     review: tuple[str, str] | None = None  # (value as written, where it was found)
 
 
-def _review_key(name: str) -> bool:
-    folded = _fold_name(str(name)).replace(" ", "_").replace("-", "_")
-    return folded in REVIEW_KEYS or folded.replace("_", "") in REVIEW_KEYS
+def _review_rank(name) -> int | None:
+    folded = _fold_name(str(name)).strip("*_ ").replace(" ", "_").replace("-", "_")
+    for rank, keys in enumerate(REVIEW_KEY_RANKS):
+        if folded in keys or folded.replace("_", "") in keys:
+            return rank
+    return None
+
+
+def _as_text(value) -> str:
+    if isinstance(value, _dt.datetime):
+        return value.date().isoformat()
+    if isinstance(value, _dt.date):
+        return value.isoformat()
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, ensure_ascii=False, default=lambda d: d.isoformat() if hasattr(d, "isoformat") else str(d))
+    return str(value).strip()
+
+
+def valid_date(text: str) -> bool:
+    """A real calendar date written YYYY-MM-DD (2026-02-30 is not one)."""
+    if not ISO_DATE_RE.match(text or ""):
+        return False
+    try:
+        _dt.date.fromisoformat(text)
+    except ValueError:
+        return False
+    return True
 
 
 def review_date(fm: dict | None, body: str) -> tuple[str, str] | None:
-    """The review or due date already written on a legacy note: frontmatter first, then Dataview inline fields."""
+    """The review or due date already written on a legacy note, from the frontmatter or a Dataview inline
+    field. The best-ranked key wins (next review, then review, then due); within a rank, the frontmatter first."""
+    found: list[tuple[int, int, str, str]] = []
     for key, value in (fm or {}).items():
-        if _review_key(key) and value not in (None, ""):
-            text = value.isoformat() if isinstance(value, (_dt.date, _dt.datetime)) else str(value).strip()
-            return text[:10] if isinstance(value, _dt.datetime) else text, f"`{key}`"
-    for match in INLINE_FIELD_RE.finditer(body or ""):
-        if _review_key(match.group(1).strip()):
-            return match.group(2).strip(), f"`{match.group(1).strip()}::`"
-    return None
+        rank = _review_rank(key)
+        if rank is not None and value not in (None, "", []):
+            found.append((rank, 0, _as_text(value), f"`{key}`"))
+    for pattern in (INLINE_FIELD_RE, BRACKET_FIELD_RE):
+        for match in pattern.finditer(body or ""):
+            key = match.group(1).strip()
+            rank = _review_rank(key)
+            if rank is not None:
+                found.append((rank, 1, match.group(2).strip(), f"`{key.strip('*_ ')}::`"))
+    if not found:
+        return None
+    rank, _, value, where = min(found, key=lambda item: (item[0], item[1]))
+    return value, where
 
 
 def default_review(day: str) -> str:
@@ -259,8 +297,8 @@ def write_inventory(vault: Path, snapshot: Path, legacy_name: str, hidden: list[
         review = ""
         if entry.review:
             value, where = entry.review
-            review = (f" · review date: {value} (from {where})" if ISO_DATE_RE.match(value)
-                      else f" · review date: not a YYYY-MM-DD date ({where}: {json.dumps(value, ensure_ascii=False)}), ask the owner")
+            review = (f" · review date: {value} (from {where})" if valid_date(value)
+                      else f" · review date: not a valid YYYY-MM-DD date ({where}: {json.dumps(value, ensure_ascii=False)}), ask the owner")
         lines.append(f"- `{entry.rel}` · {owner} · suggested: {suggested_target(entry.rel, entry.size)}{review}"
                      " · status: pending")
     lines.append("")
@@ -359,15 +397,19 @@ def check_review_dates(vault: Path, day: str, entries: list[Entry], status_of: d
     reviews = {e.rel: e.review for e in entries}
     sources: dict[str, list[str]] = {}
     for rel, status in status_of.items():
-        match = MAPPED_RE.search(status)
-        if match and match.group(1).startswith("projects/"):
-            sources.setdefault(match.group(1), []).append(rel)
+        if not status.startswith("mapped"):
+            continue
+        for target in PROJECT_PATH_RE.findall(status):
+            target = target.rstrip(".")
+            target = target if target.endswith(".md") else target + ".md"
+            if rel not in sources.setdefault(target, []):
+                sources[target].append(rel)
     problems = []
     for page_rel, legacy in sorted(sources.items()):
         found = [reviews[r][0] for r in legacy if reviews.get(r)]
-        dates = sorted(value for value in found if ISO_DATE_RE.match(value))
-        if found and not dates:
-            continue  # the owner gives the date (the report asks them)
+        if any(not valid_date(value) for value in found):
+            continue  # one of its notes needs the owner's date (the report asks them): theirs is not checked
+        dates = sorted(found)
         expected = dates[0] if dates else default_review(day)
         why = "from the legacy note" if dates else f"default, {DEFAULT_REVIEW_DAYS} days after the migration"
         path = vault / page_rel
