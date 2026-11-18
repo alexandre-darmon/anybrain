@@ -458,3 +458,18 @@ Format: `D<number> · <title>`, with the build step and the PRD sections involve
     - An Obsidian plugin: TypeScript, a second stack, its own release path, breakage on Obsidian updates, it duplicates Dataview, and it ties observability to one editor.
     - Either can come later, if a need appears that a Markdown page cannot meet, such as interactive drill-down over months. It would then read the same local files.
 - **When.** P2, with continuous observability (22.6), because the daily traces only exist from P2. The owner did not give a date; an earlier version fed by eval runs only is Q32.
+
+## D041 · Claude Code only, for now
+
+- **Owner decision, 2026-11-18:** "We stay on Claude Code for now, so no OpenCode."
+- **Effect.**
+  - Step 9 (the skills in OpenCode with the local profile) is deferred.
+  - The OpenCode half of step 10's acceptance is deferred with it.
+  - G5 (two harnesses) remains a goal, not a gate for the release.
+  - The code stays as it is, because removing it would cost more than keeping it:
+    - `init` and `update` still render `opencode.json` from the routing table;
+    - `anybrain eval --harness opencode` and its trace adapter still exist, unverified (D033).
+- **What this leaves open.**
+  - The local profile is not exercised by any real run. Claude Code always runs the frontier profile, and confidential folders are kept from it by the deny rules (D027).
+  - The `local` judge path is tested with stand-ins only.
+- **Release.** Step 13 no longer waits for step 9. Its criterion "init on a clean macOS user works" is checked in CI by a job on a fresh macOS runner with an empty home folder. It installs the package as an owner would, not in editable mode, runs `init` twice in an iCloud-style path, then `doctor`, `index --check` and `lint`.

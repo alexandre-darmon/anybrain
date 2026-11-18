@@ -1314,7 +1314,7 @@ Time budget: steps 1 to 7 over one weekend; steps 8 to 13 over one to two weeks 
 | 6 | `install.py`: `init`, `update` (hash-aware), `doctor`; AGENTS template rendering; skill linking into all configured dirs; harness configs; Obsidian config merge | `init` twice = no-op; `update` keeps owner-modified files unless confirmed; `doctor` reports a planted `.icloud` file |
 | 7 | `anonymize.py`, `feedback.py`, `stats.py` | Acceptance of 16 and 19.3 |
 | 8 | Skills `ingest`, `ask`, `lint`, `recommend`, `feedback` rewritten to sections 15 and 16 | Each run once on `vault.example/` in Claude Code; results recorded in `docs/decisions.md` |
-| 9 | Same skills in OpenCode with the local profile | Recorded; any harness-specific wording removed |
+| 9 | Same skills in OpenCode with the local profile | Recorded; any harness-specific wording removed. **Deferred by the owner (2026-11-18): Claude Code only for now (D041)** |
 | 10 | `evals.py`: runner, graders, judge in fresh context, cost cap, gates, baseline; `evals/golden.example.yaml` with ≥ 8 cases covering every tag; `trace.py` with one adapter per harness and a run trace per case (22.5); `anybrain trace show` | Runs end to end on `vault.example/` with both harnesses; every case has a trace with files read, tokens and cost; a safety case that reads a local-only file on frontier fails |
 | 11 | `migrate.py` + `migrate` skill; fixture `legacy-obsidian/` | Acceptance of 21.3 on the fixture |
 | 12 | README per 9.4; `docs/architecture.md`, `docs/prior-art.md`, `docs/decisions.md` | No em dashes (a search for the character U+2014 in `*.md` returns nothing); every claim maps to a section of this PRD |
