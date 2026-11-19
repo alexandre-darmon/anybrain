@@ -263,10 +263,11 @@ def _segments(command: str) -> list[tuple[list[str], list[str], list[str], int, 
     return segments
 
 
-def _walk(command: str, root: Path):
+def _walk(command: str, root: Path, start: str | None = None, end: dict | None = None):
     """Each simple command with the folder it runs in: `cd` and `pushd` are followed, a subshell restores the
-    folder when it closes, and a folder that cannot be known (`cd -`, `popd`, an unexpanded variable) is None."""
-    cwd: str | None = str(root)
+    folder when it closes, and a folder that cannot be known (`cd -`, `popd`, an unexpanded variable) is None.
+    The command starts in `start` (the vault by default); `end`, when given, receives the folder it ends in."""
+    cwd: str | None = start or str(root)
     stack: list[str | None] = []
     for words, inputs, outputs, opens, closes in _segments(command):
         stack.extend([cwd] * opens)
@@ -281,6 +282,8 @@ def _walk(command: str, root: Path):
         yield words, inputs, outputs, here
         for _ in range(closes):
             cwd = stack.pop() if stack else cwd
+    if end is not None:
+        end["cwd"] = cwd
 
 
 def _is_file(rel: str, root: Path, origin: Path | None) -> bool:
@@ -377,7 +380,8 @@ def shell_escapes(command: str, root: Path, origin: Path | None) -> list[str]:
     return found
 
 
-def files_from_shell(command: str, root: Path, origin: Path | None = None) -> tuple[list[str], list[str], list[Search]]:
+def files_from_shell(command: str, root: Path, origin: Path | None = None, start: str | None = None,
+                     end: dict | None = None) -> tuple[list[str], list[str], list[Search]]:
     """Files a shell command reads, files it writes, and the recursive searches it runs.
 
     Best effort, and conservative: any command outside NO_READ_COMMANDS reads every file it names, in any word
@@ -386,7 +390,7 @@ def files_from_shell(command: str, root: Path, origin: Path | None = None) -> tu
     path at run time is not seen (docs/decisions.md D036).
     """
     read, written, searches = [], [], []
-    for words, inputs, outputs, here in _walk(command, root):
+    for words, inputs, outputs, here in _walk(command, root, start, end):
         cwd = here or str(root)  # an unknown folder: read paths as relative to the vault, best effort
         for target in outputs:
             if target.isdigit() or target.startswith(("&", "/dev/")):
@@ -454,7 +458,10 @@ class ClaudeAdapter(Adapter):
             args += ["--max-budget-usd", f"{max(budget_usd, 0.01):.2f}"]
         return args
 
-    def parse(self, output: str, root: Path, origin: Path | None = None) -> Run:
+    def parse(self, output: str, root: Path, origin: Path | None = None, cwd: str | None = None) -> Run:
+        """`cwd` is the folder the session started in, the vault by default. The shell's folder carries from one
+        command to the next, as in Claude Code, and goes back to that folder when a command leaves the vault
+        (Claude Code 2.1.328 prints "Shell cwd was reset" then)."""
         run = Run("claude")
         calls: dict[str, ToolCall] = {}
         order: list[str] = []
@@ -513,9 +520,15 @@ class ClaudeAdapter(Adapter):
                 if not run.ok:
                     run.error = event.get("subtype", "error")
         run.tool_calls = [calls[i] for i in order if i in calls]
+        start = cwd or str(root)
+        shell = start
         for call in run.tool_calls:
             if call.tool == "Bash" and call.ran:
-                read, written, searches = files_from_shell(call.target, root, origin)
+                end: dict = {}
+                read, written, searches = files_from_shell(call.target, root, origin, shell, end)
+                after = end.get("cwd")
+                inside = after is not None and any(_inside(after, base) is not None for base in _bases(root, origin))
+                shell = after if inside else start
                 for item in read:
                     _add(run.files_read, item)
                 for item in written:
@@ -529,7 +542,7 @@ class ClaudeAdapter(Adapter):
             elif call.result != "ok":
                 continue
             elif call.tool == "Read":
-                _add(run.files_read, call.target)
+                _add(run.files_read, relative(call.raw, root, origin, start) if call.raw else call.target)
             elif call.tool in ("Write", "Edit", "NotebookEdit"):
                 _add(run.files_written, call.target)
                 if call.raw and escapes(call.raw, root, origin, str(root)):
@@ -773,3 +786,518 @@ def show(vault: Path, last: int = 20, skill: str | None = None) -> int:
         for line in format_record(record):
             print(line)
     return 0
+
+
+# ---------------------------------------------------------------------------- session import (22.6)
+#
+# `anybrain trace import` reads the transcripts Claude Code already keeps, once a session has ended, and stores
+# one record per question asked in it. Claude Code documents where the transcripts live and that their format is
+# internal and may change with any release (docs/decisions.md D049): a transcript this reader does not recognise
+# is reported, never recorded as an empty run.
+
+SESSION_RETENTION_DAYS = 30  # Q21: raw session traces are kept 30 days, then only weekly aggregates
+WEEKLY_FILE = ".harness/traces/weekly.json"
+# Relative weights of token kinds, used only to share a cost the harness measured between the questions of one
+# session (base input = 1). Totals are never computed from them (D049).
+TOKEN_SHARES = {"input_tokens": 1.0, "cache_read_input_tokens": 0.1, "output_tokens": 5.0}
+CACHE_WRITE_SHARES = {"ephemeral_5m_input_tokens": 1.25, "ephemeral_1h_input_tokens": 2.0}
+MODEL_USAGE_KEYS = {"inputTokens": "input_tokens", "cacheReadInputTokens": "cache_read_input_tokens",
+                    "outputTokens": "output_tokens", "cacheCreationInputTokens": "cache_creation_input_tokens"}
+
+
+def claude_projects() -> Path:
+    """Where Claude Code keeps its transcripts: `~/.claude/projects`, or under `CLAUDE_CONFIG_DIR` when set."""
+    return Path(os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude").expanduser() / "projects"
+
+
+def project_dir_name(path: str) -> str:
+    """Claude Code's folder name for a working directory: every character that is not a letter or a digit
+    becomes `-`; a name longer than 200 characters is cut and gets a hash of the full path."""
+    return re.sub(r"[^A-Za-z0-9]", "-", path)
+
+
+def _vault_forms(vault: Path) -> list[str]:
+    forms = []
+    for form in (os.path.normpath(os.path.abspath(vault)), os.path.realpath(vault)):
+        if form not in forms:
+            forms.append(form)
+    return forms
+
+
+def session_files(vault: Path) -> list[Path]:
+    """Transcripts of sessions opened in the vault or in a folder inside it. The folder name only narrows the
+    search; each event's `cwd` decides (a sibling folder such as `brain-legacy` has a matching prefix)."""
+    projects = claude_projects()
+    if not projects.is_dir():
+        return []
+    names = [project_dir_name(form) for form in _vault_forms(vault)]
+    found = []
+    for folder in sorted(projects.iterdir()):
+        if folder.is_dir() and any(folder.name == n or folder.name.startswith(n + "-")
+                                   or (len(n) > 200 and folder.name.startswith(n[:200])) for n in names):
+            found.extend(sorted(folder.glob("*.jsonl")))
+    return found
+
+
+def _in_vault(cwd: str, vault: Path) -> bool:
+    if not cwd:
+        return False
+    forms = [os.path.normpath(cwd)]
+    if os.path.exists(cwd):
+        forms.append(os.path.realpath(cwd))
+    return any(_inside(form, base) is not None for form in forms for base in _vault_forms(vault))
+
+
+def _events(path: Path) -> list[dict]:
+    events = []
+    try:
+        text = v.read_text(path)
+    except (OSError, UnicodeDecodeError):
+        return events
+    for line in text.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict):
+            events.append(event)
+    return events
+
+
+def _is_prompt(event: dict) -> bool:
+    """A message from the owner (or the harness on their behalf) that starts a question, not a tool result."""
+    if event.get("type") != "user" or event.get("isSidechain") or event.get("isMeta") or event.get("isCompactSummary"):
+        return False
+    content = (event.get("message") or {}).get("content")
+    if isinstance(content, str):
+        return bool(content.strip())
+    kinds = {item.get("type") for item in content if isinstance(item, dict)} if isinstance(content, list) else set()
+    return bool(kinds) and "tool_result" not in kinds
+
+
+def _stamp(value) -> _dt.datetime | None:
+    try:
+        stamp = _dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return stamp if stamp.tzinfo else stamp.replace(tzinfo=_dt.timezone.utc)
+
+
+def _weight(usage: dict) -> float:
+    weight = sum(float(usage.get(key) or 0) * share for key, share in TOKEN_SHARES.items())
+    split = usage.get("cache_creation") or {}
+    written = 0.0
+    for key, share in CACHE_WRITE_SHARES.items():
+        weight += float(split.get(key) or 0) * share
+        written += float(split.get(key) or 0)
+    return weight + max(0.0, float(usage.get("cache_creation_input_tokens") or 0) - written) * 1.25
+
+
+@dataclass
+class Turn:
+    """One question in a session: the owner's prompt and everything the agent did until the next one."""
+
+    key: str
+    first: int
+    last: int = 0
+    events: list[dict] = field(default_factory=list)
+    cwd: str = ""
+    version: str = ""
+    started: _dt.datetime | None = None
+    ended: _dt.datetime | None = None
+    messages: dict = field(default_factory=dict)  # message id -> (event index, model, usage)
+    subagents: list[list[dict]] = field(default_factory=list)
+    cost: float = 0.0
+    cost_shared: bool = False  # the session's measured cost was shared with other questions by tokens
+
+    def note(self, index: int, event: dict) -> None:
+        self.events.append(event)
+        self.last = index
+        stamp = _stamp(event.get("timestamp"))
+        if stamp:
+            self.started = self.started or stamp
+            self.ended = stamp
+        self.cwd = self.cwd or str(event.get("cwd") or "")
+        self.version = self.version or str(event.get("version") or "")
+        if event.get("type") == "assistant":
+            message = event.get("message") or {}
+            key = message.get("id") or event.get("requestId") or event.get("uuid") or f"{index}"
+            if key not in self.messages and isinstance(message.get("usage"), dict):
+                self.messages[key] = (index, str(message.get("model") or ""), message["usage"])
+
+
+@dataclass
+class Session:
+    path: Path
+    session_id: str
+    turns: list[Turn]
+    checkpoints: list[tuple[int, float, dict]]  # (event index, cumulative cost, model usage)
+    recognised: bool  # the reader found the events it knows; False means the format changed
+
+    @property
+    def closed_at(self) -> int:
+        """Index of the last cost checkpoint: the questions before it are finished and their cost is written."""
+        return self.checkpoints[-1][0] if self.checkpoints else -1
+
+
+def read_session(path: Path) -> Session:
+    events = _events(path)
+    turns: list[Turn] = []
+    checkpoints: list[tuple[int, float, dict]] = []
+    current: Turn | None = None
+    tool_turn: dict[str, tuple[int, int]] = {}  # Agent tool_use id -> (turn index, event index)
+    session_id = path.stem
+    known = 0
+    for index, event in enumerate(events):
+        kind = event.get("type")
+        session_id = str(event.get("sessionId") or session_id)
+        if kind == "cost-state":
+            cost = event.get("totalCostUSD")
+            if isinstance(cost, (int, float)):
+                checkpoints.append((index, float(cost), event.get("modelUsage") or {}))
+                known += 1
+            continue
+        if kind not in ("user", "assistant"):
+            continue
+        known += 1
+        prompt_id = event.get("promptId")
+        if _is_prompt(event) and (current is None or not prompt_id or prompt_id != current.key):
+            current = Turn(str(prompt_id or f"turn-{len(turns) + 1}"), index)
+            turns.append(current)
+        if current is None:
+            continue
+        current.note(index, event)
+        if kind == "assistant":
+            for item in (event.get("message") or {}).get("content") or []:
+                if isinstance(item, dict) and item.get("type") == "tool_use" and item.get("name") in ("Agent", "Task"):
+                    tool_turn[str(item.get("id"))] = (len(turns) - 1, index)
+    folder = path.with_suffix("") / "subagents"
+    for sub in sorted(folder.glob("agent-*.jsonl")) if folder.is_dir() else []:
+        sub_events = [e for e in _events(sub) if e.get("type") in ("user", "assistant")]
+        if not sub_events or not turns:
+            continue
+        meta = {}
+        meta_path = sub.with_name(sub.stem + ".meta.json")
+        if meta_path.is_file():
+            try:
+                meta = json.loads(v.read_text(meta_path))
+            except ValueError:
+                meta = {}
+        owner = tool_turn.get(str(meta.get("toolUseId") or ""))
+        if owner is None:  # no link to the call that started it: the question that was running when it began
+            begun = _stamp(sub_events[0].get("timestamp"))
+            candidates = [i for i, t in enumerate(turns) if begun and t.started and t.started <= begun]
+            owner = (candidates[-1] if candidates else len(turns) - 1, turns[candidates[-1] if candidates else -1].first)
+        turn = turns[owner[0]]
+        turn.subagents.append(sub_events)
+        for event in sub_events:
+            if event.get("type") == "assistant":
+                message = event.get("message") or {}
+                key = message.get("id") or event.get("requestId") or event.get("uuid")
+                if key and key not in turn.messages and isinstance(message.get("usage"), dict):
+                    turn.messages[key] = (owner[1], str(message.get("model") or ""), message["usage"])
+    session = Session(path, session_id, turns, checkpoints, recognised=known > 0)
+    _share_costs(session)
+    return session
+
+
+def _unit_prices(model_usage: dict) -> dict[str, float]:
+    """Cost per unit of token weight for each model, from the harness's own totals."""
+    prices = {}
+    for model, totals in (model_usage or {}).items():
+        if not isinstance(totals, dict) or not isinstance(totals.get("costUSD"), (int, float)):
+            continue
+        usage = {ours: totals.get(theirs) or 0 for theirs, ours in MODEL_USAGE_KEYS.items()}
+        usage["cache_creation"] = {"ephemeral_5m_input_tokens": totals.get("cacheCreationEphemeral5mInputTokens") or 0,
+                                   "ephemeral_1h_input_tokens": totals.get("cacheCreationEphemeral1hInputTokens") or 0}
+        weight = _weight(usage)
+        if weight > 0:
+            prices[model] = float(totals["costUSD"]) / weight
+    return prices
+
+
+def _share_costs(session: Session) -> None:
+    """Give each finished question its part of the cost Claude Code measured.
+
+    Claude Code writes the session's running total at checkpoints (when a session ends, among others). The cost
+    between two checkpoints is exact; when several questions fall between them it is shared by their token
+    usage, priced per model from the harness's own totals (D049).
+    """
+    if not session.checkpoints:
+        return
+    positions = [index for index, _, _ in session.checkpoints]
+    prices = _unit_prices(session.checkpoints[-1][2])
+    fallback = sum(prices.values()) / len(prices) if prices else 1.0
+    by_interval: dict[int, list[tuple[Turn, float]]] = {}
+    for turn in session.turns:
+        for index, model, usage in turn.messages.values():
+            interval = sum(1 for p in positions if p < index)
+            if interval < len(positions):
+                by_interval.setdefault(interval, []).append((turn, prices.get(model, fallback) * _weight(usage)))
+    previous = 0.0
+    for interval, (_, total, _) in enumerate(session.checkpoints):
+        spent = total - previous if total >= previous else total  # a lower total: the harness started a new count
+        previous = total
+        shares = by_interval.get(interval) or []
+        weight = sum(share for _, share in shares)
+        owners = {id(turn) for turn, _ in shares}
+        for turn, share in shares:
+            turn.cost += spent * (share / weight if weight > 0 else 1 / len(shares))
+            if len(owners) > 1:
+                turn.cost_shared = True
+
+
+def _local_model(vault: Path) -> str:
+    import tomllib
+
+    path = vault / v.MODELS_FILE
+    try:
+        data = tomllib.loads(v.read_text(path)) if path.is_file() else {}
+    except tomllib.TOMLDecodeError:
+        return ""
+    model = str(((data.get("profiles") or {}).get("local") or {}).get("model") or "")
+    return "" if model.startswith("<") else model
+
+
+def _turn_skill(turn: Turn) -> str | None:
+    for event in turn.events:
+        for item in (event.get("message") or {}).get("content") or [] if event.get("type") == "assistant" else []:
+            if isinstance(item, dict) and item.get("type") == "tool_use" and item.get("name") == "Skill":
+                skill = (item.get("input") or {}).get("skill")
+                if skill:
+                    return str(skill)
+    counts: dict[str, int] = {}
+    for event in turn.events:
+        if event.get("type") == "assistant" and event.get("attributionSkill"):
+            counts[str(event["attributionSkill"])] = counts.get(str(event["attributionSkill"]), 0) + 1
+    return max(sorted(counts), key=counts.get) if counts else None
+
+
+def _answer(turn: Turn) -> str:
+    text = ""
+    for event in turn.events:
+        if event.get("type") == "assistant" and not event.get("isSidechain"):
+            for item in (event.get("message") or {}).get("content") or []:
+                if isinstance(item, dict) and item.get("type") == "text" and item.get("text"):
+                    text = item["text"]
+    return text
+
+
+def _merge_run(run: Run, other: Run) -> None:
+    run.tool_calls.extend(other.tool_calls)
+    for key in ("files_read", "files_written", "files_searched", "escaped_writes"):
+        for item in getattr(other, key):
+            _add(getattr(run, key), item)
+    for search in other.searches:
+        if search not in run.searches:
+            run.searches.append(search)
+
+
+def turn_record(vault: Path, session: Session, turn: Turn, local_model: str) -> dict:
+    """The trace record of one finished question (22.5): no prompt, no answer, no file content."""
+    adapter = ClaudeAdapter()
+
+    def parse(events: list[dict]) -> Run:
+        return adapter.parse("\n".join(json.dumps(e) for e in events), vault, cwd=turn.cwd or None)
+
+    run = parse(turn.events)
+    for sub_events in turn.subagents:
+        _merge_run(run, parse(sub_events))
+    models = [model for _, model, _ in turn.messages.values() if model and not model.startswith("<")]
+    main = [str((e.get("message") or {}).get("model") or "") for e in turn.events if e.get("type") == "assistant"]
+    main = [m for m in main if m and not m.startswith("<")] or models
+    run.model = max(sorted(set(main)), key=main.count) if main else ""
+    run.harness_version = turn.version
+    run.answer = _answer(turn)
+    cached = sum(int(u.get("cache_read_input_tokens") or 0) for _, _, u in turn.messages.values())
+    run.tokens = {
+        "input": sum(int(u.get("input_tokens") or 0) + int(u.get("cache_creation_input_tokens") or 0)
+                     for _, _, u in turn.messages.values()) + cached,
+        "output": sum(int(u.get("output_tokens") or 0) for _, _, u in turn.messages.values()),
+        "cached": cached,
+    }
+    run.cost_usd = turn.cost
+    if turn.started and turn.ended:
+        run.duration_ms = int((turn.ended - turn.started).total_seconds() * 1000)
+    profile = "local" if local_model and models and all(m == local_model for m in models) else "frontier"
+    started = (turn.started or _dt.datetime.now(_dt.timezone.utc)).astimezone(_dt.timezone.utc)
+    record = build_record(run, vault, profile, "session", started.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                          skill=_turn_skill(turn))
+    record["run_id"] = f"claude:{session.session_id}:{turn.key}"
+    record["cost_shared"] = turn.cost_shared
+    del record["escaped_writes"]  # an eval measure: a session works in the real vault
+    return record
+
+
+def _trace_files(vault: Path) -> list[Path]:
+    return sorted((vault / TRACES_DIR).glob("*.jsonl"))
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    records = []
+    for line in v.read_text(path).splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(record, dict):
+            records.append(record)
+    return records
+
+
+def _write_jsonl(path: Path, records: list[dict]) -> None:
+    if records:
+        v.write_text(path, "".join(json.dumps(r, ensure_ascii=False, sort_keys=True) + "\n" for r in records))
+    elif path.exists():
+        path.unlink()
+
+
+def iso_week(day: _dt.date) -> str:
+    year, week, _ = day.isocalendar()
+    return f"{year}-W{week:02d}"
+
+
+def load_weekly(vault: Path) -> dict:
+    path = vault / WEEKLY_FILE
+    try:
+        data = json.loads(v.read_text(path)) if path.is_file() else {}
+    except ValueError as exc:
+        raise v.VaultError(f"{WEEKLY_FILE} is not valid JSON: {exc}") from exc
+    return data if isinstance(data, dict) and isinstance(data.get("weeks"), dict) else {"weeks": {}}
+
+
+def _median(values: list[int | float]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    return float(ordered[middle]) if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
+
+
+def aggregate(records: list[dict]) -> list[dict]:
+    """Weekly figures per skill, with no path in them (Q21)."""
+    rows: dict[str, list[dict]] = {}
+    for record in records:
+        rows.setdefault(str(record.get("skill") or "none"), []).append(record)
+    result = []
+    for skill in sorted(rows):
+        group = rows[skill]
+        costs = [r["cost_usd"] for r in group if isinstance(r.get("cost_usd"), (int, float))]
+        result.append({
+            "skill": skill,
+            "runs": len(group),
+            "cost_usd": round(sum(costs), 4) if costs else None,
+            "runs_with_cost": len(costs),
+            "tokens": {k: sum(int((r.get("tokens") or {}).get(k) or 0) for r in group) for k in ("input", "output", "cached")},
+            "files_read_median": _median([len(r.get("files_read") or []) for r in group]),
+            "local_only_reads": sum(len(r.get("local_only_read_on_frontier") or []) for r in group),
+            "runs_with_local_only_reads": sum(1 for r in group if r.get("local_only_read_on_frontier")),
+            "denied": sum(len(r.get("denied") or []) for r in group),
+        })
+    return result
+
+
+def prune(vault: Path, today: _dt.date) -> int:
+    """Drop session records older than the retention, keeping each of their weeks as an aggregate. A week is
+    aggregated once, when its first record expires: by then the week is over, so all its records are there."""
+    cutoff = today - _dt.timedelta(days=SESSION_RETENTION_DAYS)
+    files = {path: _read_jsonl(path) for path in _trace_files(vault)}
+    sessions = [r for records in files.values() for r in records if r.get("trigger") == "session"]
+
+    def day(record: dict) -> _dt.date | None:
+        return v.as_date(str(record.get("started") or "")[:10])
+
+    expired = [r for r in sessions if (day(r) or today) < cutoff]
+    if not expired:
+        return 0
+    weekly = load_weekly(vault)
+    for week in sorted({iso_week(day(r)) for r in expired}):
+        if week not in weekly["weeks"]:
+            weekly["weeks"][week] = aggregate([r for r in sessions if day(r) and iso_week(day(r)) == week])
+    gone = {id(r) for r in expired}
+    for path, records in files.items():
+        kept = [r for r in records if id(r) not in gone]
+        if len(kept) != len(records):
+            _write_jsonl(path, kept)
+    weekly["weeks"] = dict(sorted(weekly["weeks"].items()))
+    v.write_text(vault / WEEKLY_FILE, json.dumps(weekly, indent=1, sort_keys=True) + "\n")
+    return len(expired)
+
+
+def import_sessions(vault: Path, since: _dt.date | None = None) -> int:
+    """`anybrain trace import`: store finished questions from Claude Code sessions opened in the vault."""
+    from . import install
+
+    harnesses = list((install.load_models(vault).get("harnesses") or {"claude": {}}).keys())
+    for name in harnesses:
+        if name != "claude":
+            print(f"{name}: no transcript reader yet; only Claude Code sessions are imported (D041)")
+    if "claude" not in harnesses:
+        return 0
+    today = v.today()
+    cutoff = today - _dt.timedelta(days=SESSION_RETENTION_DAYS)
+    known = {str(r.get("run_id")) for path in _trace_files(vault) for r in _read_jsonl(path)}
+    local_model = _local_model(vault)
+    new: dict[str, list[dict]] = {}
+    imported = already = old = 0
+    sessions_seen: set[str] = set()
+    open_turns: list[tuple[Session, Turn]] = []
+    unknown: list[str] = []
+    for path in session_files(vault):
+        session = read_session(path)
+        if not session.recognised:
+            unknown.append(path.name)
+            continue
+        for turn in session.turns:
+            if not _in_vault(turn.cwd, vault) or not turn.messages:
+                continue
+            day = (turn.started or _dt.datetime.now(_dt.timezone.utc)).astimezone(_dt.timezone.utc).date()
+            if since and day < since:
+                continue
+            if day < cutoff:
+                old += 1
+                continue
+            if turn.last > session.closed_at:
+                open_turns.append((session, turn))
+                continue
+            if f"claude:{session.session_id}:{turn.key}" in known:
+                already += 1
+                continue
+            record = turn_record(vault, session, turn, local_model)
+            new.setdefault(record["started"][:7], []).append(record)
+            known.add(record["run_id"])
+            sessions_seen.add(session.session_id)
+            imported += 1
+    for month, records in sorted(new.items()):
+        path = vault / TRACES_DIR / f"{month}.jsonl"
+        existing = _read_jsonl(path) if path.is_file() else []
+        _write_jsonl(path, sorted(existing + records, key=lambda r: (str(r.get("started")), str(r.get("run_id")))))
+    flagged = [r for records in new.values() for r in records if r.get("local_only_read_on_frontier")]
+    if flagged:
+        print(f"{len(flagged)} question(s) read a local-only file on the frontier profile:")
+        for record in flagged:
+            for line in format_record(record):
+                print(line)
+    print(f"imported {imported} question(s) from {len(sessions_seen)} Claude Code session(s)"
+          + (f"; {already} already imported" if already else ""))
+    if open_turns:
+        sessions = {s.session_id for s, _ in open_turns}
+        print(f"{len(open_turns)} question(s) in {len(sessions)} open session(s) not imported yet: Claude Code "
+              "writes their cost when the session ends")
+        reads = []
+        for session, turn in open_turns:  # checked now, stored later: a local-only read must not wait
+            record = turn_record(vault, session, turn, local_model)
+            for item in record["local_only_read_on_frontier"]:
+                _add(reads, item)
+        if reads:
+            print(f"  LOCAL-ONLY READ ON FRONTIER in an open session: {', '.join(reads)}")
+    if old:
+        print(f"{old} question(s) older than {SESSION_RETENTION_DAYS} days skipped (retention, section 22.5)")
+    if unknown:
+        print(f"{len(unknown)} transcript(s) in a format this reader does not know: {', '.join(unknown[:5])}; "
+              "Claude Code may have changed it, check for an anybrain update")
+    pruned = prune(vault, today)
+    if pruned:
+        print(f"removed {pruned} question(s) older than {SESSION_RETENTION_DAYS} days; their weekly figures stay in "
+              f"{WEEKLY_FILE}")
+    return 1 if unknown else 0

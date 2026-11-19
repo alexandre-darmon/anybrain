@@ -110,13 +110,20 @@ def _cmd_feedback(args: argparse.Namespace) -> int:
 def _cmd_trace(args: argparse.Namespace) -> int:
     from . import trace, vault
 
-    if len(args.args) == 1 and args.args[0] in ("show",):
+    actions = ("show", "import")
+    if len(args.args) == 1 and args.args[0] in actions:
         root, action = vault_arg(None), args.args[0]
-    elif len(args.args) == 2 and args.args[1] in ("show",):
+    elif len(args.args) == 2 and args.args[1] in actions:
         root, action = args.args
     else:
-        raise UsageError("usage: anybrain trace [vault] show [--last N] [--skill NAME]")
-    return trace.show(vault.resolve_vault(root), last=args.last, skill=args.skill)
+        raise UsageError("usage: anybrain trace [vault] {show [--last N] [--skill NAME], import [--since DATE]}")
+    root = vault.resolve_vault(root)
+    if action == "import":
+        since = vault.as_date(args.since) if args.since else None
+        if args.since and since is None:
+            raise UsageError(f"--since needs a date as YYYY-MM-DD, not {args.since!r}")
+        return trace.import_sessions(root, since=since)
+    return trace.show(root, last=args.last, skill=args.skill)
 
 
 def _cmd_eval(args: argparse.Namespace) -> int:
@@ -253,10 +260,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--golden", metavar="FILE", help="golden set to use instead of .harness/golden.yaml")
     p.set_defaults(func=_cmd_eval)
 
-    p = sub.add_parser("trace", help="Print recent run traces: files read and written, tokens, cost, local-only reads")
-    p.add_argument("args", nargs="+", metavar="[vault] show")
+    p = sub.add_parser("trace", help="Print run traces, or import finished sessions as run traces")
+    p.add_argument("args", nargs="+", metavar="[vault] {show,import}")
     p.add_argument("--last", type=int, default=20, help="number of runs to show (default 20)")
     p.add_argument("--skill", metavar="NAME", help="only runs of this skill")
+    p.add_argument("--since", metavar="DATE", help="import only questions asked on or after this date (import)")
     p.set_defaults(func=_cmd_trace)
 
     for name, (summary, step) in PLANNED.items():
