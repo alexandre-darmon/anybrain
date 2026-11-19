@@ -534,3 +534,57 @@ def test_edit_ratio_does_not_loop_when_a_long_passage_shares_nothing_with_a_word
     final = "Opening line.\n\nHence the vault stays plain text."
     assert 0.9 < content.edit_ratio(first, final) <= 1.0
     assert content.edit_ratio("x" * 3000 + " " + "y" * 3000, "z") == 1.0
+
+
+# ---------------------------------------------------------------- independent review of the observability (D051)
+
+@pytest.mark.parametrize("comment", ["company/Q3 numbers.csv wiki/notes/source-note.md",
+                                     "wiki/notes/source-note.md company/Q3 numbers.csv",
+                                     "company/Q3 numbers.csv"])
+def test_a_confidential_path_with_a_space_never_reaches_ready(fixture_vault, comment):
+    (fixture_vault / "company" / "Q3 numbers.csv").write_text("quarter,revenue\n")
+    rel = "content/drafts/2026-12-08-csv.md"
+    (fixture_vault / rel).write_text(ready_draft(f"A claim.\n<!-- src: {comment} -->\n"))
+    found = findings(fixture_vault, rel)
+    assert any(f.startswith("error") and "confidential" in f for f in found), (comment, found)
+
+
+def test_a_path_word_that_does_not_resolve_still_blocks_ready(fixture_vault):
+    rel = "content/drafts/2026-12-09-missing.md"
+    (fixture_vault / rel).write_text(ready_draft("A claim.\n<!-- src: wiki/notes/source-note.md wiki/notes/gone.md -->\n"))
+    assert any(f.startswith("error") and "wiki/notes/gone.md" in f and "not found" in f for f in findings(fixture_vault, rel))
+
+
+@pytest.mark.parametrize("body", [
+    "[YOUR STORY: a product judged in the wrong category\n\nLater, see [my newsletter](https://example.com/news).",
+    "[YOUR STORY: a teardown, as in [this one](https://example.com/teardown)]",
+])
+def test_a_placeholder_never_borrows_a_later_link(fixture_vault, body):
+    rel = "content/drafts/2026-12-10-ph.md"
+    (fixture_vault / rel).write_text(ready_draft(f"A claim.\n\n{body}\n"))
+    assert any("placeholder" in f for f in findings(fixture_vault, rel)), body
+
+
+@pytest.mark.parametrize("words", ["(the part on naming decisions)", "plus my admin notes", "the plan, and decisions"])
+def test_plain_words_on_the_sources_line_never_name_a_confidential_page(fixture_vault, words):
+    for name in ("decisions", "admin"):
+        (fixture_vault / "company" / f"{name}.md").write_text(page(name.title(), "note", sensitivity="confidential"))
+    rel = "content/drafts/2026-12-11-prose.md"
+    (fixture_vault / rel).write_text(ready_draft(
+        f"A claim.\n\n## Notes for the owner\n\n- Sources used: wiki/notes/source-note.md {words}\n"))
+    assert findings(fixture_vault, rel) == []
+
+
+def test_a_page_name_in_backticks_on_the_sources_line_is_checked(fixture_vault):
+    rel = "content/drafts/2026-12-12-tick.md"
+    (fixture_vault / rel).write_text(ready_draft(
+        "A claim.\n\n## Notes for the owner\n\n- Sources used: wiki/notes/source-note.md and `plan`\n"))
+    assert any(f.startswith("error") and "confidential" in f for f in findings(fixture_vault, rel))
+
+
+@pytest.mark.parametrize("body", ["We helped AT\\&T rename a category.", "We helped O\\'Brien Partners rename it."])
+def test_any_markdown_escape_does_not_hide_a_client_name(fixture_vault, body):
+    (fixture_vault / ".harness" / "clients.txt").write_text("AT&T\nO'Brien Partners\n")
+    rel = "content/drafts/2026-12-13-esc.md"
+    (fixture_vault / rel).write_text(ready_draft(body))
+    assert any("names a client" in f for f in findings(fixture_vault, rel)), body

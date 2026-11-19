@@ -37,7 +37,7 @@ DRAFT_STATUS = ("idea", "drafting", "ready", "published", "dropped")
 # closed; not the text of a Markdown link to a page or a URL, such as [your story](https://...) (D050)
 PLACEHOLDER_RE = re.compile(
     r"\[\s*YOUR\s+(?:STOR(?:Y|IES)|NUMBERS?)\b"
-    r"(?![^\]]*\]\(\s*<?(?:[a-z][a-z0-9+.-]*:|#|\.{0,2}/|[^)\s>]+\.(?:md|html?|pdf)\b))", re.I)
+    r"(?![^\[\]]*\]\(\s*<?(?:[a-z][a-z0-9+.-]*:|#|\.{0,2}/|[^)\s>]+\.(?:md|html?|pdf)\b))", re.I)
 SRC_COMMENT_RE = re.compile(r"<!--\s*(?:src|sources?)\s*:\s*(.*?)\s*-->", re.I | re.S)
 BULLET_RE = re.compile(r"^(?:[-*+]|\d+[.)])\s+")
 HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
@@ -606,7 +606,7 @@ def client_matchers(vault: Path) -> list[tuple[str, re.Pattern]]:
             for name in _client_names(vault)]
 
 
-MD_ESCAPE_RE = re.compile(r"\\([\\`*_{}\[\]()#+\-.!|~<>])")
+MD_ESCAPE_RE = re.compile(r"\\([!-/:-@\[-`{-~])")  # CommonMark: any ASCII punctuation may be escaped
 
 
 def client_texts(text: str) -> list[str]:
@@ -826,10 +826,16 @@ def content_sources(page: v.Page) -> list[str]:
 
 
 def content_mentions(page: v.Page) -> list[str]:
-    """Other words of the notes' "Sources used" line, such as a page named without its folder. They are checked
-    for confidential pages when they resolve, and ignored when they do not, so prose never blocks `ready`."""
-    words = [w for text in _notes_lines(page) for w in source_words(LINK_ITEM_RE.sub(" ", text))]
-    return [w for w in dict.fromkeys(words) if not looks_like_path(w)]
+    """Page names written without their folder on the notes' "Sources used" line: a kebab-case name with a hyphen
+    (`acme-mission`) or a name in backticks. They are checked for confidential pages when they resolve, and
+    ignored when they do not. Plain words are prose and never checked, so "decisions" or "admin" never block
+    `ready` (D051)."""
+    found = []
+    for text in _notes_lines(page):
+        rest = LINK_ITEM_RE.sub(" ", text)
+        found += [w.strip() for w in re.findall(r"`([^`]+)`", rest)]
+        found += [w for w in source_words(rest) if re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)+", w)]
+    return [w for w in dict.fromkeys(found) if w and not looks_like_path(w)]
 
 
 def resolve_source(ctx: Context, item: str, from_rel: str = "") -> tuple[str | None, str]:
@@ -902,19 +908,38 @@ def content_findings(ctx: Context, page: v.Page, patterns=None, clients=None) ->
             if other.sensitivity == "confidential" or other.meta.get("kind") == "mission":
                 add("error", f"source {named} is a confidential or mission page (19.4b)")
 
+    strict = "error" if is_draft and status in ("ready", "published") else "warning"
+
+    def confidential_written(text: str) -> bool:
+        """A path written in a confidential folder, whether or not it resolves."""
+        written = text.strip().strip("`'\"<>").removeprefix("./").lstrip("/")
+        return posixpath.normpath(written).split("/", 1)[0].lower() in v.CONFIDENTIAL_FOLDERS
+
     for source in sources:
         rel_source, why = resolve_source(ctx, source, rel)
         found = [(source, rel_source)] if rel_source else []
+        unresolved: list[str] = []
         if not found and not LINK_ITEM_RE.fullmatch(source):
-            # an item with a note or a second path in it: each word that resolves is a source (D050)
+            # an item with a note or a second path in it: each word that resolves is a source (D050). A word that
+            # reads as a path and does not resolve still fails closed (D051)
             for word in source_words(source):
                 target, _ = resolve_source(ctx, word, rel)
-                if target and (word, target) not in found:
-                    found.append((word, target))
-        if not found:
+                if target:
+                    if (word, target) not in found:
+                        found.append((word, target))
+                elif looks_like_path(word) or "/" in word and word.split("/", 1)[0] in VAULT_TOPS:
+                    unresolved.append(word)
+        if not found and confidential_written(source):
+            add("error", f"source {source} is confidential (19.4b)")
+        elif not found:
             # fail closed: a source nobody can check must not reach `ready`. A published piece is history: a
             # source moved later is a warning, since nobody may edit the piece (D047)
-            add("error" if is_draft and status in ("ready", "published") else "warning", f"source {source} {why}")
+            add(strict, f"source {source} {why}")
+        for word in unresolved if found else []:
+            if confidential_written(word):
+                add("error", f"source {word} in {source!r} is confidential (19.4b)")
+            else:
+                add(strict, f"source {word} in {source!r} not found in the vault")
         for name, target in found:
             check_source(name if target == name else f"{name} ({target})", target)
     for word in content_mentions(page):

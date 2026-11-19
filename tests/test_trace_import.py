@@ -79,6 +79,11 @@ class Transcript:
         self.events.append(event)
         return self
 
+    def chdir(self, folder):
+        """Claude Code records the shell's folder on every event: a later event carries the new one."""
+        self.cwd = str(folder)
+        return self
+
     def cost(self, total):
         self.events.append({"type": "cost-state", "sessionId": self.session, "totalCostUSD": total,
                             "modelUsage": {self.model: {"inputTokens": 10, "outputTokens": 400,
@@ -191,16 +196,48 @@ def test_each_checkpoint_interval_keeps_its_exact_cost(vault, home):
 def test_a_question_after_the_last_checkpoint_waits_for_the_session_to_end(vault, home, capsys):
     s = ask_session(vault).cost(0.25)
     s.prompt("still talking", prompt_id="open")
+    s.tool("Read", {"file_path": str(vault / "wiki/index.md")})
+    s.write(home)
+    t.import_sessions(vault)
+    assert len(records(vault)) == 1
+    assert "1 question(s) still running in an open session" in capsys.readouterr().out
+    s.answer().cost(0.40).write(home)
+    t.import_sessions(vault)
+    assert [r["cost_usd"] for r in records(vault)] == [0.25, 0.15]
+
+
+def test_a_local_only_read_in_an_open_session_is_stored_at_once_and_its_cost_added_later(vault, home, capsys):
+    s = ask_session(vault).cost(0.25)
+    s.prompt("still talking", prompt_id="open")
     s.tool("Bash", {"command": "cat company/q3.md"})
     s.write(home)
     t.import_sessions(vault)
     out = capsys.readouterr().out
-    assert len(records(vault)) == 1
-    assert "1 question(s) in 1 open session(s) not imported yet" in out
-    assert "LOCAL-ONLY READ ON FRONTIER in an open session: company/q3.md" in out  # checked now, stored later
+    first, second = records(vault)
+    assert second["local_only_read_on_frontier"] == ["company/q3.md"]
+    assert second["cost_usd"] is None and second["cost_pending"] is True
+    assert "1 question(s) stored without their cost" in out
     s.answer().cost(0.40).write(home)
     t.import_sessions(vault)
-    assert [r["cost_usd"] for r in records(vault)] == [0.25, 0.15]
+    assert "1 updated" in capsys.readouterr().out
+    assert [(r["cost_usd"], r["cost_pending"]) for r in records(vault)] == [(0.25, False), (0.15, False)]
+
+
+def test_a_question_followed_by_another_or_left_for_a_day_is_stored_without_cost(vault, home):
+    import os
+    s = ask_session(vault).cost(0.25)
+    s.prompt("second", prompt_id="second")
+    s.tool("Read", {"file_path": str(vault / "wiki/index.md")})
+    s.answer()
+    s.prompt("third", prompt_id="third")
+    s.tool("Read", {"file_path": str(vault / "wiki/concepts/pricing.md")})
+    path = s.write(home)  # killed here: no checkpoint will ever come
+    t.import_sessions(vault)
+    assert [r["cost_pending"] for r in records(vault)] == [False, True]  # the second: the session moved on
+    day_ago = path.stat().st_mtime - 25 * 3600
+    os.utime(path, (day_ago, day_ago))
+    t.import_sessions(vault)
+    assert [r["cost_pending"] for r in records(vault)] == [False, True, True]
 
 
 def test_local_only_reads_on_frontier_are_recorded_and_printed_first(vault, home, capsys):
@@ -261,16 +298,102 @@ def test_sessions_are_matched_to_the_vault_by_their_folder(vault, home, tmp_path
     assert record["files_read"] == ["wiki/concepts/pricing.md"]
 
 
-def test_the_shell_folder_carries_from_one_command_to_the_next(vault, home):
+def test_the_shell_folder_is_the_one_claude_code_recorded(vault, home):
     s = Transcript(vault).prompt()
     s.tool("Bash", {"command": "cd company"})
+    s.chdir(vault / "company")
     s.tool("Bash", {"command": "cat q3.md"})
-    s.tool("Bash", {"command": "cd /tmp"})  # leaving the vault: Claude Code goes back to the session folder
+    s.tool("Bash", {"command": "cd /tmp"}, result="Shell cwd was reset to " + str(vault))
+    s.chdir(vault)
     s.tool("Bash", {"command": "cat wiki/index.md"})
     s.answer().cost(0.1).write(home)
     t.import_sessions(vault)
     [record] = records(vault)
     assert record["files_read"] == ["company/q3.md", "wiki/index.md"]
+
+
+def test_a_failed_cd_does_not_hide_the_reads_after_it(vault, home):
+    s = Transcript(vault).prompt()
+    s.tool("Bash", {"command": "cd companies"}, result="Exit code 1\nno such directory", error=True)
+    s.tool("Bash", {"command": "cat company/q3.md"})  # the shell stayed at the vault root
+    s.tool("Bash", {"command": "cd companies; cat company/q3.md wiki/index.md"})
+    s.answer().cost(0.1).write(home)
+    t.import_sessions(vault)
+    [record] = records(vault)
+    assert record["files_read"] == ["company/q3.md", "wiki/index.md"]
+    assert record["local_only_read_on_frontier"] == ["company/q3.md"]
+
+
+def test_the_shell_folder_carries_in_an_eval_stream_only_after_a_command_that_worked(vault):
+    lines = [{"type": "system", "subtype": "init", "model": "m", "claude_code_version": "9"}]
+    for i, (command, error) in enumerate([("cd companies", True), ("cat company/q3.md", False),
+                                          ("cd wiki", False), ("cat index.md", False)]):
+        lines.append({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": f"t{i}", "name": "Bash", "input": {"command": command}}]}})
+        lines.append({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": f"t{i}", "content": "Exit code 1" if error else "ok", "is_error": error}]}})
+    run = t.ClaudeAdapter().parse("\n".join(json.dumps(x) for x in lines), vault)
+    assert run.files_read == ["company/q3.md", "wiki/index.md"]
+
+
+def test_a_question_asked_from_an_added_folder_still_counts(vault, home, tmp_path):
+    other = tmp_path / "downloads"
+    other.mkdir()
+    s = Transcript(vault).prompt()
+    s.tool("Bash", {"command": f"cd {other} && ls"})
+    s.answer()
+    s.chdir(other).prompt("second", prompt_id="second")
+    s.tool("Read", {"file_path": str(vault / "company/q3.md")})
+    s.answer().cost(0.6).write(home)
+    t.import_sessions(vault)
+    first, second = records(vault)
+    assert second["local_only_read_on_frontier"] == ["company/q3.md"]
+    assert first["cost_usd"] + second["cost_usd"] == pytest.approx(0.6, abs=1e-3)
+
+
+def test_a_vault_whose_name_holds_an_emoji_is_found(home, make_vault):
+    vault = make_vault({"company/q3.md": page("Q3", "note")}, name="\U0001F9E0 brain")
+    assert t.project_dir_name(str(vault)).endswith("----brain")  # two UTF-16 units, as Claude Code counts
+    s = Transcript(vault).prompt()
+    s.tool("Read", {"file_path": str(vault / "company/q3.md")})
+    s.answer().cost(0.1).write(home)
+    t.import_sessions(vault)
+    assert records(vault)[0]["local_only_read_on_frontier"] == ["company/q3.md"]
+
+
+def test_a_session_in_a_folder_with_another_name_is_found_by_its_first_folder(vault, home):
+    s = ask_session(vault).cost(0.1)
+    s.write(home, folder="-shortened-name-1a2b3c")  # a long path Claude Code cut and hashed
+    t.import_sessions(vault)
+    assert len(records(vault)) == 1
+
+
+def test_questions_copied_into_a_branched_session_are_not_imported_twice(vault, home):
+    s = ask_session(vault).cost(0.3)
+    s.write(home)
+    branch = Transcript(vault, session="bbbbbbbb-0000-0000-0000-000000000000")
+    branch.events = [dict(e, sessionId=branch.session, forkedFrom={"sessionId": s.session, "messageUuid": e.get("uuid")})
+                     for e in s.events if e["type"] != "cost-state"]
+    branch.n = s.n
+    branch.prompt("on the branch", prompt_id="branch-q")
+    branch.tool("Read", {"file_path": str(vault / "wiki/index.md")})
+    branch.answer().cost(0.2).write(home)
+    t.import_sessions(vault)
+    ids = [r["run_id"] for r in records(vault)]
+    assert len(ids) == 2 and ids[1].endswith(":branch-q")
+    assert records(vault)[1]["cost_usd"] == 0.2
+
+
+def test_free_text_tool_fields_never_reach_a_record(vault, home):
+    s = Transcript(vault).prompt()
+    s.tool("TaskCreate", {"subject": "SECRET-PROMPT-WORDS", "description": "SECRET-PROMPT-WORDS about Acme"})
+    s.tool("Agent", {"description": "SECRET-PROMPT-WORDS", "prompt": "SECRET-PROMPT-WORDS"})
+    s.tool("WebSearch", {"query": "SECRET-PROMPT-WORDS"})
+    s.answer().cost(0.1).write(home)
+    t.import_sessions(vault)
+    text = (vault / t.TRACES_DIR / "2026-11.jsonl").read_text(encoding="utf-8")
+    assert "SECRET-PROMPT-WORDS" not in text
+    assert [c["tool"] for c in records(vault)[0]["tool_calls"]] == ["TaskCreate", "Agent", "WebSearch"]
 
 
 def test_since_and_retention_skip_older_questions(vault, home, capsys):
@@ -300,6 +423,24 @@ def test_expired_records_leave_a_weekly_aggregate_without_paths(vault, home, mon
     t.import_sessions(vault)
     weekly = json.loads((vault / t.WEEKLY_FILE).read_text(encoding="utf-8"))
     assert set(weekly["weeks"]) == {"2026-W45", "2026-W47"} and records(vault) == []
+
+
+def test_a_record_of_a_week_already_summed_is_added_to_it_when_it_expires(vault, home, monkeypatch):
+    early = ask_session(vault, session="aaaa0000-0000-0000-0000-000000000000", start="2026-11-09T09:00:00").cost(0.1)
+    early.write(home)
+    late = ask_session(vault, session="bbbb0000-0000-0000-0000-000000000000", start="2026-11-13T09:00:00")
+    late_path = late.write(home)  # still open: stored later
+    monkeypatch.setenv("ANYBRAIN_TODAY", "2026-11-19")
+    t.import_sessions(vault)
+    monkeypatch.setenv("ANYBRAIN_TODAY", "2026-12-10")  # the first record expires: week 46 is summed
+    t.import_sessions(vault)
+    late.cost(0.4).write(home)
+    assert late_path.exists()
+    t.import_sessions(vault)  # the late question arrives
+    monkeypatch.setenv("ANYBRAIN_TODAY", "2026-12-14")  # and expires in turn
+    t.import_sessions(vault)
+    [row] = json.loads((vault / t.WEEKLY_FILE).read_text(encoding="utf-8"))["weeks"]["2026-W46"]
+    assert row["runs"] == 2 and row["cost_usd"] == 0.5 and row["files_read"] == [2, 2]
 
 
 def test_a_transcript_in_an_unknown_format_is_reported_not_recorded(vault, home, capsys):

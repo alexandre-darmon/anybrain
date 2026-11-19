@@ -613,12 +613,12 @@ Format: `D<number> · <title>`, with the build step and the PRD sections involve
 - **Cost (Q41).** The harness's own figures only. Checkpoints are written when a session ends, among other times, so a question is imported once a checkpoint follows it. Between two checkpoints the cost is exact. When several questions fall between them, the cost is shared by token usage, priced per model from the checkpoint's own totals, and the record says `cost_shared: true`.
   - The shares use the public ratios of token kinds: cache read 0.1, 5-minute cache write 1.25, 1-hour write 2, output 5, against base input 1.
   - Fitted on the 63 sessions, the real ratios were 0.05 for cache reads and as listed for the rest. This moves the split between questions a little, never a session's total.
-- **Open sessions.** A question after the last checkpoint waits: Claude Code writes its cost when the session ends. Its local-only reads are checked at once and printed, so one never waits a week to be seen.
+- **Open sessions** (changed by D051). A question after the last checkpoint waits: Claude Code writes its cost when the session ends. Its local-only reads are checked at once and printed, so one never waits a week to be seen.
 - **Skill (Q42).** The skill the agent invoked in that question, else the one Claude Code attributes to most of its messages, else none. A follow-up question that does not invoke the skill again has none: Claude Code does not attribute it, and anybrain does not guess.
 - **Profile.** A question is on the local profile only when every model it used is the local model of `models.toml`; otherwise it is frontier, so local-only reads are counted.
-- **Matching the vault.** Folder names only narrow the search; the `cwd` of each event decides, so `brain-legacy` is not taken for `brain`. A session opened in a folder of the vault counts, with its shell commands read from that folder. Eval cases run in copies outside the vault and are never imported twice.
-- **The shell folder** now carries from one command to the next in the Claude Code adapter, as it does in Claude Code, and goes back to the session folder when a command leaves the vault (Claude Code 2.1.328 prints "Shell cwd was reset" then). This applies to eval traces too: `cd company` then `cat q3.md` is a read of `company/q3.md`.
-- **Retention (Q21).** `trace import` deletes session records older than 30 days and keeps weekly totals per skill in `.harness/traces/weekly.json`: runs, cost, tokens, median files read, local-only reads, denials, no path. A week is summed once, when its first record expires; by then the week is over. Questions older than 30 days are not imported.
+- **Matching the vault** (changed by D051). Folder names only narrow the search; the `cwd` of each event decides, so `brain-legacy` is not taken for `brain`. A session opened in a folder of the vault counts, with its shell commands read from that folder. Eval cases run in copies outside the vault and are never imported twice.
+- **The shell folder** (changed by D051) now carries from one command to the next in the Claude Code adapter, as it does in Claude Code, and goes back to the session folder when a command leaves the vault (Claude Code 2.1.328 prints "Shell cwd was reset" then). This applies to eval traces too: `cd company` then `cat q3.md` is a read of `company/q3.md`.
+- **Retention (Q21, changed by D051).** `trace import` deletes session records older than 30 days and keeps weekly totals per skill in `.harness/traces/weekly.json`: runs, cost, tokens, median files read, local-only reads, denials, no path. A week is summed once, when its first record expires; by then the week is over. Questions older than 30 days are not imported.
 - **`anybrain stats`** adds, from session records only: local-only files read on the frontier profile (target 0), cost and median files read per skill and per week, the median files read per `ask` against the target of 8, and how many asks said a different `files opened` than measured (section 6).
 - **`anybrain stats --dashboard`** writes `journal/dashboard.md`:
   - local-only reads first, from sessions and eval runs;
@@ -654,3 +654,42 @@ After the release, a fresh review tried to break the fixes of D047 (commit 75f33
   - A linked file is foreign, like a linked folder. The root `CLAUDE.md` link is the only exception.
 - **`me/voice.md` routing.** `update` and `doctor` print a note when the vault's routing still keeps `me/voice.md` local while `AGENTS.md` and the skills say every model reads it. The owner's routing is never rewritten. The comment in `models.example.toml` no longer tells the owner to add a line that is already there.
 - **Not a finding, found while fixing.** Claude Code's `Grep` tool is not counted as a read in a trace; only `Read` and shell commands are. Whether its results skip denied files has not been measured. It is left as it was and listed for a later check.
+
+## D051 · Independent review of the observability and of D050
+
+A fresh review of commits a2b9546 to 63b02e9 (session import, dashboard, D050) found 18 defects. A second agent reproduced each one from scratch, and all 18 were confirmed; 5 are high. All are fixed with regression tests (`tests/test_trace_import.py`, `tests/test_dashboard.py`, `tests/test_content.py`, `tests/test_install.py`). A live run of the `lint` skill also found a wrong command in the skill itself.
+
+- **The shell's folder (high, 3 findings).**
+  - D049 simulated it from `cd` commands. A `cd` that failed still moved the simulation, and a command that left the vault reset it to the question's folder, not the session's. Reads at the vault root were missed, in session traces and in eval traces.
+  - Claude Code writes the shell's folder on every transcript event, so a session trace now reads it there.
+  - An eval stream has no such field: the folder carries to the next command only when the command succeeded.
+  - Within one command, every path is also read from the folder the command started in, as if each `cd` had failed. A read too many is better than one missed.
+- **Which sessions belong to the vault (high, 2 findings).**
+  - A question was kept only when its own folder was in the vault. A `cd` into a folder added to the session dropped the next question silently, with its local-only reads and its cost. Now the folder the session was opened in decides, and every question of that session counts.
+  - Claude Code names transcript folders in JavaScript, counting UTF-16 units, so an emoji in the vault path gives two dashes. anybrain counted one, and found no session at all. It now counts the same way.
+  - A folder whose name does not match (a path Claude Code cut and hashed, another Unicode form) is also found by the first `cwd` of its newest transcript.
+- **Sessions that never write their cost (medium).** A session killed or crashed writes no checkpoint, so its questions were never stored. A question is now stored when:
+  - the session has moved past it;
+  - its transcript has been still for 24 hours;
+  - or, at once, it read a local-only file on the frontier profile.
+  Until Claude Code writes the cost, the record has `cost_usd: null` and `cost_pending: true`, and each import rebuilds it. A record whose cost is known never changes.
+- **Branched sessions (medium).** A session branched from another copies its events, marked `forkedFrom`. Those copies were imported again under the new session's id. They are now skipped: the original session holds them.
+- **Free text in records (medium).** The target of a tool call fell back to its `description`. A task or an agent call can restate the owner's request there, which 22.5 keeps out of traces. A target is now only a path, a command, a search pattern or a skill name; any other tool keeps its name with an empty target.
+- **Weekly totals.**
+  - A week was summed once, when its first record expired, so a question imported later in that week was lost. Each record is now added to its week's totals when it expires.
+  - The totals keep the number of files each run read, with no path, so medians are recomputed when totals and records still on disk are merged.
+  - `stats` and the dashboard show both, so a dated local-only read stays listed until its own record expires.
+- **Dashboard.**
+  - The second eval run of a day (`-2.json`) sorted before the first, so the dashboard showed stale gates. Runs now sort by date, then by run number.
+  - A gate that does not apply (`pass: null`) showed as failed. It now shows `n/a` and is left out of the count.
+- **`journal/dashboard.md` and hand-written pages.** That path was taken out of the pages in every vault, so an owner's own page there lost its links. It is now generated only while it starts with the generated header. `init` accepts a copy of `vault.example` that already holds a generated dashboard.
+- **Content checks.**
+  - **High.** With D050's word-by-word reading, `company/Q3 numbers.csv wiki/...md` resolved through its second word only, so the confidential file passed at `ready`. Now every word that reads as a path and does not resolve fails closed. A path written in `company/` or `finance/` is reported as confidential whether or not it resolves.
+  - **Unclosed placeholders.** An unclosed `[YOUR STORY` borrowed the `](` of a later link and was taken for link text. The placeholder's own bracket must now close straight into `(`, with no `[` in between.
+  - **Prose on the "Sources used" line.** Plain words such as "decisions" or "admin" matched confidential pages and blocked a legitimate draft. Only names shaped like page names are checked: kebab-case with a hyphen, or in backticks.
+  - **Client names.** Every Markdown escape of ASCII punctuation (`AT\&T`, `O\'Brien`) is removed before the search, as CommonMark renders them.
+- **`me/voice.md` note.** When the routing already has a `me/voice.md` line, the note says to change it. Adding a second one breaks the TOML.
+- **The live `lint` run** (Claude Code 2.1.328, 0.58 USD, on an initialised copy of `vault.example` with a planted finished session):
+  - The skill said `anybrain trace import .`, but the command is `anybrain trace . import`. The agent recovered, but its chained command had already written the dashboard before the import, and it had run `stats` earlier for the content lines, so its run-trace section was empty.
+  - The skill now asks for three commands, one at a time and in order.
+  - The import itself stored the finished session's question and held back the running session's own.

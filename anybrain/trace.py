@@ -40,6 +40,7 @@ class ToolCall:
     result: str = "ok"  # "ok", "denied" or "error"
     ran: bool = True  # False when the harness refused the call or the tool failed before doing anything
     raw: str = ""  # the target as the tool call gave it, before it was made relative to the vault
+    cwd: str = ""  # the shell's folder when the call was made, when the harness records it (transcripts)
 
     def as_json(self) -> dict:
         return {"tool": self.tool, "target": self.target, "result": self.result}
@@ -382,6 +383,25 @@ def shell_escapes(command: str, root: Path, origin: Path | None) -> list[str]:
 
 def files_from_shell(command: str, root: Path, origin: Path | None = None, start: str | None = None,
                      end: dict | None = None) -> tuple[list[str], list[str], list[Search]]:
+    """See `_files_from_shell`. A path is read from the folder the walk reached, and also from the folder the
+    command started in: a `cd` that failed leaves the shell where it was, and a missed read is worse than an
+    extra one (D051)."""
+    read, written, searches = _files_from_shell(command, root, origin, start, end)
+    begin = start or str(root)
+    if any(Path(words[0]).name in ("cd", "pushd", "popd") for words, *_ in _segments(command) if words):
+        more, _, _ = _files_from_shell(_strip_cd(command), root, origin, begin, None)
+        for item in more:
+            _add(read, item)
+    return read, written, searches
+
+
+def _strip_cd(command: str) -> str:
+    """The command with every `cd`, `pushd` and `popd` turned into a no-op, so it is read from where it began."""
+    return re.sub(r"(^|[;&|(\n]\s*)(?:cd|pushd|popd)\b[^;&|)\n]*", r"\1true", command)
+
+
+def _files_from_shell(command: str, root: Path, origin: Path | None = None, start: str | None = None,
+                      end: dict | None = None) -> tuple[list[str], list[str], list[Search]]:
     """Files a shell command reads, files it writes, and the recursive searches it runs.
 
     Best effort, and conservative: any command outside NO_READ_COMMANDS reads every file it names, in any word
@@ -480,10 +500,13 @@ class ClaudeAdapter(Adapter):
                         continue
                     data = item.get("input") or {}
                     tool = item.get("name", "")
+                    # only inputs that are a path, a command, a search pattern or a skill name: a free-text field
+                    # (an agent's `description`, a task's text) can restate the owner's request (22.5, D051)
                     target = data.get("file_path") or data.get("notebook_path") or data.get("command") or data.get("path") or \
-                        data.get("pattern") or data.get("skill") or data.get("description") or ""
+                        data.get("pattern") or data.get("skill") or ""
                     call = ToolCall(tool, relative(str(target), root, origin)
-                                    if tool in ("Read", "Write", "Edit", "NotebookEdit") else str(target), raw=str(target))
+                                    if tool in ("Read", "Write", "Edit", "NotebookEdit") else str(target), raw=str(target),
+                                    cwd=str(event.get("cwd") or ""))
                     calls[item.get("id", str(len(order)))] = call
                     order.append(item.get("id", str(len(order) - 1)))
             elif kind == "user":
@@ -524,11 +547,15 @@ class ClaudeAdapter(Adapter):
         shell = start
         for call in run.tool_calls:
             if call.tool == "Bash" and call.ran:
+                # A transcript records the shell's folder on each event: use it. A stream without it: carry the
+                # folder a command ends in to the next one, only when the command succeeded (D051).
+                here = call.cwd or shell
                 end: dict = {}
-                read, written, searches = files_from_shell(call.target, root, origin, shell, end)
+                read, written, searches = files_from_shell(call.target, root, origin, here, end)
                 after = end.get("cwd")
                 inside = after is not None and any(_inside(after, base) is not None for base in _bases(root, origin))
-                shell = after if inside else start
+                if call.result == "ok":
+                    shell = after if inside else start
                 for item in read:
                     _add(run.files_read, item)
                 for item in written:
@@ -542,7 +569,7 @@ class ClaudeAdapter(Adapter):
             elif call.result != "ok":
                 continue
             elif call.tool == "Read":
-                _add(run.files_read, relative(call.raw, root, origin, start) if call.raw else call.target)
+                _add(run.files_read, relative(call.raw, root, origin, call.cwd or start) if call.raw else call.target)
             elif call.tool in ("Write", "Edit", "NotebookEdit"):
                 _add(run.files_written, call.target)
                 if call.raw and escapes(call.raw, root, origin, str(root)):
@@ -811,9 +838,10 @@ def claude_projects() -> Path:
 
 
 def project_dir_name(path: str) -> str:
-    """Claude Code's folder name for a working directory: every character that is not a letter or a digit
-    becomes `-`; a name longer than 200 characters is cut and gets a hash of the full path."""
-    return re.sub(r"[^A-Za-z0-9]", "-", path)
+    """Claude Code's folder name for a working directory: every character that is not an ASCII letter or digit
+    becomes `-`, counted in UTF-16 units as JavaScript does, so an emoji gives two; a name longer than 200
+    characters is cut and gets a hash of the full path."""
+    return "".join(c if c.isascii() and c.isalnum() else "-" * (2 if ord(c) > 0xFFFF else 1) for c in path)
 
 
 def _vault_forms(vault: Path) -> list[str]:
@@ -825,27 +853,54 @@ def _vault_forms(vault: Path) -> list[str]:
 
 
 def session_files(vault: Path) -> list[Path]:
-    """Transcripts of sessions opened in the vault or in a folder inside it. The folder name only narrows the
-    search; each event's `cwd` decides (a sibling folder such as `brain-legacy` has a matching prefix)."""
+    """Transcripts that may belong to the vault: in a folder named after it or after a folder inside it, or in
+    any folder whose sessions were opened inside it (a name Claude Code shortened with a hash, a path written in
+    another Unicode form). Each session's first `cwd` then decides (`Session.origin`)."""
     projects = claude_projects()
     if not projects.is_dir():
         return []
     names = [project_dir_name(form) for form in _vault_forms(vault)]
     found = []
     for folder in sorted(projects.iterdir()):
-        if folder.is_dir() and any(folder.name == n or folder.name.startswith(n + "-")
-                                   or (len(n) > 200 and folder.name.startswith(n[:200])) for n in names):
-            found.extend(sorted(folder.glob("*.jsonl")))
+        if not folder.is_dir():
+            continue
+        files = sorted(folder.glob("*.jsonl"))
+        named = any(folder.name == n or folder.name.startswith(n + "-")
+                    or (len(n) > 200 and folder.name.startswith(n[:200])) for n in names)
+        if named or any(_in_vault(_first_cwd(path), vault) for path in files[-1:]):
+            found.extend(files)
     return found
 
 
+def _first_cwd(path: Path, limit: int = 65536) -> str:
+    """The folder a session was opened in: the first `cwd` of its transcript, read from its beginning only."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            head = handle.read(limit)
+    except OSError:
+        return ""
+    for line in head.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get("cwd"):
+            return str(event["cwd"])
+    return ""
+
+
 def _in_vault(cwd: str, vault: Path) -> bool:
+    import unicodedata
+
     if not cwd:
         return False
     forms = [os.path.normpath(cwd)]
     if os.path.exists(cwd):
         forms.append(os.path.realpath(cwd))
-    return any(_inside(form, base) is not None for form in forms for base in _vault_forms(vault))
+    bases = _vault_forms(vault)
+    forms = [unicodedata.normalize("NFC", f) for f in forms]
+    bases = [unicodedata.normalize("NFC", b) for b in bases]
+    return any(_inside(form, base) is not None for form in forms for base in bases)
 
 
 def _events(path: Path) -> list[dict]:
@@ -933,6 +988,7 @@ class Session:
     turns: list[Turn]
     checkpoints: list[tuple[int, float, dict]]  # (event index, cumulative cost, model usage)
     recognised: bool  # the reader found the events it knows; False means the format changed
+    origin: str = ""  # the folder the session was opened in: it decides whether the session is the vault's
 
     @property
     def closed_at(self) -> int:
@@ -948,9 +1004,13 @@ def read_session(path: Path) -> Session:
     tool_turn: dict[str, tuple[int, int]] = {}  # Agent tool_use id -> (turn index, event index)
     session_id = path.stem
     known = 0
+    origin = ""
     for index, event in enumerate(events):
         kind = event.get("type")
+        if event.get("forkedFrom"):
+            continue  # copied from the session it was branched from, which holds the original (D051)
         session_id = str(event.get("sessionId") or session_id)
+        origin = origin or (str(event.get("cwd") or "") if kind in ("user", "assistant", "attachment") else "")
         if kind == "cost-state":
             cost = event.get("totalCostUSD")
             if isinstance(cost, (int, float)):
@@ -973,7 +1033,7 @@ def read_session(path: Path) -> Session:
                     tool_turn[str(item.get("id"))] = (len(turns) - 1, index)
     folder = path.with_suffix("") / "subagents"
     for sub in sorted(folder.glob("agent-*.jsonl")) if folder.is_dir() else []:
-        sub_events = [e for e in _events(sub) if e.get("type") in ("user", "assistant")]
+        sub_events = [e for e in _events(sub) if e.get("type") in ("user", "assistant") and not e.get("forkedFrom")]
         if not sub_events or not turns:
             continue
         meta = {}
@@ -996,7 +1056,7 @@ def read_session(path: Path) -> Session:
                 key = message.get("id") or event.get("requestId") or event.get("uuid")
                 if key and key not in turn.messages and isinstance(message.get("usage"), dict):
                     turn.messages[key] = (owner[1], str(message.get("model") or ""), message["usage"])
-    session = Session(path, session_id, turns, checkpoints, recognised=known > 0)
+    session = Session(path, session_id, turns, checkpoints, recognised=known > 0, origin=origin)
     _share_costs(session)
     return session
 
@@ -1098,7 +1158,7 @@ def turn_record(vault: Path, session: Session, turn: Turn, local_model: str) -> 
     adapter = ClaudeAdapter()
 
     def parse(events: list[dict]) -> Run:
-        return adapter.parse("\n".join(json.dumps(e) for e in events), vault, cwd=turn.cwd or None)
+        return adapter.parse("\n".join(json.dumps(e) for e in events), vault, cwd=session.origin or turn.cwd or None)
 
     run = parse(turn.events)
     for sub_events in turn.subagents:
@@ -1116,7 +1176,8 @@ def turn_record(vault: Path, session: Session, turn: Turn, local_model: str) -> 
         "output": sum(int(u.get("output_tokens") or 0) for _, _, u in turn.messages.values()),
         "cached": cached,
     }
-    run.cost_usd = turn.cost
+    pending = turn.last > session.closed_at
+    run.cost_usd = None if pending else turn.cost
     if turn.started and turn.ended:
         run.duration_ms = int((turn.ended - turn.started).total_seconds() * 1000)
     profile = "local" if local_model and models and all(m == local_model for m in models) else "frontier"
@@ -1124,7 +1185,8 @@ def turn_record(vault: Path, session: Session, turn: Turn, local_model: str) -> 
     record = build_record(run, vault, profile, "session", started.strftime("%Y-%m-%dT%H:%M:%SZ"),
                           skill=_turn_skill(turn))
     record["run_id"] = f"claude:{session.session_id}:{turn.key}"
-    record["cost_shared"] = turn.cost_shared
+    record["cost_shared"] = turn.cost_shared and not pending
+    record["cost_pending"] = pending  # Claude Code has not written this question's cost yet: a later import does
     del record["escaped_writes"]  # an eval measure: a session works in the real vault
     return record
 
@@ -1175,7 +1237,8 @@ def _median(values: list[int | float]) -> float | None:
 
 
 def aggregate(records: list[dict]) -> list[dict]:
-    """Weekly figures per skill, with no path in them (Q21)."""
+    """Weekly figures per skill, with no path in them (Q21). The number of files each run read is kept, so that
+    medians can be recomputed when rows are merged."""
     rows: dict[str, list[dict]] = {}
     for record in records:
         rows.setdefault(str(record.get("skill") or "none"), []).append(record)
@@ -1183,13 +1246,15 @@ def aggregate(records: list[dict]) -> list[dict]:
     for skill in sorted(rows):
         group = rows[skill]
         costs = [r["cost_usd"] for r in group if isinstance(r.get("cost_usd"), (int, float))]
+        counts = sorted(len(r.get("files_read") or []) for r in group)
         result.append({
             "skill": skill,
             "runs": len(group),
             "cost_usd": round(sum(costs), 4) if costs else None,
             "runs_with_cost": len(costs),
             "tokens": {k: sum(int((r.get("tokens") or {}).get(k) or 0) for r in group) for k in ("input", "output", "cached")},
-            "files_read_median": _median([len(r.get("files_read") or []) for r in group]),
+            "files_read": counts,
+            "files_read_median": _median(counts),
             "local_only_reads": sum(len(r.get("local_only_read_on_frontier") or []) for r in group),
             "runs_with_local_only_reads": sum(1 for r in group if r.get("local_only_read_on_frontier")),
             "denied": sum(len(r.get("denied") or []) for r in group),
@@ -1197,35 +1262,66 @@ def aggregate(records: list[dict]) -> list[dict]:
     return result
 
 
+def merge_rows(*groups: list[dict]) -> list[dict]:
+    """Rows of the same week per skill, summed. A row without its counts keeps its median only when alone."""
+    merged: dict[str, dict] = {}
+    for rows in groups:
+        for row in rows or []:
+            skill = str(row.get("skill") or "none")
+            if skill not in merged:
+                merged[skill] = {**row, "skill": skill, "tokens": dict(row.get("tokens") or {}),
+                                 "files_read": list(row.get("files_read") or [])}
+                continue
+            into = merged[skill]
+            for key in ("runs", "runs_with_cost", "local_only_reads", "runs_with_local_only_reads", "denied"):
+                into[key] = int(into.get(key) or 0) + int(row.get(key) or 0)
+            costs = [c for c in (into.get("cost_usd"), row.get("cost_usd")) if isinstance(c, (int, float))]
+            into["cost_usd"] = round(sum(costs), 4) if costs else None
+            for key in ("input", "output", "cached"):
+                into["tokens"][key] = int(into["tokens"].get(key) or 0) + int((row.get("tokens") or {}).get(key) or 0)
+            into["files_read"] = sorted(into["files_read"] + list(row.get("files_read") or []))
+            into["files_read_median"] = _median(into["files_read"])
+    return [merged[k] for k in sorted(merged)]
+
+
 def prune(vault: Path, today: _dt.date) -> int:
-    """Drop session records older than the retention, keeping each of their weeks as an aggregate. A week is
-    aggregated once, when its first record expires: by then the week is over, so all its records are there."""
+    """Drop session records older than the retention, adding each one to its week's totals first (Q21)."""
     cutoff = today - _dt.timedelta(days=SESSION_RETENTION_DAYS)
     files = {path: _read_jsonl(path) for path in _trace_files(vault)}
-    sessions = [r for records in files.values() for r in records if r.get("trigger") == "session"]
 
     def day(record: dict) -> _dt.date | None:
         return v.as_date(str(record.get("started") or "")[:10])
 
-    expired = [r for r in sessions if (day(r) or today) < cutoff]
+    expired = [r for records in files.values() for r in records
+               if r.get("trigger") == "session" and (day(r) or today) < cutoff]
     if not expired:
         return 0
     weekly = load_weekly(vault)
-    for week in sorted({iso_week(day(r)) for r in expired}):
-        if week not in weekly["weeks"]:
-            weekly["weeks"][week] = aggregate([r for r in sessions if day(r) and iso_week(day(r)) == week])
+    by_week: dict[str, list[dict]] = {}
+    for record in expired:
+        by_week.setdefault(iso_week(day(record) or today), []).append(record)
+    for week, records in by_week.items():
+        weekly["weeks"][week] = merge_rows(weekly["weeks"].get(week) or [], aggregate(records))
+    weekly["weeks"] = dict(sorted(weekly["weeks"].items()))
+    v.write_text(vault / WEEKLY_FILE, json.dumps(weekly, indent=1, sort_keys=True) + "\n")
     gone = {id(r) for r in expired}
     for path, records in files.items():
         kept = [r for r in records if id(r) not in gone]
         if len(kept) != len(records):
             _write_jsonl(path, kept)
-    weekly["weeks"] = dict(sorted(weekly["weeks"].items()))
-    v.write_text(vault / WEEKLY_FILE, json.dumps(weekly, indent=1, sort_keys=True) + "\n")
     return len(expired)
 
 
+STALE_HOURS = 24  # a last question with no cost after this long: a session killed, or left open
+
+
 def import_sessions(vault: Path, since: _dt.date | None = None) -> int:
-    """`anybrain trace import`: store finished questions from Claude Code sessions opened in the vault."""
+    """`anybrain trace import`: store the questions of Claude Code sessions opened in the vault.
+
+    A question is stored once the session has moved past it, once its transcript has been still for a day, or
+    at once when it read a local-only file on the frontier profile. Until Claude Code writes the session's cost,
+    the record says `cost_pending` and a later import rebuilds it (D051).
+    """
     from . import install
 
     harnesses = list((install.load_models(vault).get("harnesses") or {"claude": {}}).keys())
@@ -1236,20 +1332,27 @@ def import_sessions(vault: Path, since: _dt.date | None = None) -> int:
         return 0
     today = v.today()
     cutoff = today - _dt.timedelta(days=SESSION_RETENTION_DAYS)
-    known = {str(r.get("run_id")) for path in _trace_files(vault) for r in _read_jsonl(path)}
+    files = {path: _read_jsonl(path) for path in _trace_files(vault)}
+    where = {str(r.get("run_id")): (path, i) for path, records in files.items() for i, r in enumerate(records)}
     local_model = _local_model(vault)
-    new: dict[str, list[dict]] = {}
-    imported = already = old = 0
+    now = _dt.datetime.now(_dt.timezone.utc).timestamp()
+    imported = updated = already = old = pending = running = 0
     sessions_seen: set[str] = set()
-    open_turns: list[tuple[Session, Turn]] = []
+    stored: list[dict] = []
     unknown: list[str] = []
     for path in session_files(vault):
         session = read_session(path)
         if not session.recognised:
             unknown.append(path.name)
             continue
-        for turn in session.turns:
-            if not _in_vault(turn.cwd, vault) or not turn.messages:
+        if not _in_vault(session.origin, vault):
+            continue
+        try:
+            still = (now - path.stat().st_mtime) / 3600 >= STALE_HOURS
+        except OSError:
+            still = False
+        for number, turn in enumerate(session.turns):
+            if not turn.messages:
                 continue
             day = (turn.started or _dt.datetime.now(_dt.timezone.utc)).astimezone(_dt.timezone.utc).date()
             if since and day < since:
@@ -1257,40 +1360,46 @@ def import_sessions(vault: Path, since: _dt.date | None = None) -> int:
             if day < cutoff:
                 old += 1
                 continue
-            if turn.last > session.closed_at:
-                open_turns.append((session, turn))
-                continue
-            if f"claude:{session.session_id}:{turn.key}" in known:
+            run_id = f"claude:{session.session_id}:{turn.key}"
+            found = where.get(run_id)
+            if found and not files[found[0]][found[1]].get("cost_pending"):
                 already += 1
                 continue
             record = turn_record(vault, session, turn, local_model)
-            new.setdefault(record["started"][:7], []).append(record)
-            known.add(record["run_id"])
+            moved_on = number + 1 < len(session.turns)
+            if record["cost_pending"] and not (moved_on or still or record["local_only_read_on_frontier"]):
+                running += 1
+                continue
+            pending += bool(record["cost_pending"])
             sessions_seen.add(session.session_id)
-            imported += 1
-    for month, records in sorted(new.items()):
-        path = vault / TRACES_DIR / f"{month}.jsonl"
-        existing = _read_jsonl(path) if path.is_file() else []
-        _write_jsonl(path, sorted(existing + records, key=lambda r: (str(r.get("started")), str(r.get("run_id")))))
-    flagged = [r for records in new.values() for r in records if r.get("local_only_read_on_frontier")]
+            stored.append(record)
+            if found:
+                files[found[0]][found[1]] = None  # replaced below, in the month it belongs to
+                updated += 1
+            else:
+                imported += 1
+            where[run_id] = (None, None)
+    changed = {p for p, records in files.items() if any(r is None for r in records)}
+    for record in stored:
+        target = vault / TRACES_DIR / f"{record['started'][:7]}.jsonl"
+        files.setdefault(target, _read_jsonl(target) if target.is_file() else []).append(record)
+        changed.add(target)
+    for target in sorted(changed):
+        records = [r for r in files[target] if r is not None]
+        _write_jsonl(target, sorted(records, key=lambda r: (str(r.get("started")), str(r.get("run_id")))))
+    flagged = [r for r in stored if r.get("local_only_read_on_frontier")]
     if flagged:
         print(f"{len(flagged)} question(s) read a local-only file on the frontier profile:")
         for record in flagged:
             for line in format_record(record):
                 print(line)
     print(f"imported {imported} question(s) from {len(sessions_seen)} Claude Code session(s)"
-          + (f"; {already} already imported" if already else ""))
-    if open_turns:
-        sessions = {s.session_id for s, _ in open_turns}
-        print(f"{len(open_turns)} question(s) in {len(sessions)} open session(s) not imported yet: Claude Code "
-              "writes their cost when the session ends")
-        reads = []
-        for session, turn in open_turns:  # checked now, stored later: a local-only read must not wait
-            record = turn_record(vault, session, turn, local_model)
-            for item in record["local_only_read_on_frontier"]:
-                _add(reads, item)
-        if reads:
-            print(f"  LOCAL-ONLY READ ON FRONTIER in an open session: {', '.join(reads)}")
+          + (f"; {updated} updated" if updated else "") + (f"; {already} already imported" if already else ""))
+    if pending:
+        print(f"{pending} question(s) stored without their cost: Claude Code writes it when the session ends, and "
+              "the next import adds it")
+    if running:
+        print(f"{running} question(s) still running in an open session: stored once the session moves on")
     if old:
         print(f"{old} question(s) older than {SESSION_RETENTION_DAYS} days skipped (retention, section 22.5)")
     if unknown:

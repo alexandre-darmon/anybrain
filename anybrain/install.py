@@ -344,6 +344,8 @@ def refuse_foreign_notes(vault: Path) -> None:
                 continue
             if rel == "index.md" or rel in domains:
                 continue  # a hand-written index, which init keeps as the owner wrote it (Q19)
+            if v.is_generated(vault, rel):
+                continue  # the dashboard `anybrain stats --dashboard` wrote
             if earlier and _anybrain_page(vault, rel):
                 continue
             found.append(rel)
@@ -535,9 +537,12 @@ def voice_route_note(vault: Path) -> str | None:
         return None
     if not local:
         return None
+    routing = v.load_routing(vault)
+    explicit = any(key == "me/voice.md" for key, _ in routing.rules)
+    how = ('change the line `"me/voice.md" = "local"` under [routing] to "frontier"' if explicit
+           else 'add the line `"me/voice.md" = "frontier"` under [routing]')
     return ('.harness/models.toml keeps me/voice.md local, so frontier sessions cannot read your voice profile, '
-            'while AGENTS.md and the skills say every model can. To let them, add `"me/voice.md" = "frontier"` '
-            'under [routing], then run anybrain update')
+            f'while AGENTS.md and the skills say every model can. To let them, {how}, then run anybrain update')
 
 
 # ---------------------------------------------------------------------------- doctor (9.5)

@@ -118,7 +118,8 @@ def test_dashboard_never_writes_through_a_link(vault, tmp_path):
 
 def test_the_dashboard_is_not_a_page(vault, capsys):
     assert cli.main(["stats", str(vault), "--dashboard"]) == 0
-    assert not v.is_page_path(stats.DASHBOARD)
+    assert v.is_generated(vault, stats.DASHBOARD)
+    assert stats.DASHBOARD not in [v.rel_path(vault, x) for x in v.iter_page_paths(vault)]
     capsys.readouterr()
     assert lint.run(vault, []) == 0  # no schema error for a generated page without frontmatter
     assert cli.main(["index", str(vault), "--check"]) == 0  # and the journal index does not list it
@@ -130,3 +131,56 @@ def test_the_dataview_page_can_be_copied_into_a_vault(vault):
     assert lint.run(vault, ["schema"]) == 0
     text = template.read_text(encoding="utf-8")
     assert text.count("```dataview") == 6 and "anybrain stats --dashboard" in text
+
+
+# ---------------------------------------------------------------- independent review of the observability (D051)
+
+def test_a_hand_written_dashboard_page_stays_a_page(vault):
+    (vault / stats.DASHBOARD).write_text(page_text := (
+        "---\ntitle: Dashboard\ntype: brief\ndescription: My own dashboard.\ntags: []\nlanguage: en\n"
+        "created: 2026-11-01\nupdated: 2026-11-01\nsources: []\nsensitivity: personal\n---\n\nMine.\n"), encoding="utf-8")
+    assert not v.is_generated(vault, stats.DASHBOARD)
+    assert stats.DASHBOARD in [v.rel_path(vault, x) for x in v.iter_page_paths(vault)]
+    assert cli.main(["stats", str(vault), "--dashboard"]) == 1
+    assert (vault / stats.DASHBOARD).read_text(encoding="utf-8") == page_text
+
+
+def test_init_accepts_a_copy_of_the_example_vault_after_a_dashboard(vault, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    assert cli.main(["stats", str(vault), "--dashboard"]) == 0
+    assert cli.main(["init", str(vault)]) == 0
+
+
+def run_file(vault, name, date, rate, gate_pass):
+    folder = vault / ".harness/baseline"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / name).write_text(json.dumps({
+        "date": date, "harness": "claude", "profile": "frontier", "pass_rate": rate, "passed": 1, "scored": 2,
+        "cost_usd": 1.0, "by_tag": {"navigation": rate},
+        "gates": [{"name": "median files read <= 8", "value": 5, "pass": gate_pass, "shown": "5"},
+                  {"name": "recall >= 0.90", "value": None, "pass": None, "shown": "-"}]}), encoding="utf-8")
+
+
+def test_the_last_eval_run_of_a_day_is_the_one_with_the_highest_number(vault):
+    run_file(vault, "run-claude-frontier-2026-11-18.json", "2026-11-18", 0.5, False)
+    run_file(vault, "run-claude-frontier-2026-11-18-2.json", "2026-11-18", 1.0, True)
+    run_file(vault, "run-claude-frontier-2026-11-18-10.json", "2026-11-18", 0.75, True)
+    text = stats.dashboard_text(vault, 4, v.today())
+    assert "Last run, pass rate per tag: navigation 75%." in text
+    assert "| median files read <= 8 | 5 | yes |" in text
+    assert "| recall >= 0.90 | - | n/a |" in text
+    assert "| 2026-11-18 | claude | frontier | 75% | 1/2 | 1.00 | 1/1 (1 n/a) |" in text
+
+
+def test_records_still_on_disk_are_listed_in_a_week_already_summed(vault, capsys):
+    write_records(vault, [record("2026-11-12T09:00:00Z", files=3, local=["company/admin.md"]),
+                          record("2026-11-17T09:00:00Z", files=5)])
+    (vault / t.WEEKLY_FILE).write_text(json.dumps({"weeks": {"2026-W46": [
+        {"skill": "ask", "runs": 2, "cost_usd": 0.4, "files_read": [1, 9], "files_read_median": 5,
+         "local_only_reads": 1}]}}), encoding="utf-8")
+    assert cli.main(["stats", str(vault)]) == 0
+    out = capsys.readouterr().out
+    assert "2026-11-12  ask: company/admin.md" in out
+    assert "local-only files read on the frontier profile: 2 (target 0)" in out
+    assert "median files read per ask: 4 over 4 run(s)" in out
+    assert ["2026-W46", "ask", "3", "0.60", "3"] in [line.split() for line in out.splitlines()]

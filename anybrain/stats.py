@@ -165,8 +165,8 @@ def _day(record: dict) -> _dt.date | None:
 
 
 def session_weeks(vault: Path, weeks: int, today: _dt.date) -> list[tuple[_dt.date, list[dict], list[dict]]]:
-    """The last `weeks` ISO weeks, oldest first: (week start, rows per skill, raw records). A week whose records
-    have expired comes from its weekly aggregate, with no raw record left."""
+    """The last `weeks` ISO weeks, oldest first: (week start, rows per skill, records still on disk). The rows
+    add the weekly totals of expired records to the records still there."""
     from . import trace
 
     aggregated = trace.load_weekly(vault)["weeks"]
@@ -177,8 +177,7 @@ def session_weeks(vault: Path, weeks: int, today: _dt.date) -> list[tuple[_dt.da
         start = current - _dt.timedelta(weeks=n)
         key = trace.iso_week(start)
         raw = [r for r in records if _day(r) and week_start(_day(r)) == start and _day(r) <= today]
-        rows = aggregated[key] if key in aggregated else trace.aggregate(raw)
-        result.append((start, rows, [] if key in aggregated else raw))
+        result.append((start, trace.merge_rows(aggregated.get(key) or [], trace.aggregate(raw)), raw))
     return result
 
 
@@ -199,8 +198,9 @@ def _local_reads(raw: list[dict]) -> list[dict]:
     return [r for r in raw if r.get("local_only_read_on_frontier")]
 
 
-def _ask_counts(raw: list[dict]) -> list[int]:
-    return [len(r.get("files_read") or []) for r in raw if r.get("skill") == "ask"]
+def _ask_counts(rows: list[dict]) -> list[int]:
+    """Files read by each `ask` run, from the week rows (records still on disk and expired ones alike)."""
+    return [n for row in rows if row.get("skill") == "ask" for n in row.get("files_read") or []]
 
 
 def print_sessions(vault: Path, weeks: int, today: _dt.date) -> None:
@@ -225,7 +225,7 @@ def print_sessions(vault: Path, weeks: int, today: _dt.date) -> None:
             print(f"  {label:<9} {_skill_name(row.get('skill')):<15} {row.get('runs', 0):>5}  {_usd(row.get('cost_usd')):>8}"
                   f"  {'?' if median is None else f'{median:g}':>17}")
             label = ""
-    asks = _ask_counts(raw)
+    asks = [n for _, rows, _ in table for n in _ask_counts(rows)]
     if asks:
         median = trace._median(asks)
         verdict = "within target" if median <= FILES_TARGET else "above target"
@@ -265,7 +265,13 @@ def _eval_runs(vault: Path) -> list[tuple[str, dict]]:
             continue
         if isinstance(data, dict):
             runs.append((path.name, data))
-    return sorted(runs, key=lambda item: (str(item[1].get("date") or ""), item[0]))[-EVAL_RUNS_SHOWN:]
+
+    def order(item: tuple[str, dict]) -> tuple[str, int, str]:
+        match = re.search(r"(\d{4}-\d{2}-\d{2})(?:-(\d+))?\.json$", item[0])  # the 2nd run of a day ends in -2
+        return (str(item[1].get("date") or (match.group(1) if match else "")),
+                int(match.group(2)) if match and match.group(2) else 1, item[0])
+
+    return sorted(runs, key=order)[-EVAL_RUNS_SHOWN:]
 
 
 def dashboard_text(vault: Path, weeks: int, today: _dt.date) -> str:
@@ -287,7 +293,8 @@ def dashboard_text(vault: Path, weeks: int, today: _dt.date) -> str:
     for name, data in evals:
         if data.get("local_only_reads") and str(data.get("date") or "") >= (today - _dt.timedelta(weeks=weeks)).isoformat():
             rows.append((str(data.get("date")), f"eval {data.get('harness', '?')}", "golden set", data["local_only_reads"]))
-    aggregated = sum(row.get("local_only_reads") or 0 for _, rs, records in table if not records for row in rs)
+    listed = sum(len(r.get("local_only_read_on_frontier") or []) for r in raw)
+    aggregated = sum(row.get("local_only_reads") or 0 for _, rs, _ in table for row in rs) - listed
     if rows:
         out += ["| Date | Run | Skill | Files |", "| --- | --- | --- | --- |"]
         out += [f"| {d} | {_cell(run)} | {_cell(skill)} | {_cell(', '.join(files))} |" for d, run, skill, files in sorted(rows)]
@@ -315,14 +322,10 @@ def dashboard_text(vault: Path, weeks: int, today: _dt.date) -> str:
 
     out += ["## Files read per ask", "", f"Target: a median of at most {FILES_TARGET} (section 6).", ""]
     ask_rows = []
-    for start, rows_, records in table:
-        counts = _ask_counts(records)
-        if counts:
-            ask_rows.append((_week_label(start), len(counts), trace._median(counts)))
-        else:
-            ask = next((row for row in rows_ if row.get("skill") == "ask"), None)
-            if ask:
-                ask_rows.append((_week_label(start), ask.get("runs", 0), ask.get("files_read_median")))
+    for start, rows_, _ in table:
+        ask = next((row for row in rows_ if row.get("skill") == "ask"), None)
+        if ask:
+            ask_rows.append((_week_label(start), ask.get("runs", 0), ask.get("files_read_median")))
     if ask_rows:
         out += ["| Week | Asks | Median files read | |", "| --- | ---: | ---: | --- |"]
         out += [f"| {week} | {n} | {'?' if m is None else f'{m:g}'} | {_bar(m or 0, max(FILES_TARGET * 2, m or 0))} |"
@@ -336,11 +339,14 @@ def dashboard_text(vault: Path, weeks: int, today: _dt.date) -> str:
         out += ["| Date | Harness | Profile | Pass rate | Passed | Cost | Gates passed |",
                 "| --- | --- | --- | ---: | ---: | ---: | ---: |"]
         for name, data in evals:
-            gates = data.get("gates") or []
+            gates = [gate for gate in data.get("gates") or [] if isinstance(gate, dict)]
+            judged = [gate for gate in gates if isinstance(gate.get("pass"), bool)]  # None: not applicable
             rate = data.get("pass_rate")
+            na = len(gates) - len(judged)
             out.append(f"| {data.get('date', '?')} | {_cell(data.get('harness', '?'))} | {_cell(data.get('profile', '?'))} | "
                        f"{'?' if rate is None else f'{rate:.0%}'} | {data.get('passed', '?')}/{data.get('scored', '?')} | "
-                       f"{_usd(data.get('cost_usd'))} | {sum(1 for gate in gates if gate.get('pass'))}/{len(gates)} |")
+                       f"{_usd(data.get('cost_usd'))} | {sum(1 for gate in judged if gate['pass'])}/{len(judged)}"
+                       + (f" ({na} n/a)" if na else "") + " |")
         last = evals[-1][1]
         if last.get("by_tag"):
             out += ["", f"Last run, pass rate per tag: "
@@ -348,7 +354,8 @@ def dashboard_text(vault: Path, weeks: int, today: _dt.date) -> str:
         if last.get("gates"):
             out += ["", "| Gate (17.3) | Value | Passed |", "| --- | --- | --- |"]
             out += [f"| {_cell(gate.get('name', '?'))} | {_cell(gate.get('shown', gate.get('value')))} | "
-                    f"{'yes' if gate.get('pass') else 'no'} |" for gate in last["gates"]]
+                    f"{'n/a' if not isinstance(gate.get('pass'), bool) else 'yes' if gate['pass'] else 'no'} |"
+                    for gate in last["gates"] if isinstance(gate, dict)]
     else:
         out.append("No eval run yet (`anybrain eval`).")
     out.append("")

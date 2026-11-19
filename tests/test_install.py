@@ -468,3 +468,13 @@ def test_update_and_doctor_say_when_the_routing_keeps_the_voice_profile_local(tm
     assert "keeps me/voice.md local" in capsys.readouterr().out
     init_text = (v.framework_root() / "templates" / "models.example.toml").read_text()
     assert init_text.count('"me/voice.md"') == 1 and "already readable by every model" in init_text
+
+
+def test_the_voice_note_says_to_change_an_existing_line(tmp_path, home, capsys):
+    brain = tmp_path / "brain"
+    assert cli.main(["init", str(brain)]) == 0
+    models = brain / ".harness" / "models.toml"
+    models.write_text(models.read_text().replace('"me/voice.md"       = "frontier"', '"me/voice.md" = "local"'))
+    capsys.readouterr()
+    cli.main(["doctor", str(brain)])
+    assert 'change the line `"me/voice.md" = "local"`' in capsys.readouterr().out
