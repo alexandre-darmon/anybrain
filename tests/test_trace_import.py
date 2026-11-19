@@ -505,10 +505,10 @@ def test_an_eval_stream_does_not_carry_a_folder_a_failed_cd_never_reached(vault,
     assert run.files_read == ["company/q3.md"]
 
 
-def test_a_carried_folder_in_an_eval_stream_is_a_guess_the_start_folder_still_counts(vault):
-    (vault / "wiki" / "company").mkdir()
-    run = stream(vault, [("cd wiki", False), ("cat company/q3.md", False)])
-    assert "company/q3.md" in run.files_read
+def test_a_folder_the_shell_really_reached_is_read_from_and_nothing_else(vault):
+    run = stream(vault, [("cd wiki", False), ("grep -rl pricing .", False)])
+    assert run.files_searched == ["wiki"]
+    assert t.build_record(run, vault, "frontier", "eval", "2026-11-19T00:00:00Z")["local_only_read_on_frontier"] == []
 
 
 def test_a_word_too_long_for_a_file_name_is_not_a_crash(vault):
@@ -522,7 +522,7 @@ def test_a_word_too_long_for_a_file_name_is_not_a_crash(vault):
 def test_a_stored_shell_command_holds_no_here_document_body(vault, home):
     s = Transcript(vault).prompt()
     s.tool("Bash", {"command": "cat > wiki/notes/new.md <<'EOF'\nSECRET-ANSWER-WORDS line one\nline two\nEOF"})
-    s.tool("Bash", {"command": "echo " + "y" * 900})
+    s.tool("Bash", {"command": "ls " + " ".join(f"wiki/notes/page-{i}.md" for i in range(60))})
     s.answer().cost(0.1).write(home)
     t.import_sessions(vault)
     [record] = records(vault)
@@ -584,3 +584,72 @@ def test_a_session_opened_elsewhere_in_the_vault_folder_is_reported(vault, home,
     ask_session(tmp_path / "elsewhere").cost(0.1).write(home, folder=t.project_dir_name(str(vault)))
     t.import_sessions(vault)
     assert "1 transcript(s) in the vault's own transcript folder record a session opened outside" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------- check of the D052 fixes (D053)
+
+@pytest.mark.parametrize("command, expected", [
+    ("cat company/*.md", ["company/q3.md"]),
+    ("grep -n Acme company/*.md", ["company/q3.md"]),
+    ("head -n 5 company/{q3,missing}.md", ["company/q3.md"]),
+    ("for f in company/*.md; do head -3 \"$f\"; done", ["company/q3.md"]),
+    ("if cd company; then cat q3.md; fi", ["company/q3.md"]),
+    ("{ cd company && cat q3.md; }", ["company/q3.md"]),
+    ("builtin cd company && cat q3.md", ["company/q3.md"]),
+    ("if [ -d company ]; then cd company; fi; cat q3.md", ["company/q3.md"]),
+    ("cd company; cd -; cat wiki/index.md", ["wiki/index.md"]),
+    ("pushd company; popd; cat wiki/index.md", ["wiki/index.md"]),
+])
+def test_globs_braces_keywords_and_folder_moves_are_followed(vault, command, expected):
+    read, _, _ = t.files_from_shell(command, vault)
+    assert read == expected, command
+
+
+@pytest.mark.parametrize("command", ["find company -name '*.md' -exec cat {} +", "find company -type f | xargs cat",
+                                     "ls company/*.md | xargs head -5"])
+def test_find_exec_and_xargs_read_what_they_find(vault, command):
+    read, _, searches = t.files_from_shell(command, vault)
+    record = t.local_only_reads(vault, read, None, searches)
+    assert "company/q3.md" in record, command
+
+
+@pytest.mark.parametrize("command", ["find company -name '*.md'", "find company | xargs ls -la", "ls company/*.md"])
+def test_listing_files_is_still_not_reading_them(vault, command):
+    read, _, searches = t.files_from_shell(command, vault)
+    assert t.local_only_reads(vault, read, None, searches) == [], command
+
+
+@pytest.mark.parametrize("command", ["cat index.md && cd company && ls", "cat index.md; cd journal; ls -la",
+                                     "(cd company && ls); cat index.md", "cd company && ls && cd ..; cat index.md"])
+def test_a_read_before_a_cd_or_after_a_subshell_stays_where_it_was(vault, command):
+    (vault / "index.md").write_text("# Root\n")
+    (vault / "company" / "index.md").write_text("# Company\n")
+    read, _, _ = t.files_from_shell(command, vault)
+    assert read == ["index.md"], command
+
+
+def test_an_either_or_cd_in_its_own_eval_command_is_carried(vault):
+    run = stream(vault, [("cd company 2>/dev/null || cd finance", False), ("cat q3.md", False)])
+    assert run.files_read == ["company/q3.md"]
+
+
+@pytest.mark.parametrize("command, shown", [
+    ("cat > journal/x.md <<\\EOF\nSECRET-ANSWER-WORDS\nEOF", "cat > journal/x.md <<\\EOF\n[1 line(s)]\nEOF"),
+    ("cat > journal/x.md <<'END OF PAGE'\nSECRET-ANSWER-WORDS\nEND OF PAGE",
+     "cat > journal/x.md <<'END OF PAGE'\n[1 line(s)]\nEND OF PAGE"),
+    ('echo "2026-11-18 · draft · SECRET-PROMPT-WORDS · content/drafts/x.md" >> log.md',
+     "echo [64 characters] >> log.md"),
+    ("printf '%s\\n' 'SECRET-PROMPT-WORDS' > company/q3.md", "printf [28 characters] > company/q3.md"),
+    ("cat > me/profile.md <<< 'SECRET-PROMPT-WORDS salary'", "cat > me/profile.md <<< [28 characters]"),
+    ("python3 -c \"open('journal/x.md','w').write('SECRET-PROMPT-WORDS')\" && ls",
+     "python3 -c [55 characters] && ls"),
+    ("git commit -m 'SECRET-PROMPT-WORDS and a long message about the change'", "git commit -m [57 characters]"),
+    ("cat 'raw/highlights/The Snow Leopard.md'", "cat 'raw/highlights/The Snow Leopard.md'"),
+])
+def test_a_stored_command_keeps_no_text_it_carries(command, shown):
+    assert t.shown_command(command) == shown
+
+
+def test_a_backslash_here_document_is_data_not_commands(vault):
+    read, written, _ = t.files_from_shell("cat > content/drafts/n.md <<\\EOF\nDo not cite company/q3.md.\nEOF", vault)
+    assert read == [] and written == ["content/drafts/n.md"]

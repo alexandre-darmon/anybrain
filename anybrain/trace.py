@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import fnmatch
+import glob
 import json
 import os
 import re
@@ -59,7 +60,7 @@ def shown_command(command: str) -> str:
     while i < len(lines):
         line = lines[i]
         kept.append(line)
-        delimiters = [m.group(2) for m in HEREDOC_RE.finditer(line)]
+        delimiters = heredoc_delimiters(line)
         i += 1
         for delimiter in delimiters:
             body_start = i
@@ -69,8 +70,37 @@ def shown_command(command: str) -> str:
             if i < len(lines):
                 kept.append(lines[i])
             i += 1
-    text = "\n".join(kept)
+    text = _elide_carried("\n".join(kept))
     return text if len(text) <= SHOWN_LIMIT else text[:SHOWN_LIMIT] + f" [{len(text) - SHOWN_LIMIT} more characters]"
+
+
+QUOTED = r"'[^']*'|\"(?:[^\"\\]|\\.)*\""
+ARGUMENT = rf"(?:{QUOTED}|[^\s;&|<>'\"]+)"
+HERESTRING_RE = re.compile(rf"<<<\s*({ARGUMENT})")
+CODE_RE = re.compile(rf"(\b(?:python[\d.]*|node|ruby|perl|php|bash|sh|zsh|deno|bun|osascript)\b(?:\s+-\w+)*?\s+-[ce]\s+)({QUOTED})")
+PRINT_RE = re.compile(rf"(\b(?:echo|printf)\b)((?:[ \t]+{ARGUMENT})+)")
+LONG_QUOTED_RE = re.compile(QUOTED)
+
+
+def _count(text: str) -> str:
+    return f"[{len(text)} characters]"
+
+
+def _elide_carried(text: str) -> str:
+    """Replace the text a command carries, which can be a page, a log line or the owner's words: what `echo` and
+    `printf` print, a here-string, an interpreter's `-c` code, and any other quoted string over 40 characters
+    unless it reads as a path (D053)."""
+    text = HERESTRING_RE.sub(lambda m: "<<< " + _count(m.group(1)), text)
+    text = CODE_RE.sub(lambda m: m.group(1) + _count(m.group(2)), text)
+    text = PRINT_RE.sub(lambda m: m.group(1) + " " + _count(m.group(2).strip()), text)
+
+    def quoted(match: re.Match) -> str:
+        value = match.group(0)
+        if len(value) <= 42 or ("/" in value and value.count(" ") <= 3 and "\n" not in value):
+            return value
+        return _count(value)
+
+    return LONG_QUOTED_RE.sub(quoted, text)
 
 
 @dataclass(frozen=True)
@@ -212,7 +242,12 @@ def _add(items: list[str], value: str) -> None:
         items.append(value)
 
 
-HEREDOC_RE = re.compile(r"(?<!<)<<(?!<)-?\s*(['\"]?)([A-Za-z_][\w.-]*)\1")
+# <<EOF, <<-EOF, <<'EOF', <<"END OF PAGE", <<\EOF; not a here-string (<<<)
+HEREDOC_RE = re.compile(r"(?<!<)<<(?!<)-?\s*(?:(['\"])(.+?)\1|\\?([A-Za-z_][\w.-]*))")
+
+
+def heredoc_delimiters(line: str) -> list[str]:
+    return [m.group(2) or m.group(3) for m in HEREDOC_RE.finditer(line)]
 
 
 INTERPRETERS = re.compile(r"(?<![\w.-])(?:ba|z|da|k|fi)?sh\b|python[\d.]*|node|ruby|perl|php|osascript|R(?:script)?\b|"
@@ -228,7 +263,7 @@ def _strip_heredocs(command: str) -> str:
     while i < len(lines):
         line = lines[i]
         kept.append(line)
-        delimiters = [m.group(2) for m in HEREDOC_RE.finditer(line)]
+        delimiters = heredoc_delimiters(line)
         i += 1
         if not delimiters:
             continue
@@ -291,25 +326,55 @@ def _segments(command: str) -> list[tuple[list[str], list[str], list[str], int, 
     return segments
 
 
+PREFIX_WORDS = {"if", "then", "else", "elif", "do", "while", "until", "{", "}", "!", "time", "nohup", "fi", "done"}
+WRAPPERS = {"builtin", "command", "exec"}  # `command cd x` is a cd; `command -v x` is not
+
+
+def command_words(words: list[str]) -> list[str]:
+    """The words of a simple command without the shell keywords and wrappers in front: `if cd x`, `then cat y`,
+    `{ cd x`, `builtin cd x` (D053)."""
+    i = 0
+    while i < len(words) and (words[i] in PREFIX_WORDS or (
+            words[i] in WRAPPERS and i + 1 < len(words) and not words[i + 1].startswith("-"))):
+        i += 1
+    return words[i:]
+
+
 def _walk(command: str, root: Path, start: str | None = None, end: dict | None = None):
-    """Each simple command with the folder it runs in: `cd` and `pushd` are followed, a subshell restores the
-    folder when it closes, and a folder that cannot be known (`cd -`, `popd`, an unexpanded variable) is None.
-    The command starts in `start` (the vault by default); `end`, when given, receives the folder it ends in."""
-    cwd: str | None = start or str(root)
-    stack: list[str | None] = []
+    """Each simple command, without the keywords in front, with the folder it runs in.
+
+    A `cd`, `pushd` or `popd` moves the shell only to a folder that exists: a `cd` to a missing folder fails and
+    the shell stays where it was, as it does in bash. So `cd a || cd b`, a failed `cd` and `test -d x && cd x`
+    land where bash lands, without guessing (D053). A subshell restores the folder when it closes; `cd -` goes
+    back. A folder that cannot be known (an unexpanded variable) leaves the shell where it was. The command starts
+    in `start` (the vault by default); `end`, when given, receives the folder it ends in."""
+    cwd = start or str(root)
+    previous: str | None = None
+    stack: list[tuple[str, str | None]] = []
+    pushed: list[str] = []
     for words, inputs, outputs, opens, closes in _segments(command):
-        stack.extend([cwd] * opens)
+        stack.extend([(cwd, previous)] * opens)
+        words = command_words(words)
         here = cwd
-        if words and Path(words[0]).name in ("cd", "pushd", "popd"):
+        name = Path(words[0]).name if words else ""
+        if name in ("cd", "pushd", "popd"):
             args = [w for w in words[1:] if w == "-" or not w.startswith("-")]
-            dest = os.path.expandvars(os.path.expanduser(args[0])) if args else os.path.expanduser("~")
-            if Path(words[0]).name == "popd" or dest == "-" or "$" in dest or (cwd is None and not os.path.isabs(dest)):
-                cwd = None
+            target: str | None
+            if name == "popd":
+                target = pushed[-1] if pushed else None
             else:
-                cwd = os.path.normpath(os.path.join(cwd or "/", dest))
+                dest = os.path.expandvars(os.path.expanduser(args[0])) if args else os.path.expanduser("~")
+                target = previous if dest == "-" else None if "$" in dest or "`" in dest else \
+                    os.path.normpath(os.path.join(cwd, dest))
+            if target is not None and os.path.isdir(target):
+                if name == "pushd":
+                    pushed.append(cwd)
+                elif name == "popd":
+                    pushed.pop()
+                previous, cwd = cwd, target
         yield words, inputs, outputs, here
         for _ in range(closes):
-            cwd = stack.pop() if stack else cwd
+            cwd, previous = stack.pop() if stack else (cwd, previous)
     if end is not None:
         end["cwd"] = cwd
 
@@ -412,49 +477,56 @@ def shell_escapes(command: str, root: Path, origin: Path | None) -> list[str]:
 
 def files_from_shell(command: str, root: Path, origin: Path | None = None, start: str | None = None,
                      end: dict | None = None) -> tuple[list[str], list[str], list[Search]]:
-    """See `_files_from_shell`. A `cd` may fail, and `cd a || cd b` runs one or the other, so the folder a
-    later word is read from is not certain: every path and every recursive search is also taken from each
-    folder the command's `cd`s could leave the shell in, each one working or not. A read too many is better
-    than one missed (D051, D052)."""
-    read, written, searches = _files_from_shell(command, root, origin, start, end)
-    begin = start or str(root)
-    folders = _possible_folders(command, begin)
-    if len(folders) > 1:
-        bare = _strip_cd(command)
-        for folder in folders:
-            more, _, more_searches = _files_from_shell(bare, root, origin, folder, None)
-            for item in more:
-                _add(read, item)
-            for search in more_searches:
-                if search not in searches:
-                    searches.append(search)
-    return read, written, searches
+    return _files_from_shell(command, root, origin, start, end)
 
 
-FOLDERS_LIMIT = 32
+GLOB_CHARS = re.compile(r"[*?\[]")
+EXPANSION_LIMIT = 500
+EXEC_OPTIONS = {"-exec", "-execdir", "-ok", "-okdir"}
 
 
-def _possible_folders(command: str, begin: str) -> list[str]:
-    """The folder the command starts in, and every folder its `cd`s could reach from it, each `cd` working or
-    failing: `cd a || cd b` gives the start, a, b and a/b."""
-    folders = [begin]
-    for words, *_ in _segments(command):
-        if not words or Path(words[0]).name not in ("cd", "pushd"):
-            continue
-        args = [w for w in words[1:] if w == "-" or not w.startswith("-")]
-        dest = os.path.expandvars(os.path.expanduser(args[0])) if args else os.path.expanduser("~")
-        if dest == "-" or "$" in dest:
-            continue
-        for folder in list(folders):
-            reached = os.path.normpath(os.path.join(folder, dest))
-            if reached not in folders and len(folders) < FOLDERS_LIMIT:
-                folders.append(reached)
-    return folders
+def _braces(word: str) -> list[str]:
+    """Bash brace expansion of `a/{b,c}.md`, nested braces included, at most 64 words."""
+    match = re.search(r"\{([^{}]*,[^{}]*)\}", word)
+    if not match:
+        return [word]
+    found: list[str] = []
+    for part in match.group(1).split(","):
+        found += _braces(word[:match.start()] + part + word[match.end():])
+        if len(found) >= 64:
+            break
+    return found[:64]
 
 
-def _strip_cd(command: str) -> str:
-    """The command with every `cd`, `pushd` and `popd` turned into a no-op, so it is read from where it began."""
-    return re.sub(r"(^|[;&|(\n]\s*)(?:cd|pushd|popd)\b[^;&|)\n]*", r"\1true", command)
+def _expanded(word: str, cwd: str) -> list[str]:
+    """The paths a shell word stands for: its brace forms, and the files a glob matches from `cwd`."""
+    paths: list[str] = []
+    for form in _braces(word):
+        if GLOB_CHARS.search(form):
+            pattern = form if os.path.isabs(form) else os.path.join(cwd, form)
+            paths += sorted(glob.glob(os.path.expanduser(pattern)))[:EXPANSION_LIMIT]
+        else:
+            paths.append(form)
+    return paths
+
+
+def _find_folders(words: list[str]) -> list[str]:
+    """The folders `find` starts from: its words before the first expression."""
+    folders = []
+    for word in words[1:]:
+        if word.startswith(("-", "(", "!")) or word in ("(", ")", "!"):
+            break
+        folders.append(word)
+    return folders or ["."]
+
+
+def _xargs_command(words: list[str]) -> str:
+    """The command xargs runs: its first word that is not an option or an option's value."""
+    i = 1
+    with_value = {"-n", "-I", "-P", "-L", "-s", "-d", "-E", "-a", "--max-args", "--replace", "--max-procs"}
+    while i < len(words) and words[i].startswith("-"):
+        i += 2 if words[i] in with_value else 1
+    return Path(words[i]).name if i < len(words) else "echo"
 
 
 def _files_from_shell(command: str, root: Path, origin: Path | None = None, start: str | None = None,
@@ -467,8 +539,19 @@ def _files_from_shell(command: str, root: Path, origin: Path | None = None, star
     path at run time is not seen (docs/decisions.md D036).
     """
     read, written, searches = [], [], []
+    before: tuple[list[str], str] = ([], str(root))  # the previous simple command, for `... | xargs cat`
+
+    def take(word: str, cwd: str) -> None:
+        """Count a word as read: each file it names or matches, and a recursive search of a folder."""
+        for path in _expanded(word, cwd):
+            for candidate in [path] + [m for m in PATHISH_RE.findall(path) if m != path]:
+                rel = relative(candidate, root, origin, cwd)
+                if _is_file(rel, root, origin):
+                    _add(read, rel)
+
     for words, inputs, outputs, here in _walk(command, root, start, end):
         cwd = here or str(root)  # an unknown folder: read paths as relative to the vault, best effort
+        previous, before = before, (words, cwd)
         for target in outputs:
             if target.isdigit() or target.startswith(("&", "/dev/")):
                 continue
@@ -487,6 +570,28 @@ def _files_from_shell(command: str, root: Path, origin: Path | None = None, star
                 if not word.startswith("-"):
                     _add(written, relative(word, root, origin, cwd))
             continue
+        if name == "find" and EXEC_OPTIONS & set(words):  # `find x -exec cat {} +` opens what it finds
+            for folder in _find_folders(words):
+                rel = relative(folder, root, origin, cwd)
+                if _is_dir(rel, root) and Search(rel or ".") not in searches:
+                    searches.append(Search(rel or "."))
+            continue
+        if name == "xargs":  # `... | xargs cat`: what the command before it names or finds
+            if _xargs_command(words) in NO_READ_COMMANDS:
+                continue
+            words_before, cwd_before = previous
+            if words_before and Path(words_before[0]).name == "find":
+                for folder in _find_folders(words_before):
+                    rel = relative(folder, root, origin, cwd_before)
+                    if _is_dir(rel, root) and Search(rel or ".") not in searches:
+                        searches.append(Search(rel or "."))
+            for word in words_before[1:]:
+                rel = relative(word, root, origin, cwd_before)
+                if _is_dir(rel, root) and rel and Search(rel) not in searches:
+                    searches.append(Search(rel))
+                else:
+                    take(word, cwd_before)
+            continue
         if name in NO_READ_COMMANDS:
             continue
         found, not_paths = _search(name, words, root, origin, cwd) if name in SEARCH_COMMANDS else ([], set())
@@ -497,10 +602,7 @@ def _files_from_shell(command: str, root: Path, origin: Path | None = None, star
         for i, word in enumerate(words):
             if i in not_paths or (i == 0 and not _is_file(relative(word, root, origin, cwd), root, origin)):
                 continue
-            for candidate in [word] + [m for m in PATHISH_RE.findall(word) if m != word]:
-                rel = relative(candidate, root, origin, cwd)
-                if _is_file(rel, root, origin):
-                    _add(read, rel)
+            take(word, cwd)  # with globs and braces expanded: `cat company/*.md`, `head {a,b}.md` (D053)
     return read, written, searches
 
 
@@ -609,13 +711,10 @@ class ClaudeAdapter(Adapter):
                 here = call.cwd or shell
                 end: dict = {}
                 read, written, searches = files_from_shell(call.target, root, origin, here, end)
-                if not call.cwd and here != start:  # a carried folder is a guess: read from the start too (D052)
-                    more, _, more_searches = files_from_shell(call.target, root, origin, start)
-                    read = read + [item for item in more if item not in read]
-                    searches = searches + [x for x in more_searches if x not in searches]
+                # Claude Code records the shell's folder only after a command that succeeded, and goes back to the
+                # session folder when one leaves the vault
                 after = end.get("cwd")
-                inside = after is not None and os.path.isdir(after) and \
-                    any(_inside(after, base) is not None for base in _bases(root, origin))
+                inside = after is not None and any(_inside(after, base) is not None for base in _bases(root, origin))
                 if call.result == "ok":
                     shell = after if inside else start
                 for item in read:

@@ -731,3 +731,37 @@ A third review checked commit 9787d74 from three angles: the import, the content
   - it imported in 18 seconds, with no error: 34 questions;
   - 4 waited for their cost, and the running one was held back;
   - the longest stored command is 523 characters, with every here-document body replaced by its line count.
+
+## D053 · Check of the D052 fixes: shell commands read the way bash runs them
+
+A fourth review checked commit 32d50a9 from the same three angles. It found 22 defects, 21 confirmed. One of them, a SyntaxError on Python 3.11 (a backslash inside an f-string expression), was already fixed by 4a9b1e4 after CI caught it. The suite now also runs locally under Python 3.11 before each push. Several defects predate this branch: globs, `find -exec`, `xargs`, a `cd` after `if`.
+
+- **The shell's folder, decided rather than guessed.** D052 read each command from every folder its `cd`s could reach. That flagged reads that never happened, as `cat index.md && cd company` showed. It also still missed a `cd` behind `if`, `then`, `{` or `builtin`. Now:
+  - the keywords and wrappers in front of a command are skipped;
+  - a `cd`, `pushd` or `popd` moves the shell only to a folder that exists. A `cd` to a missing folder fails in bash and the shell stays put, so `cd a || cd b`, `test -d x && cd x`, a failed `cd` and `cd -` land where bash lands;
+  - a read before a `cd`, or after a subshell, stays in its own folder;
+  - in an eval stream the same rule decides what carries to the next command, and a command is read once, from its folder. The vault copy still exists when its output is parsed.
+- **What a command reads.**
+  - Globs and brace lists are expanded from the command's folder: `cat company/*.md`, `head company/{a,b}.md`, `for f in company/*.md`.
+  - `find ... -exec` and `... | xargs <reader>` count as a recursive search of the folders `find` starts from, or as reads of what the command before `xargs` names.
+  - Listing stays listing: `ls company/*.md` and `find company -name '*.md'` read nothing.
+- **What a stored command keeps (22.5).** Besides here-document bodies, a stored command no longer holds:
+  - what `echo` and `printf` print, such as the `log.md` line each skill appends, which restated the owner's request in three real eval runs;
+  - here-strings and an interpreter's `-c` code;
+  - any other quoted string over 40 characters that does not read as a path.
+  Each is replaced by its length. `<<\EOF` and quoted delimiters with spaces are here-documents too, so their bodies are neither stored nor read as commands.
+- **Content checks.**
+  - A `file://` or `obsidian://` URL is a local file: the path it points to is checked like any written path. Web URLs are left out of the text scan, so `linkedin.com/company/...` is an external page.
+  - A confidential file name counts only when no folder is written before it, so `library/index.md` or `wiki/notes/plan.md` are not mistaken for `company/index.md` or `company/plan.md`. Generated `index.md` files and hidden folders are left out of the names.
+  - The names are one pattern, compiled once per run. With 1,500 files in `company/`, a content check had gone from 0.3 to 48 seconds.
+  - In an annotated source item, only a vault path or a known file extension fails closed when it does not resolve. "e.g.", "3.2", "Node.js", "80/20", "Me/You" and links to URLs are prose or external sources.
+  - The whole notes section is scanned as text, numbered and wrapped lines included.
+  - HTML entities are decoded line by line, so client-name line numbers do not shift.
+- **Dashboard.** Local-only reads of eval runs are taken from every run in the window.
+- **Old records.** Eval run files written by 0.1.0 keep full commands; no command rewrites a baseline. Session records did not exist before this branch.
+- **Known limits, kept on purpose.** Reading files out of shell commands is a best effort, and the traces measure the safety rule rather than enforce it. The rule itself holds through the harness deny rules and the instructions (18.4). Not seen:
+  - a path built at run time: a variable other than a `for` glob, a command substitution, a script's own logic (D036);
+  - the harness's own search tool (Q43).
+- **Checks.**
+  - 767 tests pass under Python 3.13 and 3.11.
+  - The import of this session's own 182 MB transcript took 14 seconds, and its longest stored command is 522 characters.
