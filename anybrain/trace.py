@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import datetime as _dt
 import fnmatch
+import glob
 import json
 import os
 import re
-import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -26,7 +26,6 @@ NO_READ_COMMANDS = {"ls", "stat", "find", "du", "test", "[", "[[", "echo", "prin
                     "rmdir", "chmod", "chown", "ln", "cd", "pwd", "which", "type", "command", "true", "false",
                     "sleep", "date", "realpath", "readlink", "basename", "dirname", "anybrain"}
 RECURSIVE_COMMANDS = {"rg", "ag", "ack"}  # search a folder tree; grep does with -r or -R
-SHELL_PUNCTUATION = ";&|()<>\n"
 PATHISH_RE = re.compile(r"[\w~./@+-]+")
 # Texts of a refused tool call (Claude Code 2.1.326: "This command requires approval", "A variable in this
 # command can't be checked before it runs", "File is in a directory that is denied by your permission settings").
@@ -40,9 +39,100 @@ class ToolCall:
     result: str = "ok"  # "ok", "denied" or "error"
     ran: bool = True  # False when the harness refused the call or the tool failed before doing anything
     raw: str = ""  # the target as the tool call gave it, before it was made relative to the vault
+    cwd: str = ""  # the shell's folder when the call was made, when the harness records it (transcripts)
 
     def as_json(self) -> dict:
-        return {"tool": self.tool, "target": self.target, "result": self.result}
+        target = shown_command(self.target) if self.tool in SHELL_TOOLS else self.target
+        return {"tool": self.tool, "target": target, "result": self.result}
+
+
+SHELL_TOOLS = ("Bash", "bash", "shell")
+SHOWN_LIMIT = 500  # characters of a stored shell command; reads and writes are found in the full command
+
+
+def shown_command(command: str) -> str:
+    """A shell command as a trace stores it (22.5: a trace never holds file content or the owner's words):
+    the body of every here-document replaced by its line count, the text the command carries replaced by its
+    length (`_elide_carried`), and the rest cut at 500 characters (D052, D053, D054)."""
+    lines, kept, i = str(command or "").split("\n"), [], 0
+    while i < len(lines):
+        line = lines[i]
+        kept.append(line)
+        delimiters = heredoc_delimiters(line)
+        i += 1
+        for delimiter in delimiters:
+            body_start = i
+            while i < len(lines) and lines[i].strip() != delimiter:
+                i += 1
+            kept.append(f"[{i - body_start} line(s)]")
+            if i < len(lines):
+                kept.append(lines[i])
+            i += 1
+    text = _elide_carried("\n".join(kept))
+    return text if len(text) <= SHOWN_LIMIT else text[:SHOWN_LIMIT] + f" [{len(text) - SHOWN_LIMIT} more characters]"
+
+
+CODE_INTERPRETERS = re.compile(r"python[\d.]*|node|ruby|perl|php|bash|sh|zsh|dash|ksh|deno|bun|osascript|Rscript|lua")
+SED_SCRIPT_RE = re.compile(r"^(?:\d+,?\d*|\$)?[sy]([^\w\s\\]).*\1.*\1[A-Za-z0-9]*$", re.S)
+PATH_WORD_RE = re.compile(r"[\w~./@+-]+")
+
+
+def _count(text: str) -> str:
+    return f"[{len(text)} characters]"
+
+
+def _reads_as_path(word: str) -> bool:
+    text = str(word)
+    return "\n" not in text and (bool(PATH_WORD_RE.fullmatch(text)) or (
+        "/" in text and text.count(" ") <= 3 and bool(re.search(r"\.[A-Za-z0-9]{1,5}$", text))))
+
+
+def _elide_carried(text: str) -> str:
+    """Replace the text a command carries, read with the shell's own quoting (D053, D054):
+    - what `echo` and `printf` print, a here-string, an interpreter's `-c` or `-e` code, a sed script;
+    - a comment;
+    - any other word over 40 characters that does not read as a path.
+    Redirection targets and paths stay, so a stored command still says what it touched."""
+    tokens = shell_tokens(text)
+    spans: list[tuple[int, int]] = []
+    group: list = []
+
+    def flush() -> None:
+        words = command_words(group)
+        name = Path(words[0]).name if words else ""
+        args = words[1:]
+        if name in ("echo", "printf") and args:
+            spans.append((args[0].start, args[-1].end))
+        else:
+            for k, word in enumerate(args):
+                before = args[k - 1] if k else ""
+                if (CODE_INTERPRETERS.fullmatch(name) and before in ("-c", "-e")) or (
+                        name == "sed" and (SED_SCRIPT_RE.match(word) or before in ("-e", "--expression"))) or (
+                        word.end - word.start > 42 and not _reads_as_path(word)):
+                    spans.append((word.start, word.end))
+        group.clear()
+
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if isinstance(token, Comment):
+            flush()
+            if len(token) > 1:
+                spans.append((token.start + 1, token.end))
+        elif isinstance(token, Op):
+            if ("<" in token or ">" in token) and i + 1 < len(tokens) and isinstance(tokens[i + 1], Word):
+                if "<<<" in token:
+                    spans.append((tokens[i + 1].start, tokens[i + 1].end))
+                i += 2  # a redirection target belongs to the same command
+                continue
+            flush()
+        else:
+            group.append(token)
+        i += 1
+    flush()
+    for start, end in sorted(spans, reverse=True):
+        text = text[:start] + _count(text[start:end]) + text[end:]
+    return text
 
 
 @dataclass(frozen=True)
@@ -54,10 +144,11 @@ class Search:
     exclude: tuple[str, ...] = ()
     exclude_dirs: tuple[str, ...] = ()
     hidden: bool = True  # grep opens hidden files; rg and ag skip them unless told otherwise
+    depth: int | None = None  # how deep under the folder (find -maxdepth, ls): None for any depth
 
     def files(self, root: Path) -> list[str]:
         base = root if self.folder in ("", ".") else root / self.folder
-        if not base.is_dir():
+        if not os.path.isdir(base):
             return []
         found = []
         for path in sorted(base.rglob("*")):
@@ -65,6 +156,8 @@ class Search:
                 continue
             rel = v.rel_path(root, path)
             inner = path.relative_to(base).parts
+            if self.depth is not None and len(inner) > self.depth:
+                continue
             if not self.hidden and any(part.startswith(".") for part in inner):
                 continue
             if any(fnmatch.fnmatch(part, g) for part in inner[:-1] for g in self.exclude_dirs):
@@ -184,7 +277,12 @@ def _add(items: list[str], value: str) -> None:
         items.append(value)
 
 
-HEREDOC_RE = re.compile(r"(?<!<)<<(?!<)-?\s*(['\"]?)([A-Za-z_][\w.-]*)\1")
+# <<EOF, <<-EOF, <<'EOF', <<"END OF PAGE", <<\EOF; not a here-string (<<<)
+HEREDOC_RE = re.compile(r"(?<!<)<<(?!<)-?\s*(?:(['\"])(.+?)\1|\\?([A-Za-z_][\w.-]*))")
+
+
+def heredoc_delimiters(line: str) -> list[str]:
+    return [m.group(2) or m.group(3) for m in HEREDOC_RE.finditer(line)]
 
 
 INTERPRETERS = re.compile(r"(?<![\w.-])(?:ba|z|da|k|fi)?sh\b|python[\d.]*|node|ruby|perl|php|osascript|R(?:script)?\b|"
@@ -200,7 +298,7 @@ def _strip_heredocs(command: str) -> str:
     while i < len(lines):
         line = lines[i]
         kept.append(line)
-        delimiters = [m.group(2) for m in HEREDOC_RE.finditer(line)]
+        delimiters = heredoc_delimiters(line)
         i += 1
         if not delimiters:
             continue
@@ -219,80 +317,269 @@ def _strip_heredocs(command: str) -> str:
     return "\n".join(kept)
 
 
-def _shell_words(command: str) -> list[str]:
-    """Shell tokens with quotes honoured; operators and newlines come back as separate tokens."""
-    command = _strip_heredocs(command)
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=SHELL_PUNCTUATION)
-    lexer.whitespace = " \t\r"
-    lexer.whitespace_split = True
-    lexer.commenters = ""
-    try:
-        return list(lexer)
-    except ValueError:  # unbalanced quotes: fall back to a plain split
-        return re.findall(r"[;&|()<>\n]+|[^\s;&|()<>]+", command)
+class Word(str):
+    """A shell word with its quotes removed. `quoted` when any part of it was quoted or escaped: bash expands
+    neither globs nor braces there. `start` and `end` are its place in the command."""
+
+    quoted = False
+    start = 0
+    end = 0
+    pattern = ""  # the word as a glob pattern: its quoted parts escaped, as bash globs only what is not quoted
+    globbing = False  # an unquoted `*`, `?` or `[` in it
 
 
-def _segments(command: str) -> list[tuple[list[str], list[str], list[str], int, int]]:
-    """(words, input redirections, output redirections, subshells opened before, subshells closed after) of
-    each simple command."""
-    segments, words, inputs, outputs, opens = [], [], [], [], 0
-    tokens = _shell_words(command)
+class Op(str):
+    """An operator: `;`, `&&`, `|`, a redirection, a parenthesis or a line break."""
+
+    start = 0
+    end = 0
+
+
+class Comment(str):
+    start = 0
+    end = 0
+
+
+def _token(kind, text: str, start: int, end: int, quoted: bool = False, pattern: str = "", globbing: bool = False):
+    token = kind(text)
+    token.start, token.end = start, end
+    if kind is Word:
+        token.quoted, token.pattern, token.globbing = quoted, pattern or text, globbing
+    return token
+
+
+OPERATOR_CHARS = ";&|<>"
+
+
+def shell_tokens(command: str) -> list:
+    """Words, operators and comments, with bash's quoting rules (D054).
+
+    `'...'`, `"..."` and a backslash make one word and never an operator, so find's `\\(` and `\\;` stay words.
+    Adjacent pieces form one word (`'it'\\''s'`). A `#` at the start of a word begins a comment, so an apostrophe
+    in a comment opens no quote. `$(...)` stays inside its word. An unclosed quote runs to the end."""
+    tokens: list = []
+    i, n = 0, len(command)
+    while i < n:
+        c = command[i]
+        if c in " \t\r":
+            i += 1
+        elif c == "#":
+            j = command.find("\n", i)
+            j = n if j < 0 else j
+            tokens.append(_token(Comment, command[i:j], i, j))
+            i = j
+        elif c in "\n()":
+            tokens.append(_token(Op, c, i, i + 1))
+            i += 1
+        elif c in OPERATOR_CHARS:
+            j = i
+            while j < n and command[j] in OPERATOR_CHARS:
+                j += 1
+            tokens.append(_token(Op, command[i:j], i, j))
+            i = j
+        else:
+            start, buf, pat, quoted, globbing = i, [], [], False, False
+            while i < n and command[i] not in " \t\r\n()" + OPERATOR_CHARS:
+                c = command[i]
+                if c == "'":
+                    j = command.find("'", i + 1)
+                    j = n if j < 0 else j
+                    buf.append(command[i + 1:j])
+                    pat.append(glob.escape(command[i + 1:j]))
+                    quoted, i = True, j + 1
+                elif c == '"':
+                    j, piece = i + 1, []
+                    while j < n and command[j] != '"':
+                        if command[j] == "\\" and j + 1 < n and command[j + 1] in '$`"\\\n':
+                            piece.append(command[j + 1])
+                            j += 2
+                        else:
+                            piece.append(command[j])
+                            j += 1
+                    buf.append("".join(piece))
+                    pat.append(glob.escape("".join(piece)))
+                    quoted, i = True, j + 1
+                elif c == "\\" and i + 1 < n:
+                    buf.append(command[i + 1])
+                    pat.append(glob.escape(command[i + 1]))
+                    quoted, i = True, i + 2
+                elif c == "$" and i + 1 < n and command[i + 1] == "(":
+                    depth, j = 0, i + 1
+                    while j < n:
+                        depth += {"(": 1, ")": -1}.get(command[j], 0)
+                        if depth == 0:
+                            break
+                        j += 1
+                    buf.append(command[i:j + 1])
+                    pat.append(glob.escape(command[i:j + 1]))
+                    i = j + 1
+                else:
+                    buf.append(c)
+                    pat.append(c)
+                    globbing = globbing or c in "*?["
+                    i += 1
+            tokens.append(_token(Word, "".join(buf), start, min(i, n), quoted, "".join(pat), globbing))
+    return tokens
+
+
+def _segments(command: str) -> list[tuple[list, list, list, int, int, bool]]:
+    """(words, input redirections, output redirections, subshells opened before, subshells closed after, piped)
+    of each simple command. `piped` when its input comes from the command before it through `|`."""
+    segments, words, inputs, outputs, opens, piped = [], [], [], [], 0, False
+    tokens = [t for t in shell_tokens(_strip_heredocs(command)) if not isinstance(t, Comment)]
     i = 0
     while i < len(tokens):
         token = tokens[i]
-        if token and all(c in SHELL_PUNCTUATION for c in token):
-            if ("<" in token or ">" in token) and not ("(" in token or ")" in token):
-                target = tokens[i + 1] if i + 1 < len(tokens) else ""
-                if target and not all(c in SHELL_PUNCTUATION for c in target):
-                    if words and words[-1].isdigit():
+        if isinstance(token, Op):
+            if "<" in token or ">" in token:
+                target = tokens[i + 1] if i + 1 < len(tokens) else None
+                if isinstance(target, Word):
+                    if words and words[-1].isdigit() and not words[-1].quoted and words[-1].end == token.start:
                         words.pop()  # the fd number of `2>`
                     (inputs if "<" in token else outputs).append(target)
                     i += 2
                     continue
             closes = token.count(")")
             if words or inputs or outputs or closes:
-                segments.append((words, inputs, outputs, opens, closes))
+                segments.append((words, inputs, outputs, opens, closes, piped))
                 opens = 0
+            piped = token in ("|", "|&")
             opens += token.count("(")
             words, inputs, outputs = [], [], []
         else:
             words.append(token)
         i += 1
     if words or inputs or outputs:
-        segments.append((words, inputs, outputs, opens, 0))
+        segments.append((words, inputs, outputs, opens, 0, piped))
     return segments
 
 
-def _walk(command: str, root: Path):
-    """Each simple command with the folder it runs in: `cd` and `pushd` are followed, a subshell restores the
-    folder when it closes, and a folder that cannot be known (`cd -`, `popd`, an unexpanded variable) is None."""
-    cwd: str | None = str(root)
-    stack: list[str | None] = []
-    for words, inputs, outputs, opens, closes in _segments(command):
-        stack.extend([cwd] * opens)
+PREFIX_WORDS = {"if", "then", "else", "elif", "do", "while", "until", "{", "}", "!", "fi", "done"}
+ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+# wrappers that run the command after them, with their options that take a value (D054)
+WRAPPERS = {"env": {"-u", "--unset", "-C", "--chdir", "-S", "--split-string"},
+            "timeout": {"-s", "--signal", "-k", "--kill-after"}, "nice": {"-n", "--adjustment"},
+            "stdbuf": {"-i", "-o", "-e"}, "sudo": {"-u", "-g", "-C", "-h", "-p", "-U", "-r", "-t"},
+            "time": set(), "nohup": set()}
+
+
+def command_words(words: list) -> list:
+    """The words of a simple command without what comes in front: shell keywords (`if`, `then`, `{`), variable
+    assignments (`LANG=C`), `builtin`, `command` and `exec`, and wrappers with their options (`env`, `timeout 30`,
+    `nice -n 5`, `sudo -u x`) (D053, D054)."""
+    i = 0
+    while i < len(words):
+        word = words[i]
+        if word in PREFIX_WORDS or ASSIGNMENT_RE.match(word):
+            i += 1
+        elif word in ("builtin", "command", "exec") and i + 1 < len(words) and not words[i + 1].startswith("-"):
+            i += 1
+        elif word in WRAPPERS:
+            with_value = WRAPPERS[word]
+            i += 1
+            while i < len(words) and (words[i].startswith("-") or (word == "env" and ASSIGNMENT_RE.match(words[i]))):
+                i += 2 if words[i] in with_value else 1
+            if word == "timeout" and i < len(words):
+                i += 1  # the duration
+        else:
+            break
+    return words[i:]
+
+
+def _walk(command: str, root: Path, start: str | None = None, end: dict | None = None):
+    """Each simple command, without what comes in front of it, with the folder it runs in, whether it is piped,
+    and its words as written (for `for ... done`).
+
+    A `cd`, `pushd` or `popd` moves the shell only to a folder that exists: a `cd` to a missing folder fails and
+    the shell stays where it was, as it does in bash. So `cd a || cd b`, a failed `cd` and `test -d x && cd x`
+    land where bash lands, without guessing (D053). A subshell restores the folder when it closes; `cd -` goes
+    back. A folder that cannot be known (an unexpanded variable) leaves the shell where it was. The command starts
+    in `start` (the vault by default); `end`, when given, receives the folder it ends in."""
+    cwd = start or str(root)
+    previous: str | None = None
+    stack: list[tuple[str, str | None]] = []
+    pushed: list[str] = []
+    for raw, inputs, outputs, opens, closes, piped in _segments(command):
+        stack.extend([(cwd, previous)] * opens)
+        words = command_words(raw)
         here = cwd
-        if words and Path(words[0]).name in ("cd", "pushd", "popd"):
+        name = Path(words[0]).name if words else ""
+        if name in ("cd", "pushd", "popd"):
             args = [w for w in words[1:] if w == "-" or not w.startswith("-")]
-            dest = os.path.expandvars(os.path.expanduser(args[0])) if args else os.path.expanduser("~")
-            if Path(words[0]).name == "popd" or dest == "-" or "$" in dest or (cwd is None and not os.path.isabs(dest)):
-                cwd = None
+            target: str | None
+            if name == "popd":
+                target = pushed[-1] if pushed else None
             else:
-                cwd = os.path.normpath(os.path.join(cwd or "/", dest))
-        yield words, inputs, outputs, here
+                dest = os.path.expandvars(os.path.expanduser(args[0])) if args else os.path.expanduser("~")
+                target = previous if dest == "-" else None if "$" in dest or "`" in dest else \
+                    os.path.normpath(os.path.join(cwd, dest))
+            if target is not None and os.path.isdir(target):
+                if name == "pushd":
+                    pushed.append(cwd)
+                elif name == "popd":
+                    pushed.pop()
+                previous, cwd = cwd, target
+        yield words, inputs, outputs, here, piped, raw
         for _ in range(closes):
-            cwd = stack.pop() if stack else cwd
+            cwd, previous = stack.pop() if stack else (cwd, previous)
+    if end is not None:
+        end["cwd"] = cwd
 
 
 def _is_file(rel: str, root: Path, origin: Path | None) -> bool:
+    """os.path.isfile, not Path.is_file: a shell word longer than a file name may be (a sentence in a heredoc)
+    is simply not a file, where pathlib raises (D052)."""
     if not rel:
         return False
     if os.path.isabs(rel):
         return os.path.isfile(rel)
-    return (root / rel).is_file() or bool(origin and (origin / rel).is_file())
+    return os.path.isfile(os.path.join(root, rel)) or bool(origin and os.path.isfile(os.path.join(origin, rel)))
 
 
 def _is_dir(rel: str, root: Path) -> bool:
-    return (root / rel).is_dir() if rel and not os.path.isabs(rel) else rel == ""
+    return os.path.isdir(os.path.join(root, rel)) if rel and not os.path.isabs(rel) else rel == ""
+
+
+GLOB_CHARS = re.compile(r"[*?\[]")
+EXPANSION_LIMIT = 500
+
+
+def _braces(word: str) -> list[str]:
+    """Bash brace expansion of `a/{b,c}.md`, nested braces included, at most 64 words."""
+    match = re.search(r"\{([^{}]*,[^{}]*)\}", word)
+    if not match:
+        return [word]
+    found: list[str] = []
+    for part in match.group(1).split(","):
+        found += _braces(word[:match.start()] + part + word[match.end():])
+        if len(found) >= 64:
+            break
+    return found[:64]
+
+
+def _expanded(word: str, cwd: str) -> list[str]:
+    """The paths a shell word stands for: the word itself, as bash keeps it when a glob matches nothing and as a
+    quoted word is; and when it is not quoted, its brace forms and the paths its globs match from `cwd`, `**`
+    at any depth as zsh and bash's globstar read it, `~` expanded (D053, D054)."""
+    paths = [str(word)]
+    if isinstance(word, Word):  # from a command: only its unquoted parts glob, and braces only when not quoted
+        forms, globbing = ([word.pattern] if word.quoted else _braces(word.pattern)), word.globbing
+    else:
+        forms, globbing = _braces(str(word)), bool(GLOB_CHARS.search(word))
+    for form in forms:
+        if form not in paths and not (isinstance(word, Word) and word.quoted):
+            paths.append(form)
+        if globbing and GLOB_CHARS.search(form):
+            pattern = os.path.expanduser(form)
+            try:
+                if os.path.isabs(pattern):
+                    matches = glob.glob(pattern, recursive=True)
+                else:
+                    matches = [os.path.join(cwd, m) for m in glob.glob(pattern, root_dir=cwd, recursive=True)]
+            except (OSError, ValueError, re.error):
+                matches = []
+            paths += sorted(matches)[:EXPANSION_LIMIT]
+    return paths
 
 
 SEARCH_COMMANDS = {"grep", "egrep", "fgrep", "rg", "ag", "ack"}
@@ -339,9 +626,10 @@ def _search(name: str, words: list[str], root: Path, origin: Path | None, cwd: s
         return [], not_paths
     folders = []
     for i in positional:
-        rel = relative(words[i], root, origin, cwd)
-        if _is_dir(rel, root):
-            folders.append(rel or ".")
+        for path in _expanded(words[i], cwd):  # `grep -r x */`, `grep -r x {company,wiki}` (D054)
+            rel = relative(path, root, origin, cwd)
+            if _is_dir(rel, root) and (rel or ".") not in folders:
+                folders.append(rel or ".")
     if not positional:
         folders.append(relative(".", root, origin, cwd) or ".")
     searches = [Search(folder, tuple(include), tuple(exclude), tuple(exclude_dirs), hidden) for folder in folders]
@@ -363,7 +651,7 @@ def shell_escapes(command: str, root: Path, origin: Path | None) -> list[str]:
     forms = {os.path.normpath(os.path.abspath(origin)), os.path.realpath(origin)}
     forms |= {"~/" + os.path.relpath(f, home) for f in list(forms) if f.startswith(home + os.sep)}
     text = _strip_heredocs(command)
-    for words, inputs, outputs, cwd in _walk(command, root):
+    for words, inputs, outputs, cwd, *_ in _walk(command, root):
         for word in words + inputs + outputs:
             expanded = os.path.expandvars(os.path.expanduser(word))
             for candidate in [expanded] + [m for m in PATHISH_RE.findall(expanded) if m != expanded]:
@@ -377,17 +665,98 @@ def shell_escapes(command: str, root: Path, origin: Path | None) -> list[str]:
     return found
 
 
-def files_from_shell(command: str, root: Path, origin: Path | None = None) -> tuple[list[str], list[str], list[Search]]:
+EXEC_OPTIONS = {"-exec", "-execdir", "-ok", "-okdir"}
+FIND_PATTERNS = {"-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename"}
+
+
+def _find_parts(words: list[str]) -> tuple[list[str], tuple[str, ...], tuple[str, ...], int | None, str | None]:
+    """What a `find` command opens: its start points, the -name and -path patterns that narrow it (negated ones
+    exclude), -maxdepth, and the command -exec runs (None without -exec) (D054)."""
+    starts, include, exclude, depth, runs = [], [], [], None, None
+    i = 1
+    while i < len(words) and not (words[i].startswith("-") or words[i] in ("(", ")", "!")):
+        starts.append(words[i])
+        i += 1
+    negate = False
+    while i < len(words):
+        word = words[i]
+        if word in ("!", "-not"):
+            negate, i = True, i + 1
+            continue
+        if word in FIND_PATTERNS and i + 1 < len(words):
+            pattern = words[i + 1].removeprefix("./") if "path" in word else words[i + 1]
+            (exclude if negate else include).append(pattern)
+            negate, i = False, i + 2
+            continue
+        if word == "-maxdepth" and i + 1 < len(words):
+            depth = int(words[i + 1]) if words[i + 1].isdigit() else depth
+            i += 2
+            continue
+        if word in EXEC_OPTIONS and i + 1 < len(words):
+            runs = runs or Path(words[i + 1]).name
+            i += 2
+            while i < len(words) and words[i] not in (";", "+"):
+                i += 1
+        negate, i = False, i + 1
+    return starts or ["."], tuple(include), tuple(exclude), depth, runs
+
+
+def _xargs_command(words: list[str]) -> str:
+    """The command xargs runs: its first word that is not an option or an option's value."""
+    i = 1
+    with_value = {"-n", "-I", "-P", "-L", "-s", "-d", "-E", "-a", "--max-args", "--replace", "--max-procs"}
+    while i < len(words) and words[i].startswith("-"):
+        i += 2 if words[i] in with_value else 1
+    return Path(words[i]).name if i < len(words) else "echo"
+
+
+def files_from_shell(command: str, root: Path, origin: Path | None = None, start: str | None = None,
+                     end: dict | None = None) -> tuple[list[str], list[str], list[Search]]:
     """Files a shell command reads, files it writes, and the recursive searches it runs.
 
     Best effort, and conservative: any command outside NO_READ_COMMANDS reads every file it names, in any word
-    or inside quoted code; `cd` is followed; a recursive search (`grep -r`, `rg`) opens the files under the
-    folders it names, or the current folder, narrowed by its include and exclude globs. A script that builds a
-    path at run time is not seen (docs/decisions.md D036).
+    or inside quoted code, with globs and braces expanded; `cd` is followed where bash goes; a recursive search
+    (`grep -r`, `rg`, `find -exec`, `find | xargs`) opens the files under the folders it names, or the current
+    folder, narrowed by its patterns; a `for` loop reads its list when its body runs a reader on the loop
+    variable. A path built at run time (a variable, a command substitution, a script's logic) is not seen
+    (D036, D053, D054).
     """
-    read, written, searches = [], [], []
-    for words, inputs, outputs, here in _walk(command, root):
+    read: list[str] = []
+    written: list[str] = []
+    searches: list[Search] = []
+    pipeline: list[tuple[list, str]] = []  # the commands of the current pipeline so far, for `... | xargs cat`
+    loops: list[tuple[str, list, str]] = []  # (variable, list, folder) of each open `for` loop
+
+    def take(word: str, cwd: str) -> None:
+        """Count a word as read: each file it names or matches."""
+        for path in _expanded(word, cwd):
+            for candidate in [path] + [m for m in PATHISH_RE.findall(path) if m != path]:
+                rel = relative(candidate, root, origin, cwd)
+                if _is_file(rel, root, origin):
+                    _add(read, rel)
+
+    def search(word: str, cwd: str, include=(), exclude=(), depth: int | None = None) -> None:
+        """A search of each folder a word names or matches; a file it names is read."""
+        for path in _expanded(word, cwd):
+            rel = relative(path, root, origin, cwd)
+            if _is_dir(rel, root):
+                found = Search(rel or ".", tuple(include), tuple(exclude), (), True, depth)
+                if found not in searches:
+                    searches.append(found)
+            elif _is_file(rel, root, origin) and (not include or any(_glob_match(rel, Path(rel).name, g) for g in include)):
+                _add(read, rel)
+
+    def find_search(words: list, cwd: str) -> None:
+        starts, include, exclude, depth, _ = _find_parts(words)
+        for word in starts:
+            search(word, cwd, include, exclude, depth)
+
+    for words, inputs, outputs, here, piped, raw in _walk(command, root, start, end):
         cwd = here or str(root)  # an unknown folder: read paths as relative to the vault, best effort
+        if not piped:
+            pipeline = []
+        producers = list(pipeline)
+        pipeline.append((words, cwd))
         for target in outputs:
             if target.isdigit() or target.startswith(("&", "/dev/")):
                 continue
@@ -396,6 +765,11 @@ def files_from_shell(command: str, root: Path, origin: Path | None = None) -> tu
             rel = relative(target, root, origin, cwd)
             if _is_file(rel, root, origin):
                 _add(read, rel)
+        if raw and raw[0] == "done" and loops:
+            loops.pop()
+        if len(raw) >= 3 and raw[0] == "for" and raw[2] == "in":
+            loops.append((str(raw[1]), list(raw[3:]), cwd))
+            continue
         if not words:
             continue
         name = Path(words[0]).name
@@ -406,20 +780,49 @@ def files_from_shell(command: str, root: Path, origin: Path | None = None) -> tu
                 if not word.startswith("-"):
                     _add(written, relative(word, root, origin, cwd))
             continue
+        if name not in NO_READ_COMMANDS:
+            for variable, items, folder in loops:  # `for f in company/*.md; do head "$f"; done`
+                if any(f"${variable}" in w or "${" + variable + "}" in w for w in words[1:]):
+                    for item in items:
+                        take(item, folder)
+        if name == "find":  # `find x -exec cat {} +` opens what it finds; `-exec ls` or no -exec only lists
+            runs = _find_parts(words)[4]
+            if runs is not None and runs not in NO_READ_COMMANDS:
+                find_search(words, cwd)
+            continue
+        if name == "xargs":  # `... | sort | xargs cat`: what the commands before it in the pipeline find or name
+            if _xargs_command(words) in NO_READ_COMMANDS:
+                continue
+            known = False
+            for before, folder in producers:
+                first = Path(before[0]).name if before else ""
+                if first == "find":
+                    find_search(before, folder)
+                    known = True
+                elif first == "ls":
+                    recursive = any(w.startswith("-") and "R" in w for w in before[1:])
+                    for word in [w for w in before[1:] if not w.startswith("-")] or ["."]:
+                        search(word, folder, depth=None if recursive else 1)
+                    known = True
+                elif first in ("echo", "printf", "cat", "grep", "rg"):
+                    known = known or first in ("echo", "printf") or any(w in ("-l", "-rl", "-lr") for w in before)
+                    if first in ("echo", "printf"):
+                        for word in before[1:]:
+                            take(word, folder)
+            if not known:  # a list from somewhere unknown: everything under the folder may be opened
+                search(".", cwd)
+            continue
         if name in NO_READ_COMMANDS:
             continue
         found, not_paths = _search(name, words, root, origin, cwd) if name in SEARCH_COMMANDS else ([], set())
-        for search in found:
-            if search not in searches:
-                searches.append(search)
+        for item in found:
+            if item not in searches:
+                searches.append(item)
         # the first word too, when it is not a command but a path: a line of code in a heredoc an interpreter runs
         for i, word in enumerate(words):
             if i in not_paths or (i == 0 and not _is_file(relative(word, root, origin, cwd), root, origin)):
                 continue
-            for candidate in [word] + [m for m in PATHISH_RE.findall(word) if m != word]:
-                rel = relative(candidate, root, origin, cwd)
-                if _is_file(rel, root, origin):
-                    _add(read, rel)
+            take(word, cwd)
     return read, written, searches
 
 
@@ -454,7 +857,10 @@ class ClaudeAdapter(Adapter):
             args += ["--max-budget-usd", f"{max(budget_usd, 0.01):.2f}"]
         return args
 
-    def parse(self, output: str, root: Path, origin: Path | None = None) -> Run:
+    def parse(self, output: str, root: Path, origin: Path | None = None, cwd: str | None = None) -> Run:
+        """`cwd` is the folder the session started in, the vault by default. The shell's folder carries from one
+        command to the next, as in Claude Code, and goes back to that folder when a command leaves the vault
+        (Claude Code 2.1.328 prints "Shell cwd was reset" then)."""
         run = Run("claude")
         calls: dict[str, ToolCall] = {}
         order: list[str] = []
@@ -473,10 +879,13 @@ class ClaudeAdapter(Adapter):
                         continue
                     data = item.get("input") or {}
                     tool = item.get("name", "")
+                    # only inputs that are a path, a command, a search pattern or a skill name: a free-text field
+                    # (an agent's `description`, a task's text) can restate the owner's request (22.5, D051)
                     target = data.get("file_path") or data.get("notebook_path") or data.get("command") or data.get("path") or \
-                        data.get("pattern") or data.get("skill") or data.get("description") or ""
+                        data.get("pattern") or data.get("skill") or ""
                     call = ToolCall(tool, relative(str(target), root, origin)
-                                    if tool in ("Read", "Write", "Edit", "NotebookEdit") else str(target), raw=str(target))
+                                    if tool in ("Read", "Write", "Edit", "NotebookEdit") else str(target), raw=str(target),
+                                    cwd=str(event.get("cwd") or ""))
                     calls[item.get("id", str(len(order)))] = call
                     order.append(item.get("id", str(len(order) - 1)))
             elif kind == "user":
@@ -513,9 +922,21 @@ class ClaudeAdapter(Adapter):
                 if not run.ok:
                     run.error = event.get("subtype", "error")
         run.tool_calls = [calls[i] for i in order if i in calls]
+        start = cwd or str(root)
+        shell = start
         for call in run.tool_calls:
             if call.tool == "Bash" and call.ran:
-                read, written, searches = files_from_shell(call.target, root, origin)
+                # A transcript records the shell's folder on each event: use it. A stream without it: carry the
+                # folder a command ends in to the next one, only when the command succeeded (D051).
+                here = call.cwd or shell
+                end: dict = {}
+                read, written, searches = files_from_shell(call.target, root, origin, here, end)
+                # Claude Code records the shell's folder only after a command that succeeded, and goes back to the
+                # session folder when one leaves the vault
+                after = end.get("cwd")
+                inside = after is not None and any(_inside(after, base) is not None for base in _bases(root, origin))
+                if call.result == "ok":
+                    shell = after if inside else start
                 for item in read:
                     _add(run.files_read, item)
                 for item in written:
@@ -529,7 +950,7 @@ class ClaudeAdapter(Adapter):
             elif call.result != "ok":
                 continue
             elif call.tool == "Read":
-                _add(run.files_read, call.target)
+                _add(run.files_read, relative(call.raw, root, origin, call.cwd or start) if call.raw else call.target)
             elif call.tool in ("Write", "Edit", "NotebookEdit"):
                 _add(run.files_written, call.target)
                 if call.raw and escapes(call.raw, root, origin, str(root)):
@@ -620,7 +1041,7 @@ def _is_local_only(root: Path, rel: str) -> bool:
         return False
     if v.is_local_only_path(root, rel):
         return True
-    return v.is_page_path(rel) and (root / rel).is_file() and v.load_page(root, root / rel).local_only
+    return v.is_page_path(rel) and os.path.isfile(os.path.join(root, rel)) and v.load_page(root, root / rel).local_only
 
 
 def local_only_reads(root: Path, files: list[str], origin: Path | None = None,
@@ -773,3 +1194,613 @@ def show(vault: Path, last: int = 20, skill: str | None = None) -> int:
         for line in format_record(record):
             print(line)
     return 0
+
+
+# ---------------------------------------------------------------------------- session import (22.6)
+#
+# `anybrain trace import` reads the transcripts Claude Code already keeps, once a session has ended, and stores
+# one record per question asked in it. Claude Code documents where the transcripts live and that their format is
+# internal and may change with any release (docs/decisions.md D049): a transcript this reader does not recognise
+# is reported, never recorded as an empty run.
+
+SESSION_RETENTION_DAYS = 30  # Q21: raw session traces are kept 30 days, then only weekly aggregates
+WEEKLY_FILE = ".harness/traces/weekly.json"
+# Relative weights of token kinds, used only to share a cost the harness measured between the questions of one
+# session (base input = 1). Totals are never computed from them (D049).
+TOKEN_SHARES = {"input_tokens": 1.0, "cache_read_input_tokens": 0.1, "output_tokens": 5.0}
+CACHE_WRITE_SHARES = {"ephemeral_5m_input_tokens": 1.25, "ephemeral_1h_input_tokens": 2.0}
+MODEL_USAGE_KEYS = {"inputTokens": "input_tokens", "cacheReadInputTokens": "cache_read_input_tokens",
+                    "outputTokens": "output_tokens", "cacheCreationInputTokens": "cache_creation_input_tokens"}
+
+
+def claude_projects() -> Path:
+    """Where Claude Code keeps its transcripts: `~/.claude/projects`, or under `CLAUDE_CONFIG_DIR` when set."""
+    return Path(os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude").expanduser() / "projects"
+
+
+def project_dir_name(path: str) -> str:
+    """Claude Code's folder name for a working directory: every character that is not an ASCII letter or digit
+    becomes `-`, counted in UTF-16 units as JavaScript does, so an emoji gives two; a name longer than 200
+    characters is cut and gets a hash of the full path."""
+    return "".join(c if c.isascii() and c.isalnum() else "-" * (2 if ord(c) > 0xFFFF else 1) for c in path)
+
+
+def _vault_forms(vault: Path) -> list[str]:
+    forms = []
+    for form in (os.path.normpath(os.path.abspath(vault)), os.path.realpath(vault)):
+        if form not in forms:
+            forms.append(form)
+    return forms
+
+
+def session_files(vault: Path) -> list[Path]:
+    """Transcripts that may belong to the vault: in a folder named after it or after a folder inside it, or in
+    any folder whose sessions were opened inside it (a name Claude Code shortened with a hash, a path written in
+    another Unicode form). Each session's first `cwd` then decides (`Session.origin`)."""
+    projects = claude_projects()
+    if not projects.is_dir():
+        return []
+    names = [project_dir_name(form) for form in _vault_forms(vault)]
+    found = []
+    for folder in sorted(projects.iterdir()):
+        if not folder.is_dir():
+            continue
+        files = sorted(folder.glob("*.jsonl"))
+        named = any(folder.name == n or folder.name.startswith(n + "-")
+                    or (len(n) > 200 and folder.name.startswith(n[:200])) for n in names)
+        if named or any(_in_vault(_first_cwd(path), vault) for path in files[-1:]):
+            found.extend(files)
+    return found
+
+
+def _first_cwd(path: Path, limit: int = 65536) -> str:
+    """The folder a session was opened in: the first `cwd` of its transcript, read from its beginning only."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            head = handle.read(limit)
+    except OSError:
+        return ""
+    for line in head.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get("cwd"):
+            return str(event["cwd"])
+    return ""
+
+
+def _in_vault(cwd: str, vault: Path) -> bool:
+    import unicodedata
+
+    if not cwd:
+        return False
+    forms = [os.path.normpath(cwd)]
+    if os.path.exists(cwd):
+        forms.append(os.path.realpath(cwd))
+    bases = _vault_forms(vault)
+    forms = [unicodedata.normalize("NFC", f) for f in forms]
+    bases = [unicodedata.normalize("NFC", b) for b in bases]
+    return any(_inside(form, base) is not None for form in forms for base in bases)
+
+
+def _events(path: Path) -> list[dict]:
+    events = []
+    try:
+        text = v.read_text(path)
+    except (OSError, UnicodeDecodeError):
+        return events
+    for line in text.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict):
+            events.append(event)
+    return events
+
+
+def _is_prompt(event: dict) -> bool:
+    """A message from the owner (or the harness on their behalf) that starts a question, not a tool result."""
+    if event.get("type") != "user" or event.get("isSidechain") or event.get("isMeta") or event.get("isCompactSummary"):
+        return False
+    content = (event.get("message") or {}).get("content")
+    if isinstance(content, str):
+        return bool(content.strip())
+    kinds = {item.get("type") for item in content if isinstance(item, dict)} if isinstance(content, list) else set()
+    return bool(kinds) and "tool_result" not in kinds
+
+
+def _stamp(value) -> _dt.datetime | None:
+    try:
+        stamp = _dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return stamp if stamp.tzinfo else stamp.replace(tzinfo=_dt.timezone.utc)
+
+
+def _weight(usage: dict) -> float:
+    weight = sum(float(usage.get(key) or 0) * share for key, share in TOKEN_SHARES.items())
+    split = usage.get("cache_creation") or {}
+    written = 0.0
+    for key, share in CACHE_WRITE_SHARES.items():
+        weight += float(split.get(key) or 0) * share
+        written += float(split.get(key) or 0)
+    return weight + max(0.0, float(usage.get("cache_creation_input_tokens") or 0) - written) * 1.25
+
+
+@dataclass
+class Turn:
+    """One question in a session: the owner's prompt and everything the agent did until the next one."""
+
+    key: str
+    first: int
+    last: int = 0
+    events: list[dict] = field(default_factory=list)
+    cwd: str = ""
+    version: str = ""
+    started: _dt.datetime | None = None
+    ended: _dt.datetime | None = None
+    messages: dict = field(default_factory=dict)  # message id -> (event index, model, usage)
+    subagents: list[list[dict]] = field(default_factory=list)
+    cost: float = 0.0
+    cost_shared: bool = False  # the session's measured cost was shared with other questions by tokens
+
+    def note(self, index: int, event: dict) -> None:
+        self.events.append(event)
+        self.last = index
+        stamp = _stamp(event.get("timestamp"))
+        if stamp:
+            self.started = self.started or stamp
+            self.ended = stamp
+        self.cwd = self.cwd or str(event.get("cwd") or "")
+        self.version = self.version or str(event.get("version") or "")
+        if event.get("type") == "assistant":
+            message = event.get("message") or {}
+            key = message.get("id") or event.get("requestId") or event.get("uuid") or f"{index}"
+            if key not in self.messages and isinstance(message.get("usage"), dict):
+                self.messages[key] = (index, str(message.get("model") or ""), message["usage"])
+
+
+@dataclass
+class Session:
+    path: Path
+    session_id: str
+    turns: list[Turn]
+    checkpoints: list[tuple[int, float, dict]]  # (event index, cumulative cost, model usage)
+    recognised: bool  # the reader found the events it knows; False means the format changed
+    origin: str = ""  # the folder the session was opened in: it decides whether the session is the vault's
+
+    @property
+    def closed_at(self) -> int:
+        """Index of the last cost checkpoint: the questions before it are finished and their cost is written."""
+        return self.checkpoints[-1][0] if self.checkpoints else -1
+
+
+def read_session(path: Path) -> Session:
+    events = _events(path)
+    turns: list[Turn] = []
+    checkpoints: list[tuple[int, float, dict]] = []
+    current: Turn | None = None
+    tool_turn: dict[str, tuple[int, int]] = {}  # Agent tool_use id -> (turn index, event index)
+    session_id = path.stem
+    known = 0
+    origin = ""
+    for index, event in enumerate(events):
+        kind = event.get("type")
+        # the folder the session was opened in: a branched session's copies hold the original's (D052)
+        origin = origin or (str(event.get("cwd") or "") if kind in ("user", "assistant", "attachment") else "")
+        if event.get("forkedFrom"):
+            known += kind in ("user", "assistant")  # a known format, though only copies so far
+            continue  # copied from the session it was branched from, which holds the original (D051)
+        session_id = str(event.get("sessionId") or session_id)
+        if kind == "cost-state":
+            cost = event.get("totalCostUSD")
+            if isinstance(cost, (int, float)):
+                checkpoints.append((index, float(cost), event.get("modelUsage") or {}))
+                known += 1
+            continue
+        if kind not in ("user", "assistant"):
+            continue
+        known += 1
+        prompt_id = event.get("promptId")
+        if _is_prompt(event) and (current is None or not prompt_id or prompt_id != current.key):
+            current = Turn(str(prompt_id or f"turn-{len(turns) + 1}"), index)
+            turns.append(current)
+        if current is None:
+            continue
+        current.note(index, event)
+        if kind == "assistant":
+            for item in (event.get("message") or {}).get("content") or []:
+                if isinstance(item, dict) and item.get("type") == "tool_use" and item.get("name") in ("Agent", "Task"):
+                    tool_turn[str(item.get("id"))] = (len(turns) - 1, index)
+    folder = path.with_suffix("") / "subagents"
+    by_prompt = {turn.key: i for i, turn in enumerate(turns)}
+    # agents started by a tool call, and agents of a workflow (`subagents/workflows/<run>/`), at any depth (D052)
+    for sub in sorted(folder.rglob("agent-*.jsonl")) if folder.is_dir() else []:
+        sub_events = [e for e in _events(sub) if e.get("type") in ("user", "assistant") and not e.get("forkedFrom")]
+        if not sub_events or not turns:
+            continue
+        meta = {}
+        meta_path = sub.with_name(sub.stem + ".meta.json")
+        if meta_path.is_file():
+            try:
+                meta = json.loads(v.read_text(meta_path))
+            except ValueError:
+                meta = {}
+        owner = tool_turn.get(str(meta.get("toolUseId") or ""))
+        prompt_id = next((str(e.get("promptId")) for e in sub_events if e.get("promptId")), "")
+        if owner is None and prompt_id in by_prompt:  # a workflow agent carries the prompt that launched it
+            owner = (by_prompt[prompt_id], turns[by_prompt[prompt_id]].first)
+        if owner is None:  # no link to the call that started it: the question that was running when it began
+            begun = _stamp(sub_events[0].get("timestamp"))
+            candidates = [i for i, t in enumerate(turns) if begun and t.started and t.started <= begun]
+            owner = (candidates[-1] if candidates else len(turns) - 1, turns[candidates[-1] if candidates else -1].first)
+        turn = turns[owner[0]]
+        turn.subagents.append(sub_events)
+        for event in sub_events:
+            if event.get("type") == "assistant":
+                message = event.get("message") or {}
+                key = message.get("id") or event.get("requestId") or event.get("uuid")
+                if key and key not in turn.messages and isinstance(message.get("usage"), dict):
+                    turn.messages[key] = (owner[1], str(message.get("model") or ""), message["usage"])
+    session = Session(path, session_id, turns, checkpoints, recognised=known > 0, origin=origin)
+    _share_costs(session)
+    return session
+
+
+def _unit_prices(model_usage: dict) -> dict[str, float]:
+    """Cost per unit of token weight for each model, from the harness's own totals."""
+    prices = {}
+    for model, totals in (model_usage or {}).items():
+        if not isinstance(totals, dict) or not isinstance(totals.get("costUSD"), (int, float)):
+            continue
+        usage = {ours: totals.get(theirs) or 0 for theirs, ours in MODEL_USAGE_KEYS.items()}
+        usage["cache_creation"] = {"ephemeral_5m_input_tokens": totals.get("cacheCreationEphemeral5mInputTokens") or 0,
+                                   "ephemeral_1h_input_tokens": totals.get("cacheCreationEphemeral1hInputTokens") or 0}
+        weight = _weight(usage)
+        if weight > 0:
+            prices[model] = float(totals["costUSD"]) / weight
+    return prices
+
+
+def _share_costs(session: Session) -> None:
+    """Give each finished question its part of the cost Claude Code measured.
+
+    Claude Code writes the session's running total at checkpoints (when a session ends, among others). The cost
+    between two checkpoints is exact; when several questions fall between them it is shared by their token
+    usage, priced per model from the harness's own totals (D049).
+    """
+    if not session.checkpoints:
+        return
+    positions = [index for index, _, _ in session.checkpoints]
+    prices = _unit_prices(session.checkpoints[-1][2])
+    fallback = sum(prices.values()) / len(prices) if prices else 1.0
+    by_interval: dict[int, list[tuple[Turn, float]]] = {}
+    for turn in session.turns:
+        for index, model, usage in turn.messages.values():
+            interval = sum(1 for p in positions if p < index)
+            if interval < len(positions):
+                by_interval.setdefault(interval, []).append((turn, prices.get(model, fallback) * _weight(usage)))
+    previous = 0.0
+    for interval, (_, total, _) in enumerate(session.checkpoints):
+        spent = total - previous if total >= previous else total  # a lower total: the harness started a new count
+        previous = total
+        shares = by_interval.get(interval) or []
+        weight = sum(share for _, share in shares)
+        owners = {id(turn) for turn, _ in shares}
+        for turn, share in shares:
+            turn.cost += spent * (share / weight if weight > 0 else 1 / len(shares))
+            if len(owners) > 1:
+                turn.cost_shared = True
+
+
+def _local_model(vault: Path) -> str:
+    import tomllib
+
+    path = vault / v.MODELS_FILE
+    try:
+        data = tomllib.loads(v.read_text(path)) if path.is_file() else {}
+    except tomllib.TOMLDecodeError:
+        return ""
+    model = str(((data.get("profiles") or {}).get("local") or {}).get("model") or "")
+    return "" if model.startswith("<") else model
+
+
+def _turn_skill(turn: Turn) -> str | None:
+    for event in turn.events:
+        for item in (event.get("message") or {}).get("content") or [] if event.get("type") == "assistant" else []:
+            if isinstance(item, dict) and item.get("type") == "tool_use" and item.get("name") == "Skill":
+                skill = (item.get("input") or {}).get("skill")
+                if skill:
+                    return str(skill)
+    counts: dict[str, int] = {}
+    for event in turn.events:
+        if event.get("type") == "assistant" and event.get("attributionSkill"):
+            counts[str(event["attributionSkill"])] = counts.get(str(event["attributionSkill"]), 0) + 1
+    return max(sorted(counts), key=counts.get) if counts else None
+
+
+def _answer(turn: Turn) -> str:
+    text = ""
+    for event in turn.events:
+        if event.get("type") == "assistant" and not event.get("isSidechain"):
+            for item in (event.get("message") or {}).get("content") or []:
+                if isinstance(item, dict) and item.get("type") == "text" and item.get("text"):
+                    text = item["text"]
+    return text
+
+
+def _merge_run(run: Run, other: Run) -> None:
+    run.tool_calls.extend(other.tool_calls)
+    for key in ("files_read", "files_written", "files_searched", "escaped_writes"):
+        for item in getattr(other, key):
+            _add(getattr(run, key), item)
+    for search in other.searches:
+        if search not in run.searches:
+            run.searches.append(search)
+
+
+def turn_record(vault: Path, session: Session, turn: Turn, local_model: str) -> dict:
+    """The trace record of one finished question (22.5): no prompt, no answer, no file content."""
+    adapter = ClaudeAdapter()
+
+    def parse(events: list[dict]) -> Run:
+        return adapter.parse("\n".join(json.dumps(e) for e in events), vault, cwd=session.origin or turn.cwd or None)
+
+    run = parse(turn.events)
+    for sub_events in turn.subagents:
+        _merge_run(run, parse(sub_events))
+    models = [model for _, model, _ in turn.messages.values() if model and not model.startswith("<")]
+    main = [str((e.get("message") or {}).get("model") or "") for e in turn.events if e.get("type") == "assistant"]
+    main = [m for m in main if m and not m.startswith("<")] or models
+    run.model = max(sorted(set(main)), key=main.count) if main else ""
+    run.harness_version = turn.version
+    run.answer = _answer(turn)
+    cached = sum(int(u.get("cache_read_input_tokens") or 0) for _, _, u in turn.messages.values())
+    run.tokens = {
+        "input": sum(int(u.get("input_tokens") or 0) + int(u.get("cache_creation_input_tokens") or 0)
+                     for _, _, u in turn.messages.values()) + cached,
+        "output": sum(int(u.get("output_tokens") or 0) for _, _, u in turn.messages.values()),
+        "cached": cached,
+    }
+    pending = turn.last > session.closed_at
+    run.cost_usd = None if pending else turn.cost
+    if turn.started and turn.ended:
+        run.duration_ms = int((turn.ended - turn.started).total_seconds() * 1000)
+    profile = "local" if local_model and models and all(m == local_model for m in models) else "frontier"
+    started = (turn.started or _dt.datetime.now(_dt.timezone.utc)).astimezone(_dt.timezone.utc)
+    record = build_record(run, vault, profile, "session", started.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                          skill=_turn_skill(turn))
+    record["run_id"] = f"claude:{session.session_id}:{turn.key}"
+    record["cost_shared"] = turn.cost_shared and not pending
+    record["cost_pending"] = pending  # Claude Code has not written this question's cost yet: a later import does
+    del record["escaped_writes"]  # an eval measure: a session works in the real vault
+    return record
+
+
+def _trace_files(vault: Path) -> list[Path]:
+    return sorted((vault / TRACES_DIR).glob("*.jsonl"))
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    records = []
+    for line in v.read_text(path).splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(record, dict):
+            records.append(record)
+    return records
+
+
+def _write_jsonl(path: Path, records: list[dict]) -> None:
+    if records:
+        v.write_text(path, "".join(json.dumps(r, ensure_ascii=False, sort_keys=True) + "\n" for r in records))
+    elif path.exists():
+        path.unlink()
+
+
+def iso_week(day: _dt.date) -> str:
+    year, week, _ = day.isocalendar()
+    return f"{year}-W{week:02d}"
+
+
+def load_weekly(vault: Path) -> dict:
+    path = vault / WEEKLY_FILE
+    try:
+        data = json.loads(v.read_text(path)) if path.is_file() else {}
+    except ValueError as exc:
+        raise v.VaultError(f"{WEEKLY_FILE} is not valid JSON: {exc}") from exc
+    return data if isinstance(data, dict) and isinstance(data.get("weeks"), dict) else {"weeks": {}}
+
+
+def _median(values: list[int | float]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    return float(ordered[middle]) if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
+
+
+def aggregate(records: list[dict]) -> list[dict]:
+    """Weekly figures per skill, with no path in them (Q21). The number of files each run read is kept, so that
+    medians can be recomputed when rows are merged."""
+    rows: dict[str, list[dict]] = {}
+    for record in records:
+        rows.setdefault(str(record.get("skill") or "none"), []).append(record)
+    result = []
+    for skill in sorted(rows):
+        group = rows[skill]
+        costs = [r["cost_usd"] for r in group if isinstance(r.get("cost_usd"), (int, float))]
+        counts = sorted(len(r.get("files_read") or []) for r in group)
+        result.append({
+            "skill": skill,
+            "runs": len(group),
+            "cost_usd": round(sum(costs), 4) if costs else None,
+            "runs_with_cost": len(costs),
+            "tokens": {k: sum(int((r.get("tokens") or {}).get(k) or 0) for r in group) for k in ("input", "output", "cached")},
+            "files_read": counts,
+            "files_read_median": _median(counts),
+            "local_only_reads": sum(len(r.get("local_only_read_on_frontier") or []) for r in group),
+            "runs_with_local_only_reads": sum(1 for r in group if r.get("local_only_read_on_frontier")),
+            "denied": sum(len(r.get("denied") or []) for r in group),
+        })
+    return result
+
+
+def merge_rows(*groups: list[dict]) -> list[dict]:
+    """Rows of the same week per skill, summed. A row without its counts keeps its median only when alone."""
+    merged: dict[str, dict] = {}
+    for rows in groups:
+        for row in rows or []:
+            skill = str(row.get("skill") or "none")
+            if skill not in merged:
+                merged[skill] = {**row, "skill": skill, "tokens": dict(row.get("tokens") or {}),
+                                 "files_read": list(row.get("files_read") or [])}
+                continue
+            into = merged[skill]
+            for key in ("runs", "runs_with_cost", "local_only_reads", "runs_with_local_only_reads", "denied"):
+                into[key] = int(into.get(key) or 0) + int(row.get(key) or 0)
+            costs = [c for c in (into.get("cost_usd"), row.get("cost_usd")) if isinstance(c, (int, float))]
+            into["cost_usd"] = round(sum(costs), 4) if costs else None
+            for key in ("input", "output", "cached"):
+                into["tokens"][key] = int(into["tokens"].get(key) or 0) + int((row.get("tokens") or {}).get(key) or 0)
+            into["files_read"] = sorted(into["files_read"] + list(row.get("files_read") or []))
+            into["files_read_median"] = _median(into["files_read"])
+    return [merged[k] for k in sorted(merged)]
+
+
+def prune(vault: Path, today: _dt.date) -> int:
+    """Drop session records older than the retention, adding each one to its week's totals first (Q21)."""
+    cutoff = today - _dt.timedelta(days=SESSION_RETENTION_DAYS)
+    files = {path: _read_jsonl(path) for path in _trace_files(vault)}
+
+    def day(record: dict) -> _dt.date | None:
+        return v.as_date(str(record.get("started") or "")[:10])
+
+    expired = [r for records in files.values() for r in records
+               if r.get("trigger") == "session" and (day(r) or today) < cutoff]
+    if not expired:
+        return 0
+    weekly = load_weekly(vault)
+    by_week: dict[str, list[dict]] = {}
+    for record in expired:
+        by_week.setdefault(iso_week(day(record) or today), []).append(record)
+    for week, records in by_week.items():
+        weekly["weeks"][week] = merge_rows(weekly["weeks"].get(week) or [], aggregate(records))
+    weekly["weeks"] = dict(sorted(weekly["weeks"].items()))
+    v.write_text(vault / WEEKLY_FILE, json.dumps(weekly, indent=1, sort_keys=True) + "\n")
+    gone = {id(r) for r in expired}
+    for path, records in files.items():
+        kept = [r for r in records if id(r) not in gone]
+        if len(kept) != len(records):
+            _write_jsonl(path, kept)
+    return len(expired)
+
+
+STALE_HOURS = 24  # a last question with no cost after this long: a session killed, or left open
+
+
+def import_sessions(vault: Path, since: _dt.date | None = None) -> int:
+    """`anybrain trace import`: store the questions of Claude Code sessions opened in the vault.
+
+    A question is stored once the session has moved past it, once its transcript has been still for a day, or
+    at once when it read a local-only file on the frontier profile. Until Claude Code writes the session's cost,
+    the record says `cost_pending` and a later import rebuilds it (D051).
+    """
+    from . import install
+
+    harnesses = list((install.load_models(vault).get("harnesses") or {"claude": {}}).keys())
+    for name in harnesses:
+        if name != "claude":
+            print(f"{name}: no transcript reader yet; only Claude Code sessions are imported (D041)")
+    if "claude" not in harnesses:
+        return 0
+    today = v.today()
+    cutoff = today - _dt.timedelta(days=SESSION_RETENTION_DAYS)
+    files = {path: _read_jsonl(path) for path in _trace_files(vault)}
+    where = {str(r.get("run_id")): (path, i) for path, records in files.items() for i, r in enumerate(records)}
+    local_model = _local_model(vault)
+    now = _dt.datetime.now(_dt.timezone.utc).timestamp()
+    imported = updated = already = old = pending = running = 0
+    sessions_seen: set[str] = set()
+    stored: list[dict] = []
+    unknown: list[str] = []
+    exact = {project_dir_name(form) for form in _vault_forms(vault)}
+    elsewhere = 0
+    for path in session_files(vault):
+        session = read_session(path)
+        if not session.recognised:
+            unknown.append(path.name)
+            continue
+        if not _in_vault(session.origin, vault):
+            elsewhere += path.parent.name in exact  # in the vault's own folder, yet opened outside it
+            continue
+        try:
+            still = (now - path.stat().st_mtime) / 3600 >= STALE_HOURS
+        except OSError:
+            still = False
+        for number, turn in enumerate(session.turns):
+            if not turn.messages:
+                continue
+            day = (turn.started or _dt.datetime.now(_dt.timezone.utc)).astimezone(_dt.timezone.utc).date()
+            if since and day < since:
+                continue
+            if day < cutoff:
+                old += 1
+                continue
+            run_id = f"claude:{session.session_id}:{turn.key}"
+            found = where.get(run_id)
+            if found and not files[found[0]][found[1]].get("cost_pending"):
+                already += 1
+                continue
+            record = turn_record(vault, session, turn, local_model)
+            moved_on = number + 1 < len(session.turns)
+            if record["cost_pending"] and not (moved_on or still or record["local_only_read_on_frontier"]):
+                running += 1
+                continue
+            pending += bool(record["cost_pending"])
+            sessions_seen.add(session.session_id)
+            stored.append(record)
+            if found:
+                files[found[0]][found[1]] = None  # replaced below, in the month it belongs to
+                updated += 1
+            else:
+                imported += 1
+            where[run_id] = (None, None)
+    changed = {p for p, records in files.items() if any(r is None for r in records)}
+    for record in stored:
+        target = vault / TRACES_DIR / f"{record['started'][:7]}.jsonl"
+        files.setdefault(target, _read_jsonl(target) if target.is_file() else []).append(record)
+        changed.add(target)
+    for target in sorted(changed):
+        records = [r for r in files[target] if r is not None]
+        _write_jsonl(target, sorted(records, key=lambda r: (str(r.get("started")), str(r.get("run_id")))))
+    flagged = [r for r in stored if r.get("local_only_read_on_frontier")]
+    if flagged:
+        print(f"{len(flagged)} question(s) read a local-only file on the frontier profile:")
+        for record in flagged:
+            for line in format_record(record):
+                print(line)
+    print(f"imported {imported} question(s) from {len(sessions_seen)} Claude Code session(s)"
+          + (f"; {updated} updated" if updated else "") + (f"; {already} already imported" if already else ""))
+    if pending:
+        print(f"{pending} question(s) stored without their cost: Claude Code writes it when the session ends, and "
+              "the next import adds it")
+    if running:
+        print(f"{running} question(s) still running in an open session: stored once the session moves on")
+    if old:
+        print(f"{old} question(s) older than {SESSION_RETENTION_DAYS} days skipped (retention, section 22.5)")
+    if elsewhere:
+        print(f"{elsewhere} transcript(s) in the vault's own transcript folder record a session opened outside the "
+              "vault: skipped")
+    if unknown:
+        print(f"{len(unknown)} transcript(s) in a format this reader does not know: {', '.join(unknown[:5])}; "
+              "Claude Code may have changed it, check for an anybrain update")
+    pruned = prune(vault, today)
+    if pruned:
+        print(f"removed {pruned} question(s) older than {SESSION_RETENTION_DAYS} days; their weekly figures stay in "
+              f"{WEEKLY_FILE}")
+    return 1 if unknown else 0

@@ -17,6 +17,7 @@ Personal knowledge bases die of maintenance: filing, linking and indexing by han
 | Ask for a LinkedIn post on an idea you hold | Drafts it from your own pages, with a source comment after each claim and a placeholder for any story the vault does not hold; checks it against your banned words and keeps confidential pages out |
 | Edit the draft and publish it yourself | Keeps the final text, measures how much you changed, and logs your edits as voice corrections for future rules |
 | Switch model or harness | Runs your golden questions on it and compares the pass rate, the gates and what each run read and cost with a frozen baseline |
+| Ask what the agent did this week | `anybrain trace import` reads your finished sessions: files read, cost per skill, and any local-only file a frontier model read. `anybrain stats --dashboard` writes the figures to a page you read in Obsidian |
 
 ## Design principles
 
@@ -87,7 +88,7 @@ claude                      # or: opencode
 
 Then write your opinion under `## My take` in the new book page; that is the only part of the work that is yours.
 
-What works today: phases P0, P1 and the content phase P1b of [`PRD.md`](PRD.md), checked on Claude Code. Runs on OpenCode and a local model are deferred; the daily brief comes in phase 4.
+What works today: phases P0, P1 and the content phase P1b of [`PRD.md`](PRD.md), and the observability of phase 2 (session traces and the dashboard), all checked on Claude Code. Runs on OpenCode and a local model are deferred; the daily brief comes in phase 4.
 
 ## The skills
 

@@ -110,13 +110,20 @@ def _cmd_feedback(args: argparse.Namespace) -> int:
 def _cmd_trace(args: argparse.Namespace) -> int:
     from . import trace, vault
 
-    if len(args.args) == 1 and args.args[0] in ("show",):
+    actions = ("show", "import")
+    if len(args.args) == 1 and args.args[0] in actions:
         root, action = vault_arg(None), args.args[0]
-    elif len(args.args) == 2 and args.args[1] in ("show",):
+    elif len(args.args) == 2 and args.args[1] in actions:
         root, action = args.args
     else:
-        raise UsageError("usage: anybrain trace [vault] show [--last N] [--skill NAME]")
-    return trace.show(vault.resolve_vault(root), last=args.last, skill=args.skill)
+        raise UsageError("usage: anybrain trace [vault] {show [--last N] [--skill NAME], import [--since DATE]}")
+    root = vault.resolve_vault(root)
+    if action == "import":
+        since = vault.as_date(args.since) if args.since else None
+        if args.since and since is None:
+            raise UsageError(f"--since needs a date as YYYY-MM-DD, not {args.since!r}")
+        return trace.import_sessions(root, since=since)
+    return trace.show(root, last=args.last, skill=args.skill)
 
 
 def _cmd_eval(args: argparse.Namespace) -> int:
@@ -160,7 +167,7 @@ def _cmd_content(args: argparse.Namespace) -> int:
 def _cmd_stats(args: argparse.Namespace) -> int:
     from . import stats, vault
 
-    return stats.run(vault.resolve_vault(vault_arg(args.vault)), weeks=args.weeks)
+    return stats.run(vault.resolve_vault(vault_arg(args.vault)), weeks=args.weeks, dashboard=args.dashboard)
 
 
 def _not_built(step: str):
@@ -229,9 +236,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("file")
     p.set_defaults(func=_cmd_anonymize)
 
-    p = sub.add_parser("stats", help="Usage counts from log.md per week and per skill")
+    p = sub.add_parser("stats", help="Usage counts, session costs and local-only reads per week; --dashboard")
     p.add_argument("vault", nargs="?")
     p.add_argument("--weeks", type=int, default=4, help="number of weeks to show (default 4)")
+    p.add_argument("--dashboard", action="store_true", help="write journal/dashboard.md for Obsidian instead")
     p.set_defaults(func=_cmd_stats)
 
     p = sub.add_parser("migrate", help="Snapshot a legacy vault and check that the owner's text survived")
@@ -253,10 +261,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--golden", metavar="FILE", help="golden set to use instead of .harness/golden.yaml")
     p.set_defaults(func=_cmd_eval)
 
-    p = sub.add_parser("trace", help="Print recent run traces: files read and written, tokens, cost, local-only reads")
-    p.add_argument("args", nargs="+", metavar="[vault] show")
+    p = sub.add_parser("trace", help="Print run traces, or import finished sessions as run traces")
+    p.add_argument("args", nargs="+", metavar="[vault] {show,import}")
     p.add_argument("--last", type=int, default=20, help="number of runs to show (default 20)")
     p.add_argument("--skill", metavar="NAME", help="only runs of this skill")
+    p.add_argument("--since", metavar="DATE", help="import only questions asked on or after this date (import)")
     p.set_defaults(func=_cmd_trace)
 
     for name, (summary, step) in PLANNED.items():
@@ -276,10 +285,18 @@ def main(argv: list[str] | None = None) -> int:
     from .vault import VaultError
 
     try:
-        return args.func(args)
+        code = args.func(args)
+        sys.stdout.flush()  # inside the try, so that a closed pipe on the last buffered lines is caught too
+        return code
     except (UsageError, VaultError) as exc:
         print(f"anybrain: error: {exc}", file=sys.stderr)
         return 2
+    except BrokenPipeError:
+        # The reader closed the pipe (`anybrain stats | head`): stop quietly. Pointing stdout at /dev/null
+        # keeps Python from raising again when it flushes stdout on exit.
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
+        return 1
 
 
 if __name__ == "__main__":

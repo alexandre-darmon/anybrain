@@ -590,3 +590,221 @@ Format: `D<number> · <title>`, with the build step and the PRD sections involve
     - accepts CSV files in `company/` and `finance/`;
     - refuses a linked folder;
     - exempts hand-written `index.md` files only at the root and in domain folders.
+
+## D048 · Step 13: release 0.1.0
+
+- **Acceptance.** CI is green on Python 3.11 and 3.12. `init` passes on a fresh macOS runner with an empty home, installed the way an owner installs it (D041). The version is 0.1.0, merged to `main` in pull request #4.
+- **The tag.** The build session could not push the `v0.1.0` tag: its git proxy accepts pushes to the working branch only and cut the tag push off. The owner creates the tag and the release on GitHub, on the merge commit of pull request #4, with the notes the session prepared.
+
+## D049 · Observability built early: session traces and the dashboard (22.6, 22.7)
+
+- **Owner request, 2026-11-19:** "attaque l'observabilité", before step 18 and the 4-week measure that P2 waits for (Q40).
+- **Checked in the official Claude Code docs** (Q6), 2026-11-19:
+  - Transcripts are kept at `~/.claude/projects/<project>/<session-id>.jsonl`. `<project>` is the working directory with every character that is not a letter or a digit replaced by `-`; a name over 200 characters is cut and gets a hash. `CLAUDE_CONFIG_DIR` moves the whole folder. Subagent transcripts sit in `<session-id>/subagents/agent-<id>.jsonl`.
+  - Claude Code deletes transcripts older than `cleanupPeriodDays`: 30 days by default, minimum 1, and 0 is refused. The weekly `lint` imports them well before that.
+  - "The entry format is internal to Claude Code and changes between versions." The supported alternatives are `-p` with JSON output (used by `anybrain eval`), hooks, the Agent SDK and OpenTelemetry. PRD 22.6 rules out hooks and daemons, and the SDK is not a dependency. So `anybrain trace import` reads the transcripts and fails loudly: a transcript in which it finds none of the events it knows is reported and exits 1, never stored as an empty run.
+- **What a transcript holds, measured on 63 real sessions of Claude Code 2.1.327 and 2.1.328** (eval cases, migration and skill runs of this build):
+  - one event per line, `promptId` on the owner's messages, `cwd` and `version` on each event;
+  - `usage` on each model message, repeated on every content block of that message;
+  - `attributionSkill` on model messages while a skill runs;
+  - `cost-state` checkpoints with the session's running total.
+  Summed once per message, the tokens equal the totals of the checkpoint exactly, subagents included.
+- **One record per question (Q41).** A question is the owner's message and everything until the next one. Files read, tool calls, denials and local-only reads come from the same adapter as eval traces (22.5). A subagent's work counts for the question whose tool call started it.
+- **Cost (Q41).** The harness's own figures only. Checkpoints are written when a session ends, among other times, so a question is imported once a checkpoint follows it. Between two checkpoints the cost is exact. When several questions fall between them, the cost is shared by token usage, priced per model from the checkpoint's own totals, and the record says `cost_shared: true`.
+  - The shares use the public ratios of token kinds: cache read 0.1, 5-minute cache write 1.25, 1-hour write 2, output 5, against base input 1.
+  - Fitted on the 63 sessions, the real ratios were 0.05 for cache reads and as listed for the rest. This moves the split between questions a little, never a session's total.
+- **Open sessions** (changed by D051). A question after the last checkpoint waits: Claude Code writes its cost when the session ends. Its local-only reads are checked at once and printed, so one never waits a week to be seen.
+- **Skill (Q42).** The skill the agent invoked in that question, else the one Claude Code attributes to most of its messages, else none. A follow-up question that does not invoke the skill again has none: Claude Code does not attribute it, and anybrain does not guess.
+- **Profile.** A question is on the local profile only when every model it used is the local model of `models.toml`; otherwise it is frontier, so local-only reads are counted.
+- **Matching the vault** (changed by D051). Folder names only narrow the search; the `cwd` of each event decides, so `brain-legacy` is not taken for `brain`. A session opened in a folder of the vault counts, with its shell commands read from that folder. Eval cases run in copies outside the vault and are never imported twice.
+- **The shell folder** (changed by D051) now carries from one command to the next in the Claude Code adapter, as it does in Claude Code, and goes back to the session folder when a command leaves the vault (Claude Code 2.1.328 prints "Shell cwd was reset" then). This applies to eval traces too: `cd company` then `cat q3.md` is a read of `company/q3.md`.
+- **Retention (Q21, changed by D051).** `trace import` deletes session records older than 30 days and keeps weekly totals per skill in `.harness/traces/weekly.json`: runs, cost, tokens, median files read, local-only reads, denials, no path. A week is summed once, when its first record expires; by then the week is over. Questions older than 30 days are not imported.
+- **`anybrain stats`** adds, from session records only: local-only files read on the frontier profile (target 0), cost and median files read per skill and per week, the median files read per `ask` against the target of 8, and how many asks said a different `files opened` than measured (section 6).
+- **`anybrain stats --dashboard`** writes `journal/dashboard.md`:
+  - local-only reads first, from sessions and eval runs;
+  - cost per skill and per week, files read per ask, the last 5 eval runs with pass rate per tag and gates;
+  - graph figures, usage from `log.md`, pending rule proposals.
+  Tables and text bars only. It starts with the generated header of 14.3, which the PRD names, and refuses a hand-written page or a link. It is not a vault page, so `lint` and the indexes leave it alone.
+- **`templates/obsidian/dashboard-vault.md`** holds the Dataview queries of 22.7, with full frontmatter, so it passes `lint` once the owner copies it into `journal/`.
+- **The `lint` skill** runs `anybrain trace . import`, `anybrain stats . --dashboard` and `anybrain stats .` each week, one at a time and in that order, and copies the session lines of the last one into its report. A local-only read also goes under "needs the owner", to be explained in `journal/` (22.6 exit criterion).
+- **Real run.** Four questions from three real transcripts (a draft, a lint with a subagent, a two-question migration), pointed at a copy of `vault.example`. Second import: nothing new. Costs 0.61 and 0.46 USD add up to the session's 1.07 USD. The follow-up migration question has no skill, as Claude Code records it. Its recursive search counts every local-only file under the vault root as read, the conservative rule of D036.
+- **Not built:** a transcript reader for OpenCode (D041).
+
+## D050 · Independent check of the D047 fixes
+
+After the release, a fresh review tried to break the fixes of D047 (commit 75f3323). Each finding was then reproduced from scratch by a second agent, against 75f3323 and the commit before it. All 13 were confirmed. One is high: a draft built from a mission page could reach `ready`. All are fixed with regression tests (`tests/test_content.py`, `tests/test_install.py`).
+
+- **Sources in `src` comments (high).** D047 stopped splitting items on spaces, so a whole item that started with a URL was dropped, with the vault path after it (`<!-- src: https://... projects/acme-mission.md -->`).
+  - URLs are now removed from the comment before it is split, so the rest is still read.
+  - An item that does not resolve as a whole is tried word by word. Every word that resolves is a source, so `projects/acme-mission.md (Decisions)` names the mission page again. A confidential source is an error at every status, never downgraded to "not found".
+- **The notes' "Sources used" line.**
+  - A bare page name (`acme-mission`) is checked when it resolves and ignored when it does not, so prose never blocks `ready`.
+  - Words with a slash count as paths only when they start with a vault folder or end in `.md`, so `80/20`, `and/or` or `My take/Timeline` are prose.
+  - A nested list indented with a tab, and a top-level list right under a label alone on its line (`**Sources used:**`), are read.
+- **Placeholders.** The check matches the opening `[YOUR STORY` or `[YOUR NUMBER` again (PRD 15.4), even when the agent wraps the hint over lines or never closes it. Only the text of a link to a URL, an anchor or a file is left out. `[YOUR NUMBER](%)` counts.
+- **Client names.** Markdown escapes are removed before the search, so `E\*Trade` matches `E*Trade`. `lint --secrets` uses the same text.
+- **`content/ideas.md`.**
+  - Trailing punctuation is removed from words, so `raw/docs/contract.md.` resolves.
+  - Bare file names (`acme-mission.md`) are checked again.
+  - A path in a local-only folder counts even when the file does not exist or its name holds a space, through links with `<...>` targets and the routing of the words before the space.
+- **Edit ratio.** When a long changed passage shares no word with the other side, refining it again gave the same input: `_changed` recursed until Python stopped it, and `content diff` crashed. Such a passage now counts as fully changed.
+- **The init guard.**
+  - Pages shaped like anybrain's are exempt only in a folder that shows an earlier anybrain vault: `.harness/graph.json`, or an `index.md` that starts with the generated header. Such a page also needs every common field of 11.1.
+  - Without that evidence, files under `raw/` and CSV files are foreign, as before D047.
+  - A linked file is foreign, like a linked folder. The root `CLAUDE.md` link is the only exception.
+- **`me/voice.md` routing.** `update` and `doctor` print a note when the vault's routing still keeps `me/voice.md` local while `AGENTS.md` and the skills say every model reads it. The owner's routing is never rewritten. The comment in `models.example.toml` no longer tells the owner to add a line that is already there.
+- **Not a finding, found while fixing.** Claude Code's `Grep` tool is not counted as a read in a trace; only `Read` and shell commands are. Whether its results skip denied files has not been measured. It is left as it was and listed for a later check.
+
+## D051 · Independent review of the observability and of D050
+
+A fresh review of commits a2b9546 to 63b02e9 (session import, dashboard, D050) found 18 defects. A second agent reproduced each one from scratch, and all 18 were confirmed; 5 are high. All are fixed with regression tests (`tests/test_trace_import.py`, `tests/test_dashboard.py`, `tests/test_content.py`, `tests/test_install.py`). A live run of the `lint` skill also found a wrong command in the skill itself.
+
+- **The shell's folder (high, 3 findings).**
+  - D049 simulated it from `cd` commands. A `cd` that failed still moved the simulation, and a command that left the vault reset it to the question's folder, not the session's. Reads at the vault root were missed, in session traces and in eval traces.
+  - Claude Code writes the shell's folder on every transcript event, so a session trace now reads it there.
+  - An eval stream has no such field: the folder carries to the next command only when the command succeeded.
+  - Within one command, every path is also read from the folder the command started in, as if each `cd` had failed. A read too many is better than one missed.
+- **Which sessions belong to the vault (high, 2 findings).**
+  - A question was kept only when its own folder was in the vault. A `cd` into a folder added to the session dropped the next question silently, with its local-only reads and its cost. Now the folder the session was opened in decides, and every question of that session counts.
+  - Claude Code names transcript folders in JavaScript, counting UTF-16 units, so an emoji in the vault path gives two dashes. anybrain counted one, and found no session at all. It now counts the same way.
+  - A folder whose name does not match (a path Claude Code cut and hashed, another Unicode form) is also found by the first `cwd` of its newest transcript.
+- **Sessions that never write their cost (medium).** A session killed or crashed writes no checkpoint, so its questions were never stored. A question is now stored when:
+  - the session has moved past it;
+  - its transcript has been still for 24 hours;
+  - or, at once, it read a local-only file on the frontier profile.
+  Until Claude Code writes the cost, the record has `cost_usd: null` and `cost_pending: true`, and each import rebuilds it. A record whose cost is known never changes.
+- **Branched sessions (medium).** A session branched from another copies its events, marked `forkedFrom`. Those copies were imported again under the new session's id. They are now skipped: the original session holds them.
+- **Free text in records (medium).** The target of a tool call fell back to its `description`. A task or an agent call can restate the owner's request there, which 22.5 keeps out of traces. A target is now only a path, a command, a search pattern or a skill name; any other tool keeps its name with an empty target.
+- **Weekly totals.**
+  - A week was summed once, when its first record expired, so a question imported later in that week was lost. Each record is now added to its week's totals when it expires.
+  - The totals keep the number of files each run read, with no path, so medians are recomputed when totals and records still on disk are merged.
+  - `stats` and the dashboard show both, so a dated local-only read stays listed until its own record expires.
+- **Dashboard.**
+  - The second eval run of a day (`-2.json`) sorted before the first, so the dashboard showed stale gates. Runs now sort by date, then by run number.
+  - A gate that does not apply (`pass: null`) showed as failed. It now shows `n/a` and is left out of the count.
+- **`journal/dashboard.md` and hand-written pages.** That path was taken out of the pages in every vault, so an owner's own page there lost its links. It is now generated only while it starts with the generated header. `init` accepts a copy of `vault.example` that already holds a generated dashboard.
+- **Content checks.**
+  - **High.** With D050's word-by-word reading, `company/Q3 numbers.csv wiki/...md` resolved through its second word only, so the confidential file passed at `ready`. Now every word that reads as a path and does not resolve fails closed. A path written in `company/` or `finance/` is reported as confidential whether or not it resolves.
+  - **Unclosed placeholders.** An unclosed `[YOUR STORY` borrowed the `](` of a later link and was taken for link text. The placeholder's own bracket must now close straight into `(`, with no `[` in between.
+  - **Prose on the "Sources used" line.** Plain words such as "decisions" or "admin" matched confidential pages and blocked a legitimate draft. Only names shaped like page names are checked: kebab-case with a hyphen, or in backticks.
+  - **Client names.** Every Markdown escape of ASCII punctuation (`AT\&T`, `O\'Brien`) is removed before the search, as CommonMark renders them.
+- **`me/voice.md` note.** When the routing already has a `me/voice.md` line, the note says to change it. Adding a second one breaks the TOML.
+- **The live `lint` run** (Claude Code 2.1.328, 0.58 USD, on an initialised copy of `vault.example` with a planted finished session):
+  - The skill said `anybrain trace import .`, but the command is `anybrain trace . import`. The agent recovered, but its chained command had already written the dashboard before the import, and it had run `stats` earlier for the content lines, so its run-trace section was empty.
+  - The skill now asks for three commands, one at a time and in order.
+  - The import itself stored the finished session's question and held back the running session's own.
+  - A second live run with the corrected skill (0.53 USD) ran `anybrain trace . import`, `anybrain stats . --dashboard` and `anybrain stats .` in that order. It stored the planted question, held back its own running session, and wrote a dashboard with the draft's cost. The report's run-trace section listed 0 local-only reads, the cost per skill and the missing `ask` runs.
+
+## D052 · Check of the D051 fixes
+
+A third review checked commit 9787d74 from three angles: the import, the content and stats code, and each D051 fix rerun against its original reproduction plus variants. It found 22 defects; a second agent reproduced each one, and all 22 were confirmed. Merged, they are 14 distinct defects. Some predate D051 (long words, workflow agents, here-document bodies, links with parentheses). All are fixed with regression tests.
+
+- **Sources are now also read as text (high).** Fixing source forms one at a time left a new form open each round: `./company/...`, `/company/...`, `Company/...`, `Q3 numbers.csv` without its folder, a wikilink or a relative link inside a longer item. Resolution stays as it was. In addition, every declared source and every line of the notes' "Sources used" is scanned as text:
+  - a path written in `company/` or `finance/` in any form (after a space, a bracket, a quote, `./`, `/` or another folder), in any case, is an error, whether or not it resolves;
+  - so is the file name, with its extension, of any file in `company/` or `finance/`, or of any confidential or mission page.
+
+  This fails closed: a draft whose source line says "not the company/ data" is blocked too.
+  - The links inside a longer item are resolved one by one.
+  - Only words shaped like a path or a page name are tried, and one that does not resolve fails closed.
+  - A path in a confidential folder is an error at every status.
+  - `[[Acme Plan]]` left unquoted in YAML is a nested list, and is read as the wikilink it is.
+- **The shell's folder, again (high).**
+  - A recursive search after a failed `cd` was dropped: the start-folder pass now keeps searches too.
+  - `cd a || cd b` runs one or the other. Every path in a command is now read from each folder its `cd`s could reach, each one working or not (at most 32 folders): the start, `a`, `b` and `a/b`.
+  - In an eval stream, a folder carries to the next command only when it exists. Since that is still a guess, each command is also read from the start folder.
+- **Long words crashed the import and evals (high).** A shell word longer than a file name may be, such as a sentence in a here-document or a commit message, made pathlib raise `File name too long`. The import stopped, and kept stopping on that transcript. File checks now use `os.path.isfile` and `os.path.isdir`, which answer no.
+- **Workflow agents (high).**
+  - Claude Code 2.1.328 writes them under `subagents/workflows/<run>/`, with no link to a tool call. Their reads were never traced.
+  - Subagent transcripts are now read at any depth. A workflow agent counts for the question whose `promptId` it carries.
+- **Branched sessions.**
+  - A branch made while the shell sat outside the vault took its origin from its own first event, and was dropped. The copies it holds record where the original session was opened, so they now set the origin. They are still skipped for questions and costs.
+  - A branch holding only copies is a known format, not an unknown one.
+  - A transcript in the vault's own folder whose session was opened elsewhere is reported, not skipped silently.
+- **Here-document bodies in records.** A stored shell command held the whole text it wrote: a page, a report. A stored command now has each here-document body replaced by its line count, and is cut at 500 characters. Reads and writes are still found in the full command.
+- **Dashboard.** An eval run that read a local-only file was listed only if it was among the last 5 runs. Every run in the window is now checked; the cut applies to the runs table only.
+- **Content checks, smaller.**
+  - Client names written with HTML entities (`AT&amp;T`, `O&#39;Brien`) are decoded before the search.
+  - A Markdown link to a URL with parentheses (Wikipedia's `Category_(marketing)`) is one external source.
+  - A placeholder with a hint in parentheses (`[YOUR NUMBER](hint: ...)`) counts: only a scheme with `//`, `mailto:`, an anchor, a path or a file name makes a real link.
+- **`me/voice.md` note.** Any `me/voice.md` line under [routing], even one ignored for an unknown profile, is now treated as existing, and the note says to set it.
+- **Stress run.** This build session's own transcript (182 MB with 605 subagent files, Claude Code 2.1.327 and 2.1.328), pointed at a copy of `vault.example`:
+  - it imported in 18 seconds, with no error: 34 questions;
+  - 4 waited for their cost, and the running one was held back;
+  - the longest stored command is 523 characters, with every here-document body replaced by its line count.
+
+## D053 · Check of the D052 fixes: shell commands read the way bash runs them
+
+A fourth review checked commit 32d50a9 from the same three angles. It found 22 defects, 21 confirmed. One of them, a SyntaxError on Python 3.11 (a backslash inside an f-string expression), was already fixed by 4a9b1e4 after CI caught it. The suite now also runs locally under Python 3.11 before each push. Several defects predate this branch: globs, `find -exec`, `xargs`, a `cd` after `if`.
+
+- **The shell's folder, decided rather than guessed.** D052 read each command from every folder its `cd`s could reach. That flagged reads that never happened, as `cat index.md && cd company` showed. It also still missed a `cd` behind `if`, `then`, `{` or `builtin`. Now:
+  - the keywords and wrappers in front of a command are skipped;
+  - a `cd`, `pushd` or `popd` moves the shell only to a folder that exists. A `cd` to a missing folder fails in bash and the shell stays put, so `cd a || cd b`, `test -d x && cd x`, a failed `cd` and `cd -` land where bash lands;
+  - a read before a `cd`, or after a subshell, stays in its own folder;
+  - in an eval stream the same rule decides what carries to the next command, and a command is read once, from its folder. The vault copy still exists when its output is parsed.
+- **What a command reads.**
+  - Globs and brace lists are expanded from the command's folder: `cat company/*.md`, `head company/{a,b}.md`, `for f in company/*.md`.
+  - `find ... -exec` and `... | xargs <reader>` count as a recursive search of the folders `find` starts from, or as reads of what the command before `xargs` names.
+  - Listing stays listing: `ls company/*.md` and `find company -name '*.md'` read nothing.
+- **What a stored command keeps (22.5).** Besides here-document bodies, a stored command no longer holds:
+  - what `echo` and `printf` print, such as the `log.md` line each skill appends, which restated the owner's request in three real eval runs;
+  - here-strings and an interpreter's `-c` code;
+  - any other quoted string over 40 characters that does not read as a path.
+  Each is replaced by its length. `<<\EOF` and quoted delimiters with spaces are here-documents too, so their bodies are neither stored nor read as commands.
+- **Content checks.**
+  - A `file://` or `obsidian://` URL is a local file: the path it points to is checked like any written path. Web URLs are left out of the text scan, so `linkedin.com/company/...` is an external page.
+  - A confidential file name counts only when no folder is written before it, so `library/index.md` or `wiki/notes/plan.md` are not mistaken for `company/index.md` or `company/plan.md`. Generated `index.md` files and hidden folders are left out of the names.
+  - The names are one pattern, compiled once per run. With 1,500 files in `company/`, a content check had gone from 0.3 to 48 seconds.
+  - In an annotated source item, only a vault path or a known file extension fails closed when it does not resolve. "e.g.", "3.2", "Node.js", "80/20", "Me/You" and links to URLs are prose or external sources.
+  - The whole notes section is scanned as text, numbered and wrapped lines included.
+  - HTML entities are decoded line by line, so client-name line numbers do not shift.
+- **Dashboard.** Local-only reads of eval runs are taken from every run in the window.
+- **Old records.** Eval run files written by 0.1.0 keep full commands; no command rewrites a baseline. Session records did not exist before this branch.
+- **Known limits, kept on purpose.** Reading files out of shell commands is a best effort, and the traces measure the safety rule rather than enforce it. The rule itself holds through the harness deny rules and the instructions (18.4). Not seen:
+  - a path built at run time: a variable other than a `for` glob, a command substitution, a script's own logic (D036);
+  - the harness's own search tool (Q43).
+- **Checks.**
+  - 767 tests pass under Python 3.13 and 3.11.
+  - The import of this session's own 182 MB transcript took 14 seconds, and its longest stored command is 522 characters.
+
+## D054 · Check of the D053 fixes: one tokenizer for shell commands
+
+A fifth review checked commit 6b944d7. It found 29 defects, 28 confirmed. Some were regressions of D053:
+- a word holding `[` or `*` was only globbed, so reads inside `python3 -c "...[:300]"` code and bracketed file names were lost;
+- `file://[` crashed the content check;
+- the whole notes section was scanned as strictly as the declared sources;
+- the text of a LinkedIn link counted as a confidential path.
+
+The rest were forms D053 did not cover.
+
+- **One tokenizer.** Several defects shared a cause: commands were split with regexes and with `shlex`, which lose track of quoting. `shell_tokens` now reads a command the way bash does:
+  - quotes and backslashes make one word and never an operator, so find's `\(` and `\;` stay words;
+  - adjacent pieces form one word (`'it'\''s'`);
+  - a `#` at the start of a word begins a comment;
+  - each word keeps its place in the command, and a glob pattern in which only the unquoted parts are live.
+
+  The same tokens serve reading files and storing commands.
+- **Reading.**
+  - A word is always tried as written, as bash keeps it when a glob matches nothing and as a quoted word is.
+  - Only its unquoted parts glob, from the command's folder, without escaping that folder. `~` is expanded first, and `**` matches any depth, as in zsh, the macOS shell, and bash with globstar.
+  - `grep -r` and `rg` expand globs and braces in their folders.
+  - `find` reads only when `-exec` runs a reader. Its start points expand, and `-name`, `-path`, their negations and `-maxdepth` narrow the search. `find -exec ls`, `basename` or `rm` only lists.
+  - `xargs` looks back over the whole pipeline (`find | sort | xargs cat`, `ls | xargs cat`). When nothing before it says what it gets, it searches the folder, which fails closed.
+  - A `for` loop reads its list only when its body runs a reader on the loop variable.
+  - Assignments (`LANG=C`), `env`, `timeout`, `nice`, `stdbuf`, `sudo`, `time` and `nohup` in front of a command are skipped.
+- **Storing.** The text a command carries is found on the tokens, so `'\''` and an apostrophe in a comment no longer shift it. What is replaced by its length:
+  - echo and printf arguments, here-strings, `-c` and `-e` code;
+  - every sed script, short or long;
+  - comments;
+  - any other word over 40 characters that is not a path.
+- **Content checks.**
+  - A local URL (`file://`, `vscode://file/`, and every `obsidian://` form: `open?file=`, `path=`, `filepath=`, `vault/<vault>/<path>`, `///<path>`) is resolved in the vault and checked like any source, mission and confidential pages included. A URL that does not parse keeps its text in the scan instead of crashing.
+  - A path written from another machine (`/Users/me/brain/projects/x`), with `~/` or `../`, is resolved from the vault folder named in it. A vault folder written with capitals is still a folder, so `Projects/Acme-Mission` resolves. The cost is that a rare prose word such as "Me/You" in a source item fails closed.
+  - The declared sources (`sources`, `src` comments, the "Sources used" lines, now also as a heading or a label without a colon) are scanned strictly. The rest of the notes is scanned with more slack: a page named with its folder that resolves to a confidential or mission page, a local URL, or a `company/` or `finance/` path with a file name. "finance/M&A" or "company/ and finance/ stay local" in a sentence is prose.
+  - Web links (their text and their target), web URLs and domains written without a scheme are external pages.
+  - Emphasis with `_` around a path is removed.
+  - Each finding is reported once.
+- **Converging.** Five review rounds found 13, 18, 22, 22 and 29 defects. Each round's defects were narrower than the round before, and more of them predated this branch. Reading files out of shell commands has no end: any command a person can write is a new form. The rule holds through the harness deny rules and the instructions (18.4); traces measure it. The next round checks only that these fixes hold and introduce no regression; new shell forms go to a follow-up.
+- **Checks.**
+  - 827 tests pass under Python 3.13 and 3.11.
+  - `lint` and `index --check` on `vault.example` are clean.
+  - Importing this session's 182 MB transcript takes 13 seconds.
