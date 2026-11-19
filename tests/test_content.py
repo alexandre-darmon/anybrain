@@ -682,7 +682,7 @@ def test_a_web_url_with_company_or_finance_in_it_is_an_external_source(fixture_v
 
 @pytest.mark.parametrize("item", ["wiki/notes/source-note.md (e.g. the naming section)",
                                   "wiki/notes/source-note.md (chapter 3.2)", "wiki/notes/source-note.md on Node.js",
-                                  "wiki/notes/source-note.md, the 80/20 cut", "wiki/notes/source-note.md Me/You",
+                                  "wiki/notes/source-note.md, the 80/20 cut",
                                   "[HBR on categories](https://hbr.org/2016/category) via wiki/notes/source-note.md"])
 def test_ordinary_words_in_an_annotated_source_do_not_block_ready(fixture_vault, item):
     rel = "content/drafts/2026-12-22-words.md"
@@ -745,3 +745,73 @@ def test_a_decoded_line_break_does_not_shift_a_client_line_number(make_vault):
     found = [str(f) for f in lint.check_secrets(lint.Context(root))]
     body_line = (root / "wiki/notes/a.md").read_text().split("\n").index("We helped Acme Corp.") + 1
     assert any(f"wiki/notes/a.md:{body_line}" in f for f in found), found
+
+
+# ---------------------------------------------------------------- check of the D053 fixes (D054)
+
+@pytest.mark.parametrize("url", ["file:///Users/me/brain/projects/acme-mission.md",
+                                 "obsidian://open?vault=brain&file=projects%2Facme-mission",
+                                 "obsidian://vault/brain/company/plan", "obsidian:///Users/me/brain/company/plan.md",
+                                 "vscode://file/Users/me/brain/projects/acme-mission.md"])
+@pytest.mark.parametrize("where", ["sources", "src", "notes"])
+def test_a_local_url_to_a_confidential_or_mission_page_is_caught(fixture_vault, url, where):
+    rel = "content/drafts/2026-12-28-local.md"
+    if where == "src":
+        draft = ready_draft(f"A claim.\n<!-- src: {url} -->\n")
+    elif where == "notes":
+        draft = ready_draft(f"A claim.\n\n## Notes for the owner\n\n- Sources used: wiki/notes/source-note.md, {url}\n")
+    else:
+        draft = ready_draft("A claim.").replace("sources: [wiki/notes/source-note.md]",
+                                                f'sources: ["wiki/notes/source-note.md", "{url}"]')
+    (fixture_vault / rel).write_text(draft)
+    found = findings(fixture_vault, rel)
+    assert any(f.startswith("error") and ("confidential" in f or "a path in company" in f) for f in found), (url, found)
+
+
+@pytest.mark.parametrize("text", ["obsidian://[vault] links", "file://[path]", "file://"])
+def test_a_malformed_local_url_is_not_a_crash(fixture_vault, text):
+    rel = "content/drafts/2026-12-29-ipv6.md"
+    (fixture_vault / rel).write_text(ready_draft(f"A claim.\n\n## Notes for the owner\n\n- Alternative angles: open {text}\n"))
+    findings(fixture_vault, rel)
+
+
+@pytest.mark.parametrize("item", ["wiki/notes/source-note.md and Projects/Acme-Mission",
+                                  "wiki/notes/source-note.md and /Users/me/brain/projects/acme-mission",
+                                  "wiki/notes/source-note.md and ~/brain/projects/acme-mission",
+                                  "wiki/notes/source-note.md and ../../projects/acme-mission"])
+def test_a_mission_path_written_any_way_is_caught(fixture_vault, item):
+    rel = "content/drafts/2026-12-30-mission.md"
+    (fixture_vault / rel).write_text(ready_draft("A claim.").replace(
+        "sources: [wiki/notes/source-note.md]", f"sources: [{json.dumps(item)}]"))
+    assert any(f.startswith("error") and "confidential" in f for f in findings(fixture_vault, rel)), item
+
+
+@pytest.mark.parametrize("line", ["- Alternative angles: why finance/legal should sit in discovery calls",
+                                  "- Unmatched needs: 5 years in corporate finance/M&A",
+                                  "- Not read: company/ and finance/ stay local"])
+def test_prose_elsewhere_in_the_notes_does_not_block_ready(fixture_vault, line):
+    rel = "content/drafts/2026-12-31-prose.md"
+    (fixture_vault / rel).write_text(ready_draft(
+        f"A claim.\n\n## Notes for the owner\n\n- Sources used: wiki/notes/source-note.md\n{line}\n"))
+    assert findings(fixture_vault, rel) == [], line
+
+
+@pytest.mark.parametrize("notes", ["- Sources used: wiki/notes/source-note.md\n\nAlso drew on projects/acme-mission.md.",
+                                   "- Sources used: wiki/notes/source-note.md\n- Also leaned on projects/acme-mission.md.",
+                                   "- Sources used: wiki/notes/source-note.md, _company/plan.md_",
+                                   "### Sources used\n\n- projects/acme-mission.md",
+                                   "- **Sources used**\n- projects/acme-mission.md"])
+def test_a_mission_page_named_anywhere_in_the_notes_is_caught(fixture_vault, notes):
+    rel = "content/drafts/2027-01-01-anywhere.md"
+    (fixture_vault / rel).write_text(ready_draft(f"A claim.\n\n## Notes for the owner\n\n{notes}\n"))
+    found = findings(fixture_vault, rel)
+    assert any(f.startswith("error") and ("confidential" in f or "a path in company" in f) for f in found), (notes, found)
+
+
+@pytest.mark.parametrize("text", ["[linkedin.com/company/acme](https://www.linkedin.com/company/acme)",
+                                  "www.linkedin.com/company/acme-robotics", "linkedin.com/company/acme-robotics",
+                                  "www.google.com/finance/quote/ACME:NASDAQ"])
+def test_a_web_page_with_company_or_finance_in_its_address_is_external(fixture_vault, text):
+    rel = "content/drafts/2027-01-02-web.md"
+    (fixture_vault / rel).write_text(ready_draft(f"A claim.\n\n## Notes for the owner\n\n- Sources used: wiki/notes/source-note.md, {text}\n"))
+    assert findings(fixture_vault, rel) == [], text

@@ -12,7 +12,6 @@ import glob
 import json
 import os
 import re
-import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -27,7 +26,6 @@ NO_READ_COMMANDS = {"ls", "stat", "find", "du", "test", "[", "[[", "echo", "prin
                     "rmdir", "chmod", "chown", "ln", "cd", "pwd", "which", "type", "command", "true", "false",
                     "sleep", "date", "realpath", "readlink", "basename", "dirname", "anybrain"}
 RECURSIVE_COMMANDS = {"rg", "ag", "ack"}  # search a folder tree; grep does with -r or -R
-SHELL_PUNCTUATION = ";&|()<>\n"
 PATHISH_RE = re.compile(r"[\w~./@+-]+")
 # Texts of a refused tool call (Claude Code 2.1.326: "This command requires approval", "A variable in this
 # command can't be checked before it runs", "File is in a directory that is denied by your permission settings").
@@ -53,9 +51,9 @@ SHOWN_LIMIT = 500  # characters of a stored shell command; reads and writes are 
 
 
 def shown_command(command: str) -> str:
-    """A shell command as a trace stores it: the body of every here-document replaced by its line count, and
-    the rest cut at 500 characters. A body is the text a command writes or runs: file content, a report, code
-    (22.5: a trace never holds file content; D052)."""
+    """A shell command as a trace stores it (22.5: a trace never holds file content or the owner's words):
+    the body of every here-document replaced by its line count, the text the command carries replaced by its
+    length (`_elide_carried`), and the rest cut at 500 characters (D052, D053, D054)."""
     lines, kept, i = str(command or "").split("\n"), [], 0
     while i < len(lines):
         line = lines[i]
@@ -74,33 +72,67 @@ def shown_command(command: str) -> str:
     return text if len(text) <= SHOWN_LIMIT else text[:SHOWN_LIMIT] + f" [{len(text) - SHOWN_LIMIT} more characters]"
 
 
-QUOTED = r"'[^']*'|\"(?:[^\"\\]|\\.)*\""
-ARGUMENT = rf"(?:{QUOTED}|[^\s;&|<>'\"]+)"
-HERESTRING_RE = re.compile(rf"<<<\s*({ARGUMENT})")
-CODE_RE = re.compile(rf"(\b(?:python[\d.]*|node|ruby|perl|php|bash|sh|zsh|deno|bun|osascript)\b(?:\s+-\w+)*?\s+-[ce]\s+)({QUOTED})")
-PRINT_RE = re.compile(rf"(\b(?:echo|printf)\b)((?:[ \t]+{ARGUMENT})+)")
-LONG_QUOTED_RE = re.compile(QUOTED)
+CODE_INTERPRETERS = re.compile(r"python[\d.]*|node|ruby|perl|php|bash|sh|zsh|dash|ksh|deno|bun|osascript|Rscript|lua")
+SED_SCRIPT_RE = re.compile(r"^(?:\d+,?\d*|\$)?[sy]([^\w\s\\]).*\1.*\1[A-Za-z0-9]*$", re.S)
+PATH_WORD_RE = re.compile(r"[\w~./@+-]+")
 
 
 def _count(text: str) -> str:
     return f"[{len(text)} characters]"
 
 
+def _reads_as_path(word: str) -> bool:
+    text = str(word)
+    return "\n" not in text and (bool(PATH_WORD_RE.fullmatch(text)) or (
+        "/" in text and text.count(" ") <= 3 and bool(re.search(r"\.[A-Za-z0-9]{1,5}$", text))))
+
+
 def _elide_carried(text: str) -> str:
-    """Replace the text a command carries, which can be a page, a log line or the owner's words: what `echo` and
-    `printf` print, a here-string, an interpreter's `-c` code, and any other quoted string over 40 characters
-    unless it reads as a path (D053)."""
-    text = HERESTRING_RE.sub(lambda m: "<<< " + _count(m.group(1)), text)
-    text = CODE_RE.sub(lambda m: m.group(1) + _count(m.group(2)), text)
-    text = PRINT_RE.sub(lambda m: m.group(1) + " " + _count(m.group(2).strip()), text)
+    """Replace the text a command carries, read with the shell's own quoting (D053, D054):
+    - what `echo` and `printf` print, a here-string, an interpreter's `-c` or `-e` code, a sed script;
+    - a comment;
+    - any other word over 40 characters that does not read as a path.
+    Redirection targets and paths stay, so a stored command still says what it touched."""
+    tokens = shell_tokens(text)
+    spans: list[tuple[int, int]] = []
+    group: list = []
 
-    def quoted(match: re.Match) -> str:
-        value = match.group(0)
-        if len(value) <= 42 or ("/" in value and value.count(" ") <= 3 and "\n" not in value):
-            return value
-        return _count(value)
+    def flush() -> None:
+        words = command_words(group)
+        name = Path(words[0]).name if words else ""
+        args = words[1:]
+        if name in ("echo", "printf") and args:
+            spans.append((args[0].start, args[-1].end))
+        else:
+            for k, word in enumerate(args):
+                before = args[k - 1] if k else ""
+                if (CODE_INTERPRETERS.fullmatch(name) and before in ("-c", "-e")) or (
+                        name == "sed" and (SED_SCRIPT_RE.match(word) or before in ("-e", "--expression"))) or (
+                        word.end - word.start > 42 and not _reads_as_path(word)):
+                    spans.append((word.start, word.end))
+        group.clear()
 
-    return LONG_QUOTED_RE.sub(quoted, text)
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if isinstance(token, Comment):
+            flush()
+            if len(token) > 1:
+                spans.append((token.start + 1, token.end))
+        elif isinstance(token, Op):
+            if ("<" in token or ">" in token) and i + 1 < len(tokens) and isinstance(tokens[i + 1], Word):
+                if "<<<" in token:
+                    spans.append((tokens[i + 1].start, tokens[i + 1].end))
+                i += 2  # a redirection target belongs to the same command
+                continue
+            flush()
+        else:
+            group.append(token)
+        i += 1
+    flush()
+    for start, end in sorted(spans, reverse=True):
+        text = text[:start] + _count(text[start:end]) + text[end:]
+    return text
 
 
 @dataclass(frozen=True)
@@ -112,6 +144,7 @@ class Search:
     exclude: tuple[str, ...] = ()
     exclude_dirs: tuple[str, ...] = ()
     hidden: bool = True  # grep opens hidden files; rg and ag skip them unless told otherwise
+    depth: int | None = None  # how deep under the folder (find -maxdepth, ls): None for any depth
 
     def files(self, root: Path) -> list[str]:
         base = root if self.folder in ("", ".") else root / self.folder
@@ -123,6 +156,8 @@ class Search:
                 continue
             rel = v.rel_path(root, path)
             inner = path.relative_to(base).parts
+            if self.depth is not None and len(inner) > self.depth:
+                continue
             if not self.hidden and any(part.startswith(".") for part in inner):
                 continue
             if any(fnmatch.fnmatch(part, g) for part in inner[:-1] for g in self.exclude_dirs):
@@ -282,66 +317,178 @@ def _strip_heredocs(command: str) -> str:
     return "\n".join(kept)
 
 
-def _shell_words(command: str) -> list[str]:
-    """Shell tokens with quotes honoured; operators and newlines come back as separate tokens."""
-    command = _strip_heredocs(command)
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=SHELL_PUNCTUATION)
-    lexer.whitespace = " \t\r"
-    lexer.whitespace_split = True
-    lexer.commenters = ""
-    try:
-        return list(lexer)
-    except ValueError:  # unbalanced quotes: fall back to a plain split
-        return re.findall(r"[;&|()<>\n]+|[^\s;&|()<>]+", command)
+class Word(str):
+    """A shell word with its quotes removed. `quoted` when any part of it was quoted or escaped: bash expands
+    neither globs nor braces there. `start` and `end` are its place in the command."""
+
+    quoted = False
+    start = 0
+    end = 0
+    pattern = ""  # the word as a glob pattern: its quoted parts escaped, as bash globs only what is not quoted
+    globbing = False  # an unquoted `*`, `?` or `[` in it
 
 
-def _segments(command: str) -> list[tuple[list[str], list[str], list[str], int, int]]:
-    """(words, input redirections, output redirections, subshells opened before, subshells closed after) of
-    each simple command."""
-    segments, words, inputs, outputs, opens = [], [], [], [], 0
-    tokens = _shell_words(command)
+class Op(str):
+    """An operator: `;`, `&&`, `|`, a redirection, a parenthesis or a line break."""
+
+    start = 0
+    end = 0
+
+
+class Comment(str):
+    start = 0
+    end = 0
+
+
+def _token(kind, text: str, start: int, end: int, quoted: bool = False, pattern: str = "", globbing: bool = False):
+    token = kind(text)
+    token.start, token.end = start, end
+    if kind is Word:
+        token.quoted, token.pattern, token.globbing = quoted, pattern or text, globbing
+    return token
+
+
+OPERATOR_CHARS = ";&|<>"
+
+
+def shell_tokens(command: str) -> list:
+    """Words, operators and comments, with bash's quoting rules (D054).
+
+    `'...'`, `"..."` and a backslash make one word and never an operator, so find's `\\(` and `\\;` stay words.
+    Adjacent pieces form one word (`'it'\\''s'`). A `#` at the start of a word begins a comment, so an apostrophe
+    in a comment opens no quote. `$(...)` stays inside its word. An unclosed quote runs to the end."""
+    tokens: list = []
+    i, n = 0, len(command)
+    while i < n:
+        c = command[i]
+        if c in " \t\r":
+            i += 1
+        elif c == "#":
+            j = command.find("\n", i)
+            j = n if j < 0 else j
+            tokens.append(_token(Comment, command[i:j], i, j))
+            i = j
+        elif c in "\n()":
+            tokens.append(_token(Op, c, i, i + 1))
+            i += 1
+        elif c in OPERATOR_CHARS:
+            j = i
+            while j < n and command[j] in OPERATOR_CHARS:
+                j += 1
+            tokens.append(_token(Op, command[i:j], i, j))
+            i = j
+        else:
+            start, buf, pat, quoted, globbing = i, [], [], False, False
+            while i < n and command[i] not in " \t\r\n()" + OPERATOR_CHARS:
+                c = command[i]
+                if c == "'":
+                    j = command.find("'", i + 1)
+                    j = n if j < 0 else j
+                    buf.append(command[i + 1:j])
+                    pat.append(glob.escape(command[i + 1:j]))
+                    quoted, i = True, j + 1
+                elif c == '"':
+                    j, piece = i + 1, []
+                    while j < n and command[j] != '"':
+                        if command[j] == "\\" and j + 1 < n and command[j + 1] in '$`"\\\n':
+                            piece.append(command[j + 1])
+                            j += 2
+                        else:
+                            piece.append(command[j])
+                            j += 1
+                    buf.append("".join(piece))
+                    pat.append(glob.escape("".join(piece)))
+                    quoted, i = True, j + 1
+                elif c == "\\" and i + 1 < n:
+                    buf.append(command[i + 1])
+                    pat.append(glob.escape(command[i + 1]))
+                    quoted, i = True, i + 2
+                elif c == "$" and i + 1 < n and command[i + 1] == "(":
+                    depth, j = 0, i + 1
+                    while j < n:
+                        depth += {"(": 1, ")": -1}.get(command[j], 0)
+                        if depth == 0:
+                            break
+                        j += 1
+                    buf.append(command[i:j + 1])
+                    pat.append(glob.escape(command[i:j + 1]))
+                    i = j + 1
+                else:
+                    buf.append(c)
+                    pat.append(c)
+                    globbing = globbing or c in "*?["
+                    i += 1
+            tokens.append(_token(Word, "".join(buf), start, min(i, n), quoted, "".join(pat), globbing))
+    return tokens
+
+
+def _segments(command: str) -> list[tuple[list, list, list, int, int, bool]]:
+    """(words, input redirections, output redirections, subshells opened before, subshells closed after, piped)
+    of each simple command. `piped` when its input comes from the command before it through `|`."""
+    segments, words, inputs, outputs, opens, piped = [], [], [], [], 0, False
+    tokens = [t for t in shell_tokens(_strip_heredocs(command)) if not isinstance(t, Comment)]
     i = 0
     while i < len(tokens):
         token = tokens[i]
-        if token and all(c in SHELL_PUNCTUATION for c in token):
-            if ("<" in token or ">" in token) and not ("(" in token or ")" in token):
-                target = tokens[i + 1] if i + 1 < len(tokens) else ""
-                if target and not all(c in SHELL_PUNCTUATION for c in target):
-                    if words and words[-1].isdigit():
+        if isinstance(token, Op):
+            if "<" in token or ">" in token:
+                target = tokens[i + 1] if i + 1 < len(tokens) else None
+                if isinstance(target, Word):
+                    if words and words[-1].isdigit() and not words[-1].quoted and words[-1].end == token.start:
                         words.pop()  # the fd number of `2>`
                     (inputs if "<" in token else outputs).append(target)
                     i += 2
                     continue
             closes = token.count(")")
             if words or inputs or outputs or closes:
-                segments.append((words, inputs, outputs, opens, closes))
+                segments.append((words, inputs, outputs, opens, closes, piped))
                 opens = 0
+            piped = token in ("|", "|&")
             opens += token.count("(")
             words, inputs, outputs = [], [], []
         else:
             words.append(token)
         i += 1
     if words or inputs or outputs:
-        segments.append((words, inputs, outputs, opens, 0))
+        segments.append((words, inputs, outputs, opens, 0, piped))
     return segments
 
 
-PREFIX_WORDS = {"if", "then", "else", "elif", "do", "while", "until", "{", "}", "!", "time", "nohup", "fi", "done"}
-WRAPPERS = {"builtin", "command", "exec"}  # `command cd x` is a cd; `command -v x` is not
+PREFIX_WORDS = {"if", "then", "else", "elif", "do", "while", "until", "{", "}", "!", "fi", "done"}
+ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+# wrappers that run the command after them, with their options that take a value (D054)
+WRAPPERS = {"env": {"-u", "--unset", "-C", "--chdir", "-S", "--split-string"},
+            "timeout": {"-s", "--signal", "-k", "--kill-after"}, "nice": {"-n", "--adjustment"},
+            "stdbuf": {"-i", "-o", "-e"}, "sudo": {"-u", "-g", "-C", "-h", "-p", "-U", "-r", "-t"},
+            "time": set(), "nohup": set()}
 
 
-def command_words(words: list[str]) -> list[str]:
-    """The words of a simple command without the shell keywords and wrappers in front: `if cd x`, `then cat y`,
-    `{ cd x`, `builtin cd x` (D053)."""
+def command_words(words: list) -> list:
+    """The words of a simple command without what comes in front: shell keywords (`if`, `then`, `{`), variable
+    assignments (`LANG=C`), `builtin`, `command` and `exec`, and wrappers with their options (`env`, `timeout 30`,
+    `nice -n 5`, `sudo -u x`) (D053, D054)."""
     i = 0
-    while i < len(words) and (words[i] in PREFIX_WORDS or (
-            words[i] in WRAPPERS and i + 1 < len(words) and not words[i + 1].startswith("-"))):
-        i += 1
+    while i < len(words):
+        word = words[i]
+        if word in PREFIX_WORDS or ASSIGNMENT_RE.match(word):
+            i += 1
+        elif word in ("builtin", "command", "exec") and i + 1 < len(words) and not words[i + 1].startswith("-"):
+            i += 1
+        elif word in WRAPPERS:
+            with_value = WRAPPERS[word]
+            i += 1
+            while i < len(words) and (words[i].startswith("-") or (word == "env" and ASSIGNMENT_RE.match(words[i]))):
+                i += 2 if words[i] in with_value else 1
+            if word == "timeout" and i < len(words):
+                i += 1  # the duration
+        else:
+            break
     return words[i:]
 
 
 def _walk(command: str, root: Path, start: str | None = None, end: dict | None = None):
-    """Each simple command, without the keywords in front, with the folder it runs in.
+    """Each simple command, without what comes in front of it, with the folder it runs in, whether it is piped,
+    and its words as written (for `for ... done`).
 
     A `cd`, `pushd` or `popd` moves the shell only to a folder that exists: a `cd` to a missing folder fails and
     the shell stays where it was, as it does in bash. So `cd a || cd b`, a failed `cd` and `test -d x && cd x`
@@ -352,9 +499,9 @@ def _walk(command: str, root: Path, start: str | None = None, end: dict | None =
     previous: str | None = None
     stack: list[tuple[str, str | None]] = []
     pushed: list[str] = []
-    for words, inputs, outputs, opens, closes in _segments(command):
+    for raw, inputs, outputs, opens, closes, piped in _segments(command):
         stack.extend([(cwd, previous)] * opens)
-        words = command_words(words)
+        words = command_words(raw)
         here = cwd
         name = Path(words[0]).name if words else ""
         if name in ("cd", "pushd", "popd"):
@@ -372,7 +519,7 @@ def _walk(command: str, root: Path, start: str | None = None, end: dict | None =
                 elif name == "popd":
                     pushed.pop()
                 previous, cwd = cwd, target
-        yield words, inputs, outputs, here
+        yield words, inputs, outputs, here, piped, raw
         for _ in range(closes):
             cwd, previous = stack.pop() if stack else (cwd, previous)
     if end is not None:
@@ -391,6 +538,48 @@ def _is_file(rel: str, root: Path, origin: Path | None) -> bool:
 
 def _is_dir(rel: str, root: Path) -> bool:
     return os.path.isdir(os.path.join(root, rel)) if rel and not os.path.isabs(rel) else rel == ""
+
+
+GLOB_CHARS = re.compile(r"[*?\[]")
+EXPANSION_LIMIT = 500
+
+
+def _braces(word: str) -> list[str]:
+    """Bash brace expansion of `a/{b,c}.md`, nested braces included, at most 64 words."""
+    match = re.search(r"\{([^{}]*,[^{}]*)\}", word)
+    if not match:
+        return [word]
+    found: list[str] = []
+    for part in match.group(1).split(","):
+        found += _braces(word[:match.start()] + part + word[match.end():])
+        if len(found) >= 64:
+            break
+    return found[:64]
+
+
+def _expanded(word: str, cwd: str) -> list[str]:
+    """The paths a shell word stands for: the word itself, as bash keeps it when a glob matches nothing and as a
+    quoted word is; and when it is not quoted, its brace forms and the paths its globs match from `cwd`, `**`
+    at any depth as zsh and bash's globstar read it, `~` expanded (D053, D054)."""
+    paths = [str(word)]
+    if isinstance(word, Word):  # from a command: only its unquoted parts glob, and braces only when not quoted
+        forms, globbing = ([word.pattern] if word.quoted else _braces(word.pattern)), word.globbing
+    else:
+        forms, globbing = _braces(str(word)), bool(GLOB_CHARS.search(word))
+    for form in forms:
+        if form not in paths and not (isinstance(word, Word) and word.quoted):
+            paths.append(form)
+        if globbing and GLOB_CHARS.search(form):
+            pattern = os.path.expanduser(form)
+            try:
+                if os.path.isabs(pattern):
+                    matches = glob.glob(pattern, recursive=True)
+                else:
+                    matches = [os.path.join(cwd, m) for m in glob.glob(pattern, root_dir=cwd, recursive=True)]
+            except (OSError, ValueError, re.error):
+                matches = []
+            paths += sorted(matches)[:EXPANSION_LIMIT]
+    return paths
 
 
 SEARCH_COMMANDS = {"grep", "egrep", "fgrep", "rg", "ag", "ack"}
@@ -437,9 +626,10 @@ def _search(name: str, words: list[str], root: Path, origin: Path | None, cwd: s
         return [], not_paths
     folders = []
     for i in positional:
-        rel = relative(words[i], root, origin, cwd)
-        if _is_dir(rel, root):
-            folders.append(rel or ".")
+        for path in _expanded(words[i], cwd):  # `grep -r x */`, `grep -r x {company,wiki}` (D054)
+            rel = relative(path, root, origin, cwd)
+            if _is_dir(rel, root) and (rel or ".") not in folders:
+                folders.append(rel or ".")
     if not positional:
         folders.append(relative(".", root, origin, cwd) or ".")
     searches = [Search(folder, tuple(include), tuple(exclude), tuple(exclude_dirs), hidden) for folder in folders]
@@ -461,7 +651,7 @@ def shell_escapes(command: str, root: Path, origin: Path | None) -> list[str]:
     forms = {os.path.normpath(os.path.abspath(origin)), os.path.realpath(origin)}
     forms |= {"~/" + os.path.relpath(f, home) for f in list(forms) if f.startswith(home + os.sep)}
     text = _strip_heredocs(command)
-    for words, inputs, outputs, cwd in _walk(command, root):
+    for words, inputs, outputs, cwd, *_ in _walk(command, root):
         for word in words + inputs + outputs:
             expanded = os.path.expandvars(os.path.expanduser(word))
             for candidate in [expanded] + [m for m in PATHISH_RE.findall(expanded) if m != expanded]:
@@ -475,49 +665,40 @@ def shell_escapes(command: str, root: Path, origin: Path | None) -> list[str]:
     return found
 
 
-def files_from_shell(command: str, root: Path, origin: Path | None = None, start: str | None = None,
-                     end: dict | None = None) -> tuple[list[str], list[str], list[Search]]:
-    return _files_from_shell(command, root, origin, start, end)
-
-
-GLOB_CHARS = re.compile(r"[*?\[]")
-EXPANSION_LIMIT = 500
 EXEC_OPTIONS = {"-exec", "-execdir", "-ok", "-okdir"}
+FIND_PATTERNS = {"-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename"}
 
 
-def _braces(word: str) -> list[str]:
-    """Bash brace expansion of `a/{b,c}.md`, nested braces included, at most 64 words."""
-    match = re.search(r"\{([^{}]*,[^{}]*)\}", word)
-    if not match:
-        return [word]
-    found: list[str] = []
-    for part in match.group(1).split(","):
-        found += _braces(word[:match.start()] + part + word[match.end():])
-        if len(found) >= 64:
-            break
-    return found[:64]
-
-
-def _expanded(word: str, cwd: str) -> list[str]:
-    """The paths a shell word stands for: its brace forms, and the files a glob matches from `cwd`."""
-    paths: list[str] = []
-    for form in _braces(word):
-        if GLOB_CHARS.search(form):
-            pattern = form if os.path.isabs(form) else os.path.join(cwd, form)
-            paths += sorted(glob.glob(os.path.expanduser(pattern)))[:EXPANSION_LIMIT]
-        else:
-            paths.append(form)
-    return paths
-
-
-def _find_folders(words: list[str]) -> list[str]:
-    """The folders `find` starts from: its words before the first expression."""
-    folders = []
-    for word in words[1:]:
-        if word.startswith(("-", "(", "!")) or word in ("(", ")", "!"):
-            break
-        folders.append(word)
-    return folders or ["."]
+def _find_parts(words: list[str]) -> tuple[list[str], tuple[str, ...], tuple[str, ...], int | None, str | None]:
+    """What a `find` command opens: its start points, the -name and -path patterns that narrow it (negated ones
+    exclude), -maxdepth, and the command -exec runs (None without -exec) (D054)."""
+    starts, include, exclude, depth, runs = [], [], [], None, None
+    i = 1
+    while i < len(words) and not (words[i].startswith("-") or words[i] in ("(", ")", "!")):
+        starts.append(words[i])
+        i += 1
+    negate = False
+    while i < len(words):
+        word = words[i]
+        if word in ("!", "-not"):
+            negate, i = True, i + 1
+            continue
+        if word in FIND_PATTERNS and i + 1 < len(words):
+            pattern = words[i + 1].removeprefix("./") if "path" in word else words[i + 1]
+            (exclude if negate else include).append(pattern)
+            negate, i = False, i + 2
+            continue
+        if word == "-maxdepth" and i + 1 < len(words):
+            depth = int(words[i + 1]) if words[i + 1].isdigit() else depth
+            i += 2
+            continue
+        if word in EXEC_OPTIONS and i + 1 < len(words):
+            runs = runs or Path(words[i + 1]).name
+            i += 2
+            while i < len(words) and words[i] not in (";", "+"):
+                i += 1
+        negate, i = False, i + 1
+    return starts or ["."], tuple(include), tuple(exclude), depth, runs
 
 
 def _xargs_command(words: list[str]) -> str:
@@ -529,29 +710,53 @@ def _xargs_command(words: list[str]) -> str:
     return Path(words[i]).name if i < len(words) else "echo"
 
 
-def _files_from_shell(command: str, root: Path, origin: Path | None = None, start: str | None = None,
-                      end: dict | None = None) -> tuple[list[str], list[str], list[Search]]:
+def files_from_shell(command: str, root: Path, origin: Path | None = None, start: str | None = None,
+                     end: dict | None = None) -> tuple[list[str], list[str], list[Search]]:
     """Files a shell command reads, files it writes, and the recursive searches it runs.
 
     Best effort, and conservative: any command outside NO_READ_COMMANDS reads every file it names, in any word
-    or inside quoted code; `cd` is followed; a recursive search (`grep -r`, `rg`) opens the files under the
-    folders it names, or the current folder, narrowed by its include and exclude globs. A script that builds a
-    path at run time is not seen (docs/decisions.md D036).
+    or inside quoted code, with globs and braces expanded; `cd` is followed where bash goes; a recursive search
+    (`grep -r`, `rg`, `find -exec`, `find | xargs`) opens the files under the folders it names, or the current
+    folder, narrowed by its patterns; a `for` loop reads its list when its body runs a reader on the loop
+    variable. A path built at run time (a variable, a command substitution, a script's logic) is not seen
+    (D036, D053, D054).
     """
-    read, written, searches = [], [], []
-    before: tuple[list[str], str] = ([], str(root))  # the previous simple command, for `... | xargs cat`
+    read: list[str] = []
+    written: list[str] = []
+    searches: list[Search] = []
+    pipeline: list[tuple[list, str]] = []  # the commands of the current pipeline so far, for `... | xargs cat`
+    loops: list[tuple[str, list, str]] = []  # (variable, list, folder) of each open `for` loop
 
     def take(word: str, cwd: str) -> None:
-        """Count a word as read: each file it names or matches, and a recursive search of a folder."""
+        """Count a word as read: each file it names or matches."""
         for path in _expanded(word, cwd):
             for candidate in [path] + [m for m in PATHISH_RE.findall(path) if m != path]:
                 rel = relative(candidate, root, origin, cwd)
                 if _is_file(rel, root, origin):
                     _add(read, rel)
 
-    for words, inputs, outputs, here in _walk(command, root, start, end):
+    def search(word: str, cwd: str, include=(), exclude=(), depth: int | None = None) -> None:
+        """A search of each folder a word names or matches; a file it names is read."""
+        for path in _expanded(word, cwd):
+            rel = relative(path, root, origin, cwd)
+            if _is_dir(rel, root):
+                found = Search(rel or ".", tuple(include), tuple(exclude), (), True, depth)
+                if found not in searches:
+                    searches.append(found)
+            elif _is_file(rel, root, origin) and (not include or any(_glob_match(rel, Path(rel).name, g) for g in include)):
+                _add(read, rel)
+
+    def find_search(words: list, cwd: str) -> None:
+        starts, include, exclude, depth, _ = _find_parts(words)
+        for word in starts:
+            search(word, cwd, include, exclude, depth)
+
+    for words, inputs, outputs, here, piped, raw in _walk(command, root, start, end):
         cwd = here or str(root)  # an unknown folder: read paths as relative to the vault, best effort
-        previous, before = before, (words, cwd)
+        if not piped:
+            pipeline = []
+        producers = list(pipeline)
+        pipeline.append((words, cwd))
         for target in outputs:
             if target.isdigit() or target.startswith(("&", "/dev/")):
                 continue
@@ -560,6 +765,11 @@ def _files_from_shell(command: str, root: Path, origin: Path | None = None, star
             rel = relative(target, root, origin, cwd)
             if _is_file(rel, root, origin):
                 _add(read, rel)
+        if raw and raw[0] == "done" and loops:
+            loops.pop()
+        if len(raw) >= 3 and raw[0] == "for" and raw[2] == "in":
+            loops.append((str(raw[1]), list(raw[3:]), cwd))
+            continue
         if not words:
             continue
         name = Path(words[0]).name
@@ -570,39 +780,49 @@ def _files_from_shell(command: str, root: Path, origin: Path | None = None, star
                 if not word.startswith("-"):
                     _add(written, relative(word, root, origin, cwd))
             continue
-        if name == "find" and EXEC_OPTIONS & set(words):  # `find x -exec cat {} +` opens what it finds
-            for folder in _find_folders(words):
-                rel = relative(folder, root, origin, cwd)
-                if _is_dir(rel, root) and Search(rel or ".") not in searches:
-                    searches.append(Search(rel or "."))
+        if name not in NO_READ_COMMANDS:
+            for variable, items, folder in loops:  # `for f in company/*.md; do head "$f"; done`
+                if any(f"${variable}" in w or "${" + variable + "}" in w for w in words[1:]):
+                    for item in items:
+                        take(item, folder)
+        if name == "find":  # `find x -exec cat {} +` opens what it finds; `-exec ls` or no -exec only lists
+            runs = _find_parts(words)[4]
+            if runs is not None and runs not in NO_READ_COMMANDS:
+                find_search(words, cwd)
             continue
-        if name == "xargs":  # `... | xargs cat`: what the command before it names or finds
+        if name == "xargs":  # `... | sort | xargs cat`: what the commands before it in the pipeline find or name
             if _xargs_command(words) in NO_READ_COMMANDS:
                 continue
-            words_before, cwd_before = previous
-            if words_before and Path(words_before[0]).name == "find":
-                for folder in _find_folders(words_before):
-                    rel = relative(folder, root, origin, cwd_before)
-                    if _is_dir(rel, root) and Search(rel or ".") not in searches:
-                        searches.append(Search(rel or "."))
-            for word in words_before[1:]:
-                rel = relative(word, root, origin, cwd_before)
-                if _is_dir(rel, root) and rel and Search(rel) not in searches:
-                    searches.append(Search(rel))
-                else:
-                    take(word, cwd_before)
+            known = False
+            for before, folder in producers:
+                first = Path(before[0]).name if before else ""
+                if first == "find":
+                    find_search(before, folder)
+                    known = True
+                elif first == "ls":
+                    recursive = any(w.startswith("-") and "R" in w for w in before[1:])
+                    for word in [w for w in before[1:] if not w.startswith("-")] or ["."]:
+                        search(word, folder, depth=None if recursive else 1)
+                    known = True
+                elif first in ("echo", "printf", "cat", "grep", "rg"):
+                    known = known or first in ("echo", "printf") or any(w in ("-l", "-rl", "-lr") for w in before)
+                    if first in ("echo", "printf"):
+                        for word in before[1:]:
+                            take(word, folder)
+            if not known:  # a list from somewhere unknown: everything under the folder may be opened
+                search(".", cwd)
             continue
         if name in NO_READ_COMMANDS:
             continue
         found, not_paths = _search(name, words, root, origin, cwd) if name in SEARCH_COMMANDS else ([], set())
-        for search in found:
-            if search not in searches:
-                searches.append(search)
+        for item in found:
+            if item not in searches:
+                searches.append(item)
         # the first word too, when it is not a command but a path: a line of code in a heredoc an interpreter runs
         for i, word in enumerate(words):
             if i in not_paths or (i == 0 and not _is_file(relative(word, root, origin, cwd), root, origin)):
                 continue
-            take(word, cwd)  # with globs and braces expanded: `cat company/*.md`, `head {a,b}.md` (D053)
+            take(word, cwd)
     return read, written, searches
 
 

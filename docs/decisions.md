@@ -765,3 +765,46 @@ A fourth review checked commit 32d50a9 from the same three angles. It found 22 d
 - **Checks.**
   - 767 tests pass under Python 3.13 and 3.11.
   - The import of this session's own 182 MB transcript took 14 seconds, and its longest stored command is 522 characters.
+
+## D054 · Check of the D053 fixes: one tokenizer for shell commands
+
+A fifth review checked commit 6b944d7. It found 29 defects, 28 confirmed. Some were regressions of D053:
+- a word holding `[` or `*` was only globbed, so reads inside `python3 -c "...[:300]"` code and bracketed file names were lost;
+- `file://[` crashed the content check;
+- the whole notes section was scanned as strictly as the declared sources;
+- the text of a LinkedIn link counted as a confidential path.
+
+The rest were forms D053 did not cover.
+
+- **One tokenizer.** Several defects shared a cause: commands were split with regexes and with `shlex`, which lose track of quoting. `shell_tokens` now reads a command the way bash does:
+  - quotes and backslashes make one word and never an operator, so find's `\(` and `\;` stay words;
+  - adjacent pieces form one word (`'it'\''s'`);
+  - a `#` at the start of a word begins a comment;
+  - each word keeps its place in the command, and a glob pattern in which only the unquoted parts are live.
+
+  The same tokens serve reading files and storing commands.
+- **Reading.**
+  - A word is always tried as written, as bash keeps it when a glob matches nothing and as a quoted word is.
+  - Only its unquoted parts glob, from the command's folder, without escaping that folder. `~` is expanded first, and `**` matches any depth, as in zsh, the macOS shell, and bash with globstar.
+  - `grep -r` and `rg` expand globs and braces in their folders.
+  - `find` reads only when `-exec` runs a reader. Its start points expand, and `-name`, `-path`, their negations and `-maxdepth` narrow the search. `find -exec ls`, `basename` or `rm` only lists.
+  - `xargs` looks back over the whole pipeline (`find | sort | xargs cat`, `ls | xargs cat`). When nothing before it says what it gets, it searches the folder, which fails closed.
+  - A `for` loop reads its list only when its body runs a reader on the loop variable.
+  - Assignments (`LANG=C`), `env`, `timeout`, `nice`, `stdbuf`, `sudo`, `time` and `nohup` in front of a command are skipped.
+- **Storing.** The text a command carries is found on the tokens, so `'\''` and an apostrophe in a comment no longer shift it. What is replaced by its length:
+  - echo and printf arguments, here-strings, `-c` and `-e` code;
+  - every sed script, short or long;
+  - comments;
+  - any other word over 40 characters that is not a path.
+- **Content checks.**
+  - A local URL (`file://`, `vscode://file/`, and every `obsidian://` form: `open?file=`, `path=`, `filepath=`, `vault/<vault>/<path>`, `///<path>`) is resolved in the vault and checked like any source, mission and confidential pages included. A URL that does not parse keeps its text in the scan instead of crashing.
+  - A path written from another machine (`/Users/me/brain/projects/x`), with `~/` or `../`, is resolved from the vault folder named in it. A vault folder written with capitals is still a folder, so `Projects/Acme-Mission` resolves. The cost is that a rare prose word such as "Me/You" in a source item fails closed.
+  - The declared sources (`sources`, `src` comments, the "Sources used" lines, now also as a heading or a label without a colon) are scanned strictly. The rest of the notes is scanned with more slack: a page named with its folder that resolves to a confidential or mission page, a local URL, or a `company/` or `finance/` path with a file name. "finance/M&A" or "company/ and finance/ stay local" in a sentence is prose.
+  - Web links (their text and their target), web URLs and domains written without a scheme are external pages.
+  - Emphasis with `_` around a path is removed.
+  - Each finding is reported once.
+- **Converging.** Five review rounds found 13, 18, 22, 22 and 29 defects. Each round's defects were narrower than the round before, and more of them predated this branch. Reading files out of shell commands has no end: any command a person can write is a new form. The rule holds through the harness deny rules and the instructions (18.4); traces measure it. The next round checks only that these fixes hold and introduce no regression; new shell forms go to a follow-up.
+- **Checks.**
+  - 827 tests pass under Python 3.13 and 3.11.
+  - `lint` and `index --check` on `vault.example` are clean.
+  - Importing this session's 182 MB transcript takes 13 seconds.

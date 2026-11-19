@@ -766,19 +766,20 @@ LINK_ITEM_RE = re.compile(r"\[\[[^\]]+\]\]|\[[^\]]*\]\((?:[^()]|\([^()]*\))+\)")
 
 URL_RE = re.compile(r"<?\b[a-z][a-z0-9+.-]*://[^\s>,;]*>?", re.I)
 VAULT_TOPS = {d.split("/", 1)[0] for d in v.DOMAINS} | {"raw"}
-SOURCES_LABEL_RE = re.compile(r"^(\s*)[-*+]?\s*\**\s*sources?(?:\s+used)?\s*\**\s*:\**\s*(.*)$", re.I)
+SOURCES_LABEL_RE = re.compile(
+    r"^(\s*)(?:#{1,6}\s+)?[-*+]?\s*[*_]{0,2}\s*sources?(?:\s+used)?\s*[*_]{0,2}\s*:?[*_]{0,2}\s*(.*)$", re.I)
 
 
 def looks_like_path(token: str) -> bool:
     """A word that reads as a vault path: it ends in `.md`, or starts with a top folder of the vault, written
     with or without `./` or `/`, in any case."""
     plain = _plain_path(token)
-    return plain.lower().endswith(".md") or ("/" in plain and plain.split("/", 1)[0] in VAULT_TOPS)
+    return plain.lower().endswith(".md") or ("/" in plain and plain.split("/", 1)[0].lower() in VAULT_TOPS)
 
 
 def source_words(text: str) -> list[str]:
     """The words of a source item or a line of prose, without brackets, quotes or end punctuation."""
-    words = (w.strip("()[]{}<>`'\"*").rstrip(".,;:!?") for w in re.split(r"[\s,;]+", URL_RE.sub(" ", text)))
+    words = (w.strip("()[]{}<>`'\"*_").rstrip(".,;:!?") for w in re.split(r"[\s,;]+", URL_RE.sub(" ", text)))
     return [w for w in words if w]
 
 
@@ -851,7 +852,9 @@ def content_mentions(page: v.Page) -> list[str]:
 
 EXTENSION_RE = re.compile(r"\.[A-Za-z0-9]{1,5}$")
 KEBAB_NAME_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)+")
-CONFIDENTIAL_WRITTEN_RE = re.compile(r"(?:^|[\s(<\[`'\"/:])(?:company|finance)/", re.I)
+CONFIDENTIAL_WRITTEN_RE = re.compile(r"(?:^|[\s(<\[`'\"/:_*])(?:company|finance)/", re.I)
+# the same, with a file name and extension after the folder: what prose that only names the folder never has
+CONFIDENTIAL_FILE_RE = re.compile(r"(?:^|[\s(<\[`'\"/:_*])(?:company|finance)/[^\s,;)\]>]*\.[A-Za-z0-9]{1,5}\b", re.I)
 
 
 def _plain_path(word: str) -> str:
@@ -860,8 +863,10 @@ def _plain_path(word: str) -> str:
 
 KNOWN_EXTENSIONS = {"md", "markdown", "csv", "tsv", "pdf", "txt", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "key",
                     "numbers", "pages", "json", "yaml", "yml", "html", "htm", "png", "jpg", "jpeg", "gif", "svg", "eml"}
-LOCAL_URL_RE = re.compile(r"\b(file://[^\s)>\]]*|obsidian://[^\s)>\]]*)", re.I)
+LOCAL_URL_RE = re.compile(r"\b((?:file|obsidian|vscode)://[^\s)>\]\[]*)", re.I)
 WEB_URL_RE = re.compile(r"\b(?:https?|ftp)://[^\s)>\]]*", re.I)
+WEB_LINK_RE = re.compile(r"\[[^\]]*\]\(\s*<?(?:https?|ftp)://(?:[^()]|\([^()]*\))*\)", re.I)  # its text too
+HOST_WORD_RE = re.compile(r"(?<![\w/.@-])(?:www\.)?[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/\S*")  # linkedin.com/company/x
 
 
 def has_known_extension(word: str) -> bool:
@@ -894,33 +899,85 @@ def confidential_names(ctx: Context) -> re.Pattern | None:
 
 
 def _local_url_paths(text: str) -> list[str]:
-    """The paths that `file://` and `obsidian://` URLs point to: a local file, never an external source."""
+    """The paths that local URLs point to: `file://`, `vscode://file/`, and every form of `obsidian://`
+    (`open?file=`, `path=`, `filepath=`, `obsidian://vault/<vault>/<path>`, `obsidian:///<path>`). A URL that does
+    not parse keeps its text, so it is still scanned (D053, D054)."""
     from urllib.parse import parse_qs, unquote, urlsplit
 
     paths = []
     for url in LOCAL_URL_RE.findall(text):
-        parts = urlsplit(url)
-        if parts.scheme.lower() == "file":
+        try:
+            parts = urlsplit(url)
+        except ValueError:
+            paths.append(unquote(url.split("://", 1)[-1]))
+            continue
+        scheme = parts.scheme.lower()
+        if scheme in ("file", "vscode"):
             paths.append(unquote(parts.path))
-        else:
-            query = parse_qs(parts.query)
-            paths += [unquote(x) for key in ("file", "path") for x in query.get(key, [])]
+            continue
+        query = parse_qs(parts.query)
+        found = [unquote(x) for key in ("file", "path", "filepath") for x in query.get(key, [])]
+        if parts.netloc == "vault":
+            found.append(unquote(parts.path).lstrip("/").partition("/")[2])
+        elif not parts.netloc and parts.path:
+            found.append(unquote(parts.path))
+        paths += [x for x in found if x] or [unquote(url.split("://", 1)[-1])]
     return paths
 
 
-def confidential_text(ctx: Context, text: str) -> str:
-    """What makes a source as written confidential, whether or not it resolves (D052, D053):
-    - a path written in company/ or finance/, in any form (`./`, `/`, absolute, capitals), including the path a
-      `file://` or `obsidian://` URL points to;
-    - the file name of a confidential file written without a folder.
-    Web URLs are left out: `linkedin.com/company/...` is an external page."""
+def resolve_written(ctx: Context, written: str, from_rel: str = "") -> str | None:
+    """A path as written anywhere: relative, absolute, with `~`, or from another machine
+    (`/Users/me/brain/projects/x`). Tried as it is, then from each vault folder named in it (D054)."""
+    target, _ = resolve_source(ctx, written, from_rel)
+    if target:
+        return target
+    path = os.path.expanduser(written.strip().strip("`'\"<>"))
+    candidates = []
+    if os.path.isabs(path):
+        inside = _report_inside(ctx.vault, path)
+        if inside:
+            candidates.append(inside)
+    parts = [x for x in path.replace("\\", "/").split("/") if x and x not in (".", "..")]
+    for k, part in enumerate(parts):
+        if part.lower() in VAULT_TOPS:
+            candidates.append("/".join([part.lower()] + parts[k + 1:]))
+    for candidate in candidates:
+        target, _ = resolve_source(ctx, candidate, from_rel)
+        if target:
+            return target
+    return None
+
+
+def _report_inside(vault: Path, path: str) -> str | None:
+    try:
+        rel = os.path.relpath(os.path.realpath(path), os.path.realpath(vault))
+    except ValueError:
+        return None
+    return None if rel == ".." or rel.startswith("../") else rel
+
+
+def path_shaped(word: str) -> bool:
+    """A word written as a path: a vault folder in front, a known file extension, or `/`, `~/` or `../` in front."""
+    plain = word.strip().strip("`'\"<>")
+    return looks_like_path(word) or has_known_extension(word) or (
+        plain.startswith(("/", "~/", "../")) and "/" in plain.lstrip("/~."))
+
+
+def confidential_text(ctx: Context, text: str, strict: bool = True) -> str:
+    """What makes a source as written confidential, whether or not it resolves (D052, D053, D054):
+    - a path in company/ or finance/ in any form (`./`, `/`, absolute, capitals, in emphasis), including the path
+      a local URL points to. Outside the declared sources (`strict` False), only such a path with a file name:
+      "finance/M&A" in a sentence is prose;
+    - in the declared sources only, the file name of a confidential file written without a folder.
+    Web links, web URLs and domains (`linkedin.com/company/...`) are external pages and are left out."""
     local = "\n".join("/" + path.lstrip("/") for path in _local_url_paths(text))
-    scan = WEB_URL_RE.sub(" ", LOCAL_URL_RE.sub(" ", text)) + "\n" + local
-    match = CONFIDENTIAL_WRITTEN_RE.search(scan)
+    scan = LOCAL_URL_RE.sub(" ", text)
+    scan = HOST_WORD_RE.sub(" ", WEB_URL_RE.sub(" ", WEB_LINK_RE.sub(" ", scan))) + "\n" + local
+    match = (CONFIDENTIAL_WRITTEN_RE if strict else CONFIDENTIAL_FILE_RE).search(scan)
     if match:
-        folder = match.group(0).strip(" (<[`'\":/").lower()
-        return f"a path in {folder}"
-    pattern = confidential_names(ctx)
+        folder = re.match(r"\W*(company|finance)", match.group(0).lstrip(), re.I) or re.search(r"(company|finance)", match.group(0), re.I)
+        return f"a path in {folder.group(1).lower()}"
+    pattern = confidential_names(ctx) if strict else None
     found = pattern.search(scan.lower()) if pattern else None
     return f"the confidential file {found.group(1)}" if found else ""
 
@@ -1011,16 +1068,16 @@ def content_findings(ctx: Context, page: v.Page, patterns=None, clients=None) ->
                     found.append((link, target))
                 elif not re.match(r"\[[^\]]*\]\(\s*<?[a-z][a-z0-9+.-]*:", link, re.I):
                     unresolved.append(link)  # a link to a URL is an external source (D053)
-            for word in source_words(LINK_ITEM_RE.sub(" ", source)):
+            for word in source_words(LINK_ITEM_RE.sub(" ", WEB_URL_RE.sub(" ", source))):
                 plain = _plain_path(word)
                 if not ("/" in plain or EXTENSION_RE.search(plain) or KEBAB_NAME_RE.fullmatch(plain)):
                     continue  # a word of a note, such as "Decisions" or "via"
-                target, _ = resolve_source(ctx, word, rel)
+                target = resolve_written(ctx, word, rel)
                 if target:
                     if (word, target) not in found:
                         found.append((word, target))
-                elif looks_like_path(word) or has_known_extension(word):
-                    unresolved.append(word)  # not "e.g.", "3.2", "Node.js" or "80/20" (D053)
+                elif path_shaped(word):
+                    unresolved.append(word)  # not "e.g.", "3.2", "Node.js" or "80/20" (D053, D054)
         for name, target in found:
             check_source(name if target == name else f"{name} ({target})", target)
         if named and not any(target.split("/", 1)[0].lower() in v.CONFIDENTIAL_FOLDERS for _, target in found):
@@ -1037,13 +1094,24 @@ def content_findings(ctx: Context, page: v.Page, patterns=None, clients=None) ->
             check_source(f"{word} ({target})", target)
     # the raw texts too, before any URL is dropped: each item of `sources`, each src comment and the whole notes
     # section, so a `file://` URL or a path with a space never slips through (D052, D053)
-    raw = [str(x) for x in v.as_list(fm.get("sources"))] + [m.group(1) for m in SRC_COMMENT_RE.finditer(page.body)]
+    declared = [str(x) for x in v.as_list(fm.get("sources"))] + [m.group(1) for m in SRC_COMMENT_RE.finditer(page.body)]
+    declared += _notes_lines(page)
     notes = v.find_section(page.body, NOTES_HEADING) if is_draft else None
-    raw += ["\n".join(notes.lines)] if notes else []
-    for text in raw:
-        named = confidential_text(ctx, text)
+    others = "\n".join(notes.lines) if notes else ""
+    for text, strict in [(t, True) for t in declared] + [(others, False)]:
+        named = confidential_text(ctx, text, strict)
         if named and not any(named in f.message for f in findings):
             add("error", f"a source names {named} (19.4b)")
+        for written in _local_url_paths(text):  # a local URL to a mission page anywhere (D054)
+            target = resolve_written(ctx, written, rel)
+            if target:
+                check_source(f"{written} ({target})", target)
+    clean = HOST_WORD_RE.sub(" ", WEB_URL_RE.sub(" ", WEB_LINK_RE.sub(" ", LOCAL_URL_RE.sub(" ", others))))
+    for word in source_words(clean):  # a page named with its folder anywhere in the notes (D054)
+        if "/" in word and path_shaped(word):
+            target = resolve_written(ctx, word, rel)
+            if target:
+                check_source(f"{word} ({target})", target)
     node = ctx.graph.nodes.get(rel)
     for _, target in node.targets if node else []:
         if target.split("/", 1)[0] in v.CONFIDENTIAL_FOLDERS or (
@@ -1057,7 +1125,7 @@ def content_findings(ctx: Context, page: v.Page, patterns=None, clients=None) ->
     channel = fm.get("channel")
     if isinstance(channel, str) and channel and not (ctx.vault / "content" / "channels" / f"{channel}.md").is_file():
         add("error", f"no channel guide content/channels/{channel}.md")
-    return findings
+    return list({f.message: f for f in findings}.values())  # one finding per message
 
 
 def ideas_findings(ctx: Context, clients) -> list[Finding]:

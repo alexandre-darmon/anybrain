@@ -653,3 +653,78 @@ def test_a_stored_command_keeps_no_text_it_carries(command, shown):
 def test_a_backslash_here_document_is_data_not_commands(vault):
     read, written, _ = t.files_from_shell("cat > content/drafts/n.md <<\\EOF\nDo not cite company/q3.md.\nEOF", vault)
     assert read == [] and written == ["content/drafts/n.md"]
+
+
+# ---------------------------------------------------------------- check of the D053 fixes (D054)
+
+@pytest.fixture
+def deep(vault):
+    (vault / "company" / "clients").mkdir()
+    (vault / "company" / "clients" / "acme.md").write_text("Acme pricing\n")
+    (vault / "company" / "Board deck [final].md").write_text("deck\n")
+    (vault / "finance").mkdir()
+    (vault / "finance" / "holdings.csv").write_text("date,ticker\n")
+    return vault
+
+
+def local(vault, command):
+    read, _, searches = t.files_from_shell(command, vault)
+    return t.local_only_reads(vault, read, None, searches)
+
+
+@pytest.mark.parametrize("command, expected", [
+    ("python3 -c \"print(open('company/q3.md').read()[:300])\"", "company/q3.md"),
+    ("python3 -c \"import csv; print(list(csv.reader(open('finance/holdings.csv')))[:3])\"", "finance/holdings.csv"),
+    ('cat "company/Board deck [final].md"', "company/Board deck [final].md"),
+    ("find company/clients -type f | sort | xargs cat", "company/clients/acme.md"),
+    ("find . -name '*.md' | head -40 | xargs grep -l pricing", "company/clients/acme.md"),
+    ("cd company/clients && ls | xargs cat", "company/clients/acme.md"),
+    ("grep -rl pricing */", "company/clients/acme.md"),
+    ("grep -rn pricing {company,wiki}", "company/clients/acme.md"),
+    ("rg -l pricing company*", "company/clients/acme.md"),
+    ("find company \\( -name '*.md' -o -name '*.csv' \\) -exec cat {} +", "company/clients/acme.md"),
+    ("cat company/**/*.md", "company/clients/acme.md"),
+    ("find company/* -exec cat {} +", "company/clients/acme.md"),
+    ("timeout 30 grep -rn pricing company", "company/clients/acme.md"),
+    ("env LANG=C grep -rn pricing company", "company/clients/acme.md"),
+    ("CDPATH= cd company && cat q3.md", "company/q3.md"),
+])
+def test_common_shell_forms_that_read_are_seen(deep, command, expected):
+    assert expected in local(deep, command), command
+
+
+@pytest.mark.parametrize("command", [r"find company -name '*.md' -exec basename {} \;", "find . -name '.DS_Store' -exec rm {} +",
+                                     "for f in company/*.md; do echo \"$f\"; done",
+                                     "for f in company/*.md; do basename \"$f\"; done",
+                                     "find . -maxdepth 1 -name '*.md' -exec head -3 {} +",
+                                     r"find . -name 'pricing.md' -exec cat {} \;"])
+def test_listing_or_a_narrow_find_reads_no_local_only_file(deep, command):
+    assert local(deep, command) == [], command
+
+
+def test_a_loop_whose_body_reads_its_variable_reads_its_list(deep):
+    assert "company/q3.md" in local(deep, 'for f in company/*.md; do head -3 "$f"; done')
+
+
+def test_a_glob_after_a_tilde_and_in_a_vault_with_brackets(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    vault = home / "Brain [main]"
+    (vault / "company").mkdir(parents=True)
+    (vault / "company" / "q3.md").write_text("x\n")
+    monkeypatch.setenv("HOME", str(home))
+    for command in ["cat company/*.md", "cat ~/'Brain [main]'/company/*.md"]:
+        read, _, _ = t.files_from_shell(command, vault)
+        assert read == ["company/q3.md"], command
+
+
+@pytest.mark.parametrize("command, secret", [
+    ("echo '2026-11-19 · ask · what'\\''s my take on SECRET-PROMPT-WORDS' >> log.md", "SECRET-PROMPT-WORDS"),
+    ("# fix the owner's wording\nsed -i 's/SECRET-ANSWER-WORDS long sentence of the draft/short/' content/drafts/a.md",
+     "SECRET-ANSWER-WORDS"),
+    ("sed -i 's/2026-06-10,PEA,ETF,10/2026-06-10,PEA,ETF,15/' finance/holdings.csv", "PEA,ETF"),
+    ("printf '%s\\n' \"it's SECRET-PROMPT-WORDS\" > me/x.md", "SECRET-PROMPT-WORDS"),
+])
+def test_quotes_escapes_and_comments_never_leave_text_in_a_stored_command(command, secret):
+    shown = t.shown_command(command)
+    assert secret not in shown, shown
+    assert "log.md" in shown or "drafts/a.md" in shown or "holdings.csv" in shown or "me/x.md" in shown
