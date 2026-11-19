@@ -276,10 +276,18 @@ def main(argv: list[str] | None = None) -> int:
     from .vault import VaultError
 
     try:
-        return args.func(args)
+        code = args.func(args)
+        sys.stdout.flush()  # inside the try, so that a closed pipe on the last buffered lines is caught too
+        return code
     except (UsageError, VaultError) as exc:
         print(f"anybrain: error: {exc}", file=sys.stderr)
         return 2
+    except BrokenPipeError:
+        # The reader closed the pipe (`anybrain stats | head`): stop quietly. Pointing stdout at /dev/null
+        # keeps Python from raising again when it flushes stdout on exit.
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
+        return 1
 
 
 if __name__ == "__main__":

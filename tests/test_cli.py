@@ -49,3 +49,22 @@ def test_console_script_is_installed():
 
 def test_python_version_is_supported():
     assert sys.version_info >= (3, 11)
+
+
+@pytest.mark.parametrize("args", [["lint", "vault.example"], ["index", "vault.example", "--check"]])
+def test_closed_pipe_stops_quietly(args, tmp_path):
+    """`anybrain lint | head` must not print a traceback when the reader closes the pipe, whether the
+    output is long (error while printing) or short (error when the buffer is flushed on exit)."""
+    import os
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[1]
+    read_end, write_end = os.pipe()
+    os.close(read_end)
+    try:
+        result = subprocess.run([sys.executable, "-m", "anybrain.cli", *args], cwd=repo, stdout=write_end,
+                                stderr=subprocess.PIPE, text=True, env={**os.environ, "ANYBRAIN_TODAY": "2026-11-16"})
+    finally:
+        os.close(write_end)
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr and "BrokenPipeError" not in result.stderr
