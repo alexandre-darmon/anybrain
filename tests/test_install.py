@@ -422,3 +422,49 @@ def test_the_guard_sees_a_linked_folder_and_an_index_outside_the_layout(tmp_path
     assert cli.main(["init", str(brain)]) == 2
     err = capsys.readouterr().err
     assert "Old" in err and "Notes/index.md" in err
+
+
+# ---------------------------------------------------------------- independent check of the D047 fixes (D050)
+
+LEGACY_PAGE = "---\ntitle: House renovation\ntype: project\ndescription: Works.\n---\n\n## Summary\n\nMine.\n"
+
+
+@pytest.mark.parametrize("files", [
+    {"projects/house-renovation.md": LEGACY_PAGE, "library/dune.md": "---\ntitle: Dune\ntype: book\n---\n"},
+    {"raw/old-notes/diary.md": "# Legacy diary\n"},
+    {"finance/holdings.csv": "date,ticker\n"},
+])
+def test_pages_shaped_like_anybrain_ones_count_only_in_an_earlier_vault(tmp_path, home, files):
+    brain = tmp_path / "brain"
+    for rel, text in files.items():
+        (brain / rel).parent.mkdir(parents=True, exist_ok=True)
+        (brain / rel).write_text(text)
+    assert cli.main(["init", str(brain)]) == 2
+    assert not (brain / install.RENDER).exists()
+
+
+def test_a_linked_file_is_foreign_even_in_a_copy_of_the_example_vault(tmp_path, home, capsys):
+    import shutil
+    from conftest import EXAMPLE
+    outside = tmp_path / "ext" / "dune.md"
+    outside.parent.mkdir()
+    outside.write_text("---\ntitle: Dune\ntype: book\n---\n")
+    brain = tmp_path / "brain"
+    shutil.copytree(EXAMPLE, brain)
+    (brain / "library" / "dune.md").symlink_to(outside)
+    assert cli.main(["init", str(brain)]) == 2
+    assert "library/dune.md" in capsys.readouterr().err
+
+
+def test_update_and_doctor_say_when_the_routing_keeps_the_voice_profile_local(tmp_path, home, capsys):
+    brain = tmp_path / "brain"
+    assert cli.main(["init", str(brain)]) == 0
+    models = brain / ".harness" / "models.toml"
+    models.write_text("\n".join(line for line in models.read_text().splitlines() if not line.startswith('"me/voice.md"')) + "\n")
+    capsys.readouterr()
+    assert cli.main(["update", str(brain), "--yes"]) == 0
+    assert "keeps me/voice.md local" in capsys.readouterr().out
+    cli.main(["doctor", str(brain)])
+    assert "keeps me/voice.md local" in capsys.readouterr().out
+    init_text = (v.framework_root() / "templates" / "models.example.toml").read_text()
+    assert init_text.count('"me/voice.md"') == 1 and "already readable by every model" in init_text

@@ -271,14 +271,34 @@ def link_skills(vault: Path, out: Callable[[str], None], ask: Callable[[str], bo
 
 # ---------------------------------------------------------------------------- init
 
+COMMON_FIELDS = ("title", "type", "description", "tags", "language", "created", "updated", "sources", "sensitivity")
+
+
+def earlier_vault(vault: Path) -> bool:
+    """True when the folder shows an anybrain vault made before: its graph, or an index anybrain generated."""
+    from .index import HEADER
+
+    if (vault / ".harness" / "graph.json").is_file():
+        return True
+    for rel in ["index.md"] + [f"{d}/index.md" for d in v.DOMAINS]:
+        path = vault / rel
+        try:
+            if path.is_file() and not path.is_symlink() and v.read_text(path).startswith(HEADER):
+                return True
+        except (OSError, UnicodeDecodeError):
+            continue
+    return False
+
+
 def _anybrain_page(vault: Path, rel: str) -> bool:
-    """A file in the vault layout that anybrain could have made: a page with its frontmatter and a known type,
-    or any file under raw/ next to such pages."""
+    """A file of an earlier anybrain vault: a page in the layout with every common field (11.1) and a known
+    type, a file under raw/, or numbers kept as CSV in company/ or finance/ (10.2). Only asked when the folder
+    shows an earlier vault (`earlier_vault`)."""
     top = rel.split("/", 1)[0]
     if "/" not in rel or top not in {d.split("/")[0] for d in LAYOUT_DIRS} | {"content"}:
         return False
     if top == "raw" or (top in v.CONFIDENTIAL_FOLDERS and rel.endswith(".csv")):
-        return True  # raw inputs; numbers kept as CSV next to the notes (10.2)
+        return True
     if not rel.endswith(".md"):
         return False
     from . import lint
@@ -287,7 +307,8 @@ def _anybrain_page(vault: Path, rel: str) -> bool:
         fm, *_ = v.parse_frontmatter(v.read_text(vault / rel))
     except (OSError, UnicodeDecodeError):
         return False
-    return isinstance(fm, dict) and fm.get("type") in lint.TYPES and bool(fm.get("title"))
+    return (isinstance(fm, dict) and fm.get("type") in lint.TYPES
+            and all(field in fm for field in COMMON_FIELDS) and bool(fm.get("title")) and bool(fm.get("description")))
 
 
 VAULT_ENTRIES = {d.split("/")[0] for d in LAYOUT_DIRS} | {
@@ -307,6 +328,7 @@ def refuse_foreign_notes(vault: Path) -> None:
     # attachments, even inside folders named like the vault layout.
     found = []
     domains = {f"{d}/index.md" for d in v.DOMAINS}
+    earlier = earlier_vault(vault)  # a copy of vault.example, a vault restored from backup (D047, D050)
     for directory, dirs, files in os.walk(vault):
         for name in sorted(d for d in dirs if not d.startswith(".")):
             if os.path.islink(os.path.join(directory, name)):  # a link to a folder elsewhere: someone's files
@@ -314,12 +336,16 @@ def refuse_foreign_notes(vault: Path) -> None:
         dirs[:] = sorted(d for d in dirs if not d.startswith(".") and not os.path.islink(os.path.join(directory, d)))
         for name in sorted(files):
             rel = v.rel_path(vault, Path(directory) / name)
+            if os.path.islink(os.path.join(directory, name)) and rel != "CLAUDE.md":
+                if not name.startswith("."):
+                    found.append(rel)  # a link to a file elsewhere: someone's note, and edits would go there
+                continue
             if name.startswith(".") or rel in VAULT_ENTRIES or rel in v.APPEND_ONLY_FILES:
                 continue
             if rel == "index.md" or rel in domains:
                 continue  # a hand-written index, which init keeps as the owner wrote it (Q19)
-            if _anybrain_page(vault, rel):
-                continue  # a page anybrain could have made: a copy of vault.example, a vault restored from backup
+            if earlier and _anybrain_page(vault, rel):
+                continue
             found.append(rel)
     if found == ["Welcome.md"]:
         raise v.VaultError(f"{vault} holds Obsidian's sample page Welcome.md: delete it, then run init again")
@@ -495,7 +521,23 @@ def update(target: str | None, yes: bool = False, out: Callable[[str], None] = p
     link_skills(vault, out, ask=None if yes else ask)
     merge_obsidian(vault, out)
     save_render(vault, render, out)
+    if note := voice_route_note(vault):
+        out(f"note: {note}")
     return 0
+
+
+def voice_route_note(vault: Path) -> str | None:
+    """AGENTS.md and the skills say every model reads me/voice.md (Q35). A vault made before 0.1.0 may still
+    route it local: say so instead of rewriting the owner's routing (D050)."""
+    try:
+        local = v.load_routing(vault).route("me/voice.md") == "local"
+    except v.VaultError:
+        return None
+    if not local:
+        return None
+    return ('.harness/models.toml keeps me/voice.md local, so frontier sessions cannot read your voice profile, '
+            'while AGENTS.md and the skills say every model can. To let them, add `"me/voice.md" = "frontier"` '
+            'under [routing], then run anybrain update')
 
 
 # ---------------------------------------------------------------------------- doctor (9.5)
@@ -609,6 +651,8 @@ def doctor(target: str | None, out: Callable[[str], None] = print, timeout: floa
     else:
         report("ok", f"{ENV_FILE} exists and is private (600)")
 
+    if note := voice_route_note(vault):
+        report("warn", note)
     report("note", "iCloud Advanced Data Protection should be ON (cannot be checked from here).")
     out(f"doctor: {failures} problem(s)")
     return 1 if failures else 0

@@ -595,3 +595,28 @@ Format: `D<number> · <title>`, with the build step and the PRD sections involve
 
 - **Acceptance.** CI is green on Python 3.11 and 3.12. `init` passes on a fresh macOS runner with an empty home, installed the way an owner installs it (D041). The version is 0.1.0, merged to `main` in pull request #4.
 - **The tag.** The build session could not push the `v0.1.0` tag: its git proxy accepts pushes to the working branch only and cut the tag push off. The owner creates the tag and the release on GitHub, on the merge commit of pull request #4, with the notes the session prepared.
+
+## D050 · Independent check of the D047 fixes
+
+After the release, a fresh review tried to break the fixes of D047 (commit 75f3323). Each finding was then reproduced from scratch by a second agent, against 75f3323 and the commit before it. All 13 were confirmed. One is high: a draft built from a mission page could reach `ready`. All are fixed with regression tests (`tests/test_content.py`, `tests/test_install.py`).
+
+- **Sources in `src` comments (high).** D047 stopped splitting items on spaces, so a whole item that started with a URL was dropped, with the vault path after it (`<!-- src: https://... projects/acme-mission.md -->`).
+  - URLs are now removed from the comment before it is split, so the rest is still read.
+  - An item that does not resolve as a whole is tried word by word. Every word that resolves is a source, so `projects/acme-mission.md (Decisions)` names the mission page again. A confidential source is an error at every status, never downgraded to "not found".
+- **The notes' "Sources used" line.**
+  - A bare page name (`acme-mission`) is checked when it resolves and ignored when it does not, so prose never blocks `ready`.
+  - Words with a slash count as paths only when they start with a vault folder or end in `.md`, so `80/20`, `and/or` or `My take/Timeline` are prose.
+  - A nested list indented with a tab, and a top-level list right under a label alone on its line (`**Sources used:**`), are read.
+- **Placeholders.** The check matches the opening `[YOUR STORY` or `[YOUR NUMBER` again (PRD 15.4), even when the agent wraps the hint over lines or never closes it. Only the text of a link to a URL, an anchor or a file is left out. `[YOUR NUMBER](%)` counts.
+- **Client names.** Markdown escapes are removed before the search, so `E\*Trade` matches `E*Trade`. `lint --secrets` uses the same text.
+- **`content/ideas.md`.**
+  - Trailing punctuation is removed from words, so `raw/docs/contract.md.` resolves.
+  - Bare file names (`acme-mission.md`) are checked again.
+  - A path in a local-only folder counts even when the file does not exist or its name holds a space, through links with `<...>` targets and the routing of the words before the space.
+- **Edit ratio.** When a long changed passage shares no word with the other side, refining it again gave the same input: `_changed` recursed until Python stopped it, and `content diff` crashed. Such a passage now counts as fully changed.
+- **The init guard.**
+  - Pages shaped like anybrain's are exempt only in a folder that shows an earlier anybrain vault: `.harness/graph.json`, or an `index.md` that starts with the generated header. Such a page also needs every common field of 11.1.
+  - Without that evidence, files under `raw/` and CSV files are foreign, as before D047.
+  - A linked file is foreign, like a linked folder. The root `CLAUDE.md` link is the only exception.
+- **`me/voice.md` routing.** `update` and `doctor` print a note when the vault's routing still keeps `me/voice.md` local while `AGENTS.md` and the skills say every model reads it. The owner's routing is never rewritten. The comment in `models.example.toml` no longer tells the owner to add a line that is already there.
+- **Not a finding, found while fixing.** Claude Code's `Grep` tool is not counted as a read in a trace; only `Read` and shell commands are. Whether its results skip denied files has not been measured. It is left as it was and listed for a later check.

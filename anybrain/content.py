@@ -105,6 +105,8 @@ def _changed(old: str, new: str) -> int:
         return max(len(old), len(new))
     changed = 0
     for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if op == "replace" and (i1, i2, j1, j2) == (0, len(a), 0, len(b)):
+            return max(len(old), len(new))  # nothing in common at this level: refining again would loop (D050)
         if op != "equal":
             changed += _changed("".join(a[i1:i2]), "".join(b[j1:j2])) if op == "replace" else \
                 sum(map(len, a[i1:i2])) + sum(map(len, b[j1:j2]))

@@ -33,8 +33,11 @@ CONFIDENCE = ("low", "medium", "high")
 CHANNELS = ("linkedin", "article", "newsletter", "site", "portfolio", "application", "bio", "email")
 TAILORED_CHANNELS = ("application", "bio", "email")  # these need a `brief` in raw/inbox/
 DRAFT_STATUS = ("idea", "drafting", "ready", "published", "dropped")
-# [YOUR STORY: ...], [Your story], [YOUR NUMBERS: ...]; not the text of a Markdown link such as [your story](url)
-PLACEHOLDER_RE = re.compile(r"\[\s*YOUR\s+(?:STOR(?:Y|IES)|NUMBERS?)\b[^\]\n]*\](?!\()", re.I)
+# The opening of [YOUR STORY: ...], [Your story], [YOUR NUMBERS: ...] (15.4), even wrapped over lines or never
+# closed; not the text of a Markdown link to a page or a URL, such as [your story](https://...) (D050)
+PLACEHOLDER_RE = re.compile(
+    r"\[\s*YOUR\s+(?:STOR(?:Y|IES)|NUMBERS?)\b"
+    r"(?![^\]]*\]\(\s*<?(?:[a-z][a-z0-9+.-]*:|#|\.{0,2}/|[^)\s>]+\.(?:md|html?|pdf)\b))", re.I)
 SRC_COMMENT_RE = re.compile(r"<!--\s*(?:src|sources?)\s*:\s*(.*?)\s*-->", re.I | re.S)
 BULLET_RE = re.compile(r"^(?:[-*+]|\d+[.)])\s+")
 HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
@@ -603,9 +606,13 @@ def client_matchers(vault: Path) -> list[tuple[str, re.Pattern]]:
             for name in _client_names(vault)]
 
 
+MD_ESCAPE_RE = re.compile(r"\\([\\`*_{}\[\]()#+\-.!|~<>])")
+
+
 def client_texts(text: str) -> list[str]:
     """The text as a client-name search must see it: composed accents, plain spaces and apostrophes, no
     emphasis stars; and the same text without accents. Both keep every line break, so line numbers hold."""
+    text = MD_ESCAPE_RE.sub(r"\1", text)  # E\*Trade renders as E*Trade
     base = unicodedata.normalize("NFC", pii.fold_spaces(text)).translate(QUOTE_FOLD).replace("*", "")
     plain = unicodedata.normalize("NFKD", base).encode("ascii", "ignore").decode("ascii")
     return [base] if plain == base else [base, plain]
@@ -754,38 +761,75 @@ def content_text(page: v.Page) -> str:
 LINK_ITEM_RE = re.compile(r"\[\[[^\]]+\]\]|\[[^\]]*\]\([^)]+\)")
 
 
+URL_RE = re.compile(r"<?\b[a-z][a-z0-9+.-]*://[^\s>,;]*>?", re.I)
+VAULT_TOPS = {d.split("/", 1)[0] for d in v.DOMAINS} | {"raw"}
+SOURCES_LABEL_RE = re.compile(r"^(\s*)[-*+]?\s*\**\s*sources?(?:\s+used)?\s*\**\s*:\**\s*(.*)$", re.I)
+
+
+def looks_like_path(token: str) -> bool:
+    """A word that reads as a vault path: it ends in `.md`, or starts with a top folder of the vault."""
+    return token.lower().endswith(".md") or ("/" in token and token.split("/", 1)[0] in VAULT_TOPS)
+
+
+def source_words(text: str) -> list[str]:
+    """The words of a source item or a line of prose, without brackets, quotes or end punctuation."""
+    words = (w.strip("()[]{}<>`'\"*").rstrip(".,;:!?") for w in re.split(r"[\s,;]+", URL_RE.sub(" ", text)))
+    return [w for w in words if w]
+
+
+def _src_items(text: str) -> list[str]:
+    """Items of a `<!-- src: ... -->` comment: its links, then the rest cut at commas, semicolons and lines
+    (a path may hold spaces). URLs are removed first, so a path after a URL is still read (D050)."""
+    rest = URL_RE.sub(",", LINK_ITEM_RE.sub(",", text))
+    return LINK_ITEM_RE.findall(text) + [part for part in re.split(r"[,;\n]+", rest) if part.strip()]
+
+
+def _notes_lines(page: v.Page) -> list[str]:
+    """The text of the "Sources used" line in a draft's notes, with the list under it: nested items (spaces or
+    a tab), or a top-level list right after a label with nothing else on its line."""
+    notes = v.find_section(page.body, NOTES_HEADING) if page.type == "draft" else None
+    found, mode = [], None
+    for line in notes.lines if notes else []:
+        label = SOURCES_LABEL_RE.match(line)
+        if label:
+            text = label.group(2).strip().strip("*").strip()
+            found.append(text)
+            mode = "nested" if text else "list"
+        elif mode and (re.match(r"^(?:\t|\s{2,})[-*+]\s", line) or (mode == "list" and re.match(r"^\s*[-*+]\s", line))):
+            found.append(line)
+        elif mode == "list" and not line.strip() and not found[-1].strip():
+            continue
+        else:
+            mode = None
+    return found
+
+
 def content_sources(page: v.Page) -> list[str]:
-    """The sources a draft or published piece names, as written: each item of `sources`, and each path,
-    wikilink or Markdown link in a `<!-- src: ... -->` comment. URLs are left out."""
-    found: list[str] = []
+    """The sources a draft or published piece declares, as written: each item of `sources`, each item of a
+    `<!-- src: ... -->` comment, and the links and path-like words of the notes' "Sources used" line. Each must
+    resolve. URLs are left out."""
     items = [str(x) for x in v.as_list(page.meta.get("sources"))]
     for match in SRC_COMMENT_RE.finditer(page.body):
-        text = match.group(1)
+        items += _src_items(match.group(1))
+    for text in _notes_lines(page):
         items += LINK_ITEM_RE.findall(text)
-        # paths may hold spaces ("raw/highlights/The Snow Leopard.md"): split on commas, semicolons and lines
-        items += [part for part in re.split(r"[,;\n]+", LINK_ITEM_RE.sub(",", text)) if part.strip()]
-    notes = v.find_section(page.body, NOTES_HEADING) if page.type == "draft" else None
-    lines, inside = notes.lines if notes else [], False
-    for line in lines:
-        label = re.match(r"^(\s*)[-*+]?\s*\**\s*sources?(?:\s+used)?\s*\**\s*:\**\s*(.*)$", line, re.I)
-        if label:
-            inside, text = True, label.group(2)
-        elif inside and re.match(r"^\s{2,}[-*+]\s", line):
-            text = line  # a nested list under "Sources used"
-        else:
-            inside = False
-            continue
-        # from prose, only what looks like a vault reference: links, and tokens with a / or ending in .md
-        items += LINK_ITEM_RE.findall(text)
-        items += [t for t in re.findall(r"[^\s,;()]+", LINK_ITEM_RE.sub(" ", text)) if "/" in t or t.endswith(".md")]
+        items += [w for w in source_words(LINK_ITEM_RE.sub(" ", text)) if looks_like_path(w)]
+    found: list[str] = []
     for item in items:
         item = item.strip().strip("`'\"").rstrip(",;.").strip()
-        if not item or item.startswith(("http://", "https://", "<http")) or item in found:
+        if not item or URL_RE.fullmatch(item) or item in found:
             continue
-        if re.fullmatch(r"\[[^\]]*\]\(\s*<?https?://[^)]*\)", item):
+        if re.fullmatch(r"\[[^\]]*\]\(\s*<?[a-z][a-z0-9+.-]*://[^)]*\)", item, re.I):
             continue  # an external source, not a vault page
         found.append(item)
     return found
+
+
+def content_mentions(page: v.Page) -> list[str]:
+    """Other words of the notes' "Sources used" line, such as a page named without its folder. They are checked
+    for confidential pages when they resolve, and ignored when they do not, so prose never blocks `ready`."""
+    words = [w for text in _notes_lines(page) for w in source_words(LINK_ITEM_RE.sub(" ", text))]
+    return [w for w in dict.fromkeys(words) if not looks_like_path(w)]
 
 
 def resolve_source(ctx: Context, item: str, from_rel: str = "") -> tuple[str | None, str]:
@@ -850,20 +894,33 @@ def content_findings(ctx: Context, page: v.Page, patterns=None, clients=None) ->
     sources = content_sources(page)
     if is_draft and status != "dropped" and not sources:
         add("error", "no `sources`: a draft is built from vault pages (11.10)")
-    for source in sources:
-        rel_source, why = resolve_source(ctx, source, rel)
-        if rel_source is None:
-            # fail closed: a source nobody can check must not reach `ready`. A published piece is history: a
-            # source moved later is a warning, since nobody may edit the piece (D047)
-            add("error" if is_draft and status in ("ready", "published") else "warning", f"source {source} {why}")
-            continue
-        named = source if rel_source == source else f"{source} ({rel_source})"
+    def check_source(named: str, rel_source: str) -> None:
         if rel_source.split("/", 1)[0].lower() in v.CONFIDENTIAL_FOLDERS:
             add("error", f"source {named} is confidential (19.4b)")
         elif v.is_page_path(rel_source) and (ctx.vault / rel_source).is_file():
             other = v.load_page(ctx.vault, ctx.vault / rel_source)
             if other.sensitivity == "confidential" or other.meta.get("kind") == "mission":
                 add("error", f"source {named} is a confidential or mission page (19.4b)")
+
+    for source in sources:
+        rel_source, why = resolve_source(ctx, source, rel)
+        found = [(source, rel_source)] if rel_source else []
+        if not found and not LINK_ITEM_RE.fullmatch(source):
+            # an item with a note or a second path in it: each word that resolves is a source (D050)
+            for word in source_words(source):
+                target, _ = resolve_source(ctx, word, rel)
+                if target and (word, target) not in found:
+                    found.append((word, target))
+        if not found:
+            # fail closed: a source nobody can check must not reach `ready`. A published piece is history: a
+            # source moved later is a warning, since nobody may edit the piece (D047)
+            add("error" if is_draft and status in ("ready", "published") else "warning", f"source {source} {why}")
+        for name, target in found:
+            check_source(name if target == name else f"{name} ({target})", target)
+    for word in content_mentions(page):
+        target, _ = resolve_source(ctx, word, rel)
+        if target:
+            check_source(f"{word} ({target})", target)
     node = ctx.graph.nodes.get(rel)
     for _, target in node.targets if node else []:
         if target.split("/", 1)[0] in v.CONFIDENTIAL_FOLDERS or (
@@ -895,14 +952,22 @@ def ideas_findings(ctx: Context, clients) -> list[Finding]:
                 findings.append(Finding("error", "content", f"{rel}:{number}: names a client from .harness/clients.txt (19.4)", rel))
                 break
     for number, line in enumerate(text.split("\n"), start=1):
-        for item in re.findall(r"\[\[[^\]]+\]\]|[\w.-]+(?:/[\w.-]+)+", line):
+        # links (with `<...>` targets, which may hold spaces), and words that read as a path or a file name
+        items = LINK_ITEM_RE.findall(line) + [w for w in source_words(LINK_ITEM_RE.sub(" ", line))
+                                              if "/" in w or w.lower().endswith(".md")]
+        for item in items:
             target, _ = resolve_source(ctx, item)
-            if target is None:
-                continue
+            # a path in a local-only folder counts even when the file is not there, or its name holds a space
+            link = re.match(r"\[\[([^\]|#]+)[^\]]*\]\]|\[[^\]]*\]\(\s*<?([^)>#]+)", item)
+            written = ((link.group(1) or link.group(2)) if link else item).strip().removeprefix("./")
+            folder = written if target is None and "/" in written else None
             page = ctx.graph.nodes[target].page if target in ctx.graph.nodes else None
-            if (target.split("/", 1)[0] in v.CONFIDENTIAL_FOLDERS or v.is_local_only_path(ctx.vault, target)
-                    or (page and page.local_only)):
+            if (target and (target.split("/", 1)[0] in v.CONFIDENTIAL_FOLDERS
+                            or v.is_local_only_path(ctx.vault, target) or (page and page.local_only))) or (
+                    folder and (folder.split("/", 1)[0] in v.CONFIDENTIAL_FOLDERS
+                                or v.is_local_only_path(ctx.vault, folder))):
                 findings.append(Finding("error", "content", f"{rel}:{number}: names a local-only source (19.4b)", rel))
+                break
     return findings
 
 
