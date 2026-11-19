@@ -61,9 +61,9 @@ Pages follow typed contracts (11): a book has `## My take` (the owner's), key id
 | `lint.py`, `protect.py` | The checks of 15.4 and 13.6; protected and append-only hashing | 12, 13.6, 15.4 |
 | `install.py` | `init`, `update`, `doctor`; renders `AGENTS.md` and the harness permission files | 9.3, 9.5, 18.4 |
 | `anonymize.py` | Masks names, emails, phones, IBANs, cards and keys before a frontier model sees a file | 19.3 |
-| `feedback.py`, `stats.py` | Correction log and rule proposals; usage counts per week and per skill | 16, 6 |
+| `feedback.py`, `stats.py` | Correction log and rule proposals; usage counts per week and per skill, session figures, the dashboard | 16, 6, 22.6, 22.7 |
 | `migrate.py` | Legacy snapshot, inventory, review dates, check that owner text survived | 21 |
-| `evals.py`, `trace.py` | Golden-set runner, graders, judge, gates, baselines; run traces per harness | 17.3, 22 |
+| `evals.py`, `trace.py` | Golden-set runner, graders, judge, gates, baselines; run traces per harness; session import | 17.3, 22 |
 | `content.py` | Draft snapshots, edit ratio and changed passages, content checks on one file | 11.10, 11.11, 15.10, 15.11 |
 
 **Indexes and the graph** (13, 14). `anybrain index` writes one `index.md` per domain, one line per page built from its `description`, and a root index with one line per domain. It also writes `.harness/graph.json`, where each link keeps the sentence that carries it, so the agent can judge a relation without opening the page. `anybrain neighbors <page>` prints the links in and out of a page with those sentences.
@@ -96,7 +96,11 @@ The rule holds at three layers, plus a test (18.4):
 
 Every case gets a **run trace** (22.5), built from the harness's own machine output, never from the model's report. A trace records files read and written, tool calls, refusals, tokens, cost, and any local-only file read on the frontier profile, which fails the run. Traces stay in `.harness/`, routed local, with no service and no collector (D032).
 
-If the owner edits the vault during a run, the runner waits until the vault has been quiet for 15 minutes and reruns only the cases that saw older content (D038). From phase 2, every session is traced, and a generated dashboard page in `journal/` shows these figures in Obsidian (22.6, 22.7).
+If the owner edits the vault during a run, the runner waits until the vault has been quiet for 15 minutes and reruns only the cases that saw older content (D038).
+
+**Every session, not only evals** (22.6, D049). `anybrain trace import` reads the transcripts Claude Code already keeps and stores one record per question asked in a session, with no prompt and no answer in it. No hook, no daemon: the weekly `lint` skill runs it. The cost is the harness's own figure; when several questions share one, it is split by tokens and the record says so. Records older than 30 days become weekly totals without paths. `anybrain stats` prints local-only reads on the frontier profile, cost per skill and per week, and the median files read per `ask`.
+
+**The dashboard** (22.7). `anybrain stats --dashboard` writes `journal/dashboard.md`, a generated page with tables and text bars: local-only reads first, then costs, files read, the last eval runs, graph figures, usage and pending rule proposals. It sits in `journal/`, which is local, because it summarises traces. The figures Obsidian can compute itself, books by status or projects past their review date, are Dataview queries in `templates/obsidian/dashboard-vault.md`, which the owner may copy into the vault.
 
 ## Migration
 

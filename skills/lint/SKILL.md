@@ -33,7 +33,12 @@ Fix the mechanical, report the judgmental, delete nothing.
 5. **Content ideas.** Up to 3 ideas from what moved this week: a concept that gained a source, a strong take the owner wrote, a project that shipped. For each, one angle and its source paths, after checking in `content/index.md` that no published piece already makes the point. Append them to `content/ideas.md`, one line each: `YYYY-MM-DD · <angle> · <source paths>`. Frontier models read that file: take ideas only from pages that are not local-only, even on the local profile, and never name a client. `anybrain lint --content` checks it.
 6. **Raw files waiting.** List the files in `raw/` with no compiled page, or newer than their page, as candidates for `ingest`.
 7. **Rebuild.** Run `anybrain index .`.
-8. **Report.** Add five sections to the report file of step 1: fixed, needs the owner (contradictions, merges, stale projects, findings you could not fix), proposed rules, content ideas, raw files waiting. Run `anybrain stats .` and copy its content lines (edit ratio per piece, the 8th-piece target, whether the ratio is going down) under content ideas: when it says the ratio did not go down, the report says so (16.5). At most 40 lines in total. A report in `journal/reports/` is read by frontier models: never quote the content of a local-only file in it. Never write a report outside the vault. Append to `log.md`.
+8. **Run traces.** Run `anybrain trace import .`: it stores what each finished session did (files read, cost, local-only files read on the frontier profile) and deletes traces older than 30 days, keeping weekly totals. Then run `anybrain stats . --dashboard` to refresh `journal/dashboard.md`. Do not open the traces or the dashboard yourself: both are local-only.
+9. **Report.** Add six sections to the report file of step 1: fixed, needs the owner (contradictions, merges, stale projects, findings you could not fix), proposed rules, content ideas, raw files waiting, run traces. Run `anybrain stats .`:
+   - copy its content lines (edit ratio per piece, the 8th-piece target, whether the ratio is going down) under content ideas; when it says the ratio did not go down, the report says so (16.5);
+   - copy its session lines under run traces: local-only files read on the frontier profile first (target 0), then cost per skill and per week, and the median files read per `ask`. Each local-only read also goes under needs the owner, with its date and skill, to be explained in `journal/`.
+
+   At most 40 lines in total. A report in `journal/reports/` is read by frontier models: name a local-only file by its path only, and never quote the content of one. Never write a report outside the vault. Append to `log.md`.
 
 ## Red lines
 

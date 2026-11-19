@@ -596,6 +596,40 @@ Format: `D<number> · <title>`, with the build step and the PRD sections involve
 - **Acceptance.** CI is green on Python 3.11 and 3.12. `init` passes on a fresh macOS runner with an empty home, installed the way an owner installs it (D041). The version is 0.1.0, merged to `main` in pull request #4.
 - **The tag.** The build session could not push the `v0.1.0` tag: its git proxy accepts pushes to the working branch only and cut the tag push off. The owner creates the tag and the release on GitHub, on the merge commit of pull request #4, with the notes the session prepared.
 
+## D049 · Observability built early: session traces and the dashboard (22.6, 22.7)
+
+- **Owner request, 2026-11-19:** "attaque l'observabilité", before step 18 and the 4-week measure that P2 waits for (Q40).
+- **Checked in the official Claude Code docs** (Q6), 2026-11-19:
+  - Transcripts are kept at `~/.claude/projects/<project>/<session-id>.jsonl`. `<project>` is the working directory with every character that is not a letter or a digit replaced by `-`; a name over 200 characters is cut and gets a hash. `CLAUDE_CONFIG_DIR` moves the whole folder. Subagent transcripts sit in `<session-id>/subagents/agent-<id>.jsonl`.
+  - Claude Code deletes transcripts older than `cleanupPeriodDays`: 30 days by default, minimum 1, and 0 is refused. The weekly `lint` imports them well before that.
+  - "The entry format is internal to Claude Code and changes between versions." The supported alternatives are `-p` with JSON output (used by `anybrain eval`), hooks, the Agent SDK and OpenTelemetry. PRD 22.6 rules out hooks and daemons, and the SDK is not a dependency. So `anybrain trace import` reads the transcripts and fails loudly: a transcript in which it finds none of the events it knows is reported and exits 1, never stored as an empty run.
+- **What a transcript holds, measured on 63 real sessions of Claude Code 2.1.327 and 2.1.328** (eval cases, migration and skill runs of this build):
+  - one event per line, `promptId` on the owner's messages, `cwd` and `version` on each event;
+  - `usage` on each model message, repeated on every content block of that message;
+  - `attributionSkill` on model messages while a skill runs;
+  - `cost-state` checkpoints with the session's running total.
+  Summed once per message, the tokens equal the totals of the checkpoint exactly, subagents included.
+- **One record per question (Q41).** A question is the owner's message and everything until the next one. Files read, tool calls, denials and local-only reads come from the same adapter as eval traces (22.5). A subagent's work counts for the question whose tool call started it.
+- **Cost (Q41).** The harness's own figures only. Checkpoints are written when a session ends, among other times, so a question is imported once a checkpoint follows it. Between two checkpoints the cost is exact. When several questions fall between them, the cost is shared by token usage, priced per model from the checkpoint's own totals, and the record says `cost_shared: true`.
+  - The shares use the public ratios of token kinds: cache read 0.1, 5-minute cache write 1.25, 1-hour write 2, output 5, against base input 1.
+  - Fitted on the 63 sessions, the real ratios were 0.05 for cache reads and as listed for the rest. This moves the split between questions a little, never a session's total.
+- **Open sessions.** A question after the last checkpoint waits: Claude Code writes its cost when the session ends. Its local-only reads are checked at once and printed, so one never waits a week to be seen.
+- **Skill (Q42).** The skill the agent invoked in that question, else the one Claude Code attributes to most of its messages, else none. A follow-up question that does not invoke the skill again has none: Claude Code does not attribute it, and anybrain does not guess.
+- **Profile.** A question is on the local profile only when every model it used is the local model of `models.toml`; otherwise it is frontier, so local-only reads are counted.
+- **Matching the vault.** Folder names only narrow the search; the `cwd` of each event decides, so `brain-legacy` is not taken for `brain`. A session opened in a folder of the vault counts, with its shell commands read from that folder. Eval cases run in copies outside the vault and are never imported twice.
+- **The shell folder** now carries from one command to the next in the Claude Code adapter, as it does in Claude Code, and goes back to the session folder when a command leaves the vault (Claude Code 2.1.328 prints "Shell cwd was reset" then). This applies to eval traces too: `cd company` then `cat q3.md` is a read of `company/q3.md`.
+- **Retention (Q21).** `trace import` deletes session records older than 30 days and keeps weekly totals per skill in `.harness/traces/weekly.json`: runs, cost, tokens, median files read, local-only reads, denials, no path. A week is summed once, when its first record expires; by then the week is over. Questions older than 30 days are not imported.
+- **`anybrain stats`** adds, from session records only: local-only files read on the frontier profile (target 0), cost and median files read per skill and per week, the median files read per `ask` against the target of 8, and how many asks said a different `files opened` than measured (section 6).
+- **`anybrain stats --dashboard`** writes `journal/dashboard.md`:
+  - local-only reads first, from sessions and eval runs;
+  - cost per skill and per week, files read per ask, the last 5 eval runs with pass rate per tag and gates;
+  - graph figures, usage from `log.md`, pending rule proposals.
+  Tables and text bars only. It starts with the generated header of 14.3, which the PRD names, and refuses a hand-written page or a link. It is not a vault page, so `lint` and the indexes leave it alone.
+- **`templates/obsidian/dashboard-vault.md`** holds the Dataview queries of 22.7, with full frontmatter, so it passes `lint` once the owner copies it into `journal/`.
+- **The `lint` skill** runs `anybrain trace import .` and `anybrain stats . --dashboard` each week, and copies the session lines of `anybrain stats .` into its report. A local-only read also goes under "needs the owner", to be explained in `journal/` (22.6 exit criterion).
+- **Real run.** Four questions from three real transcripts (a draft, a lint with a subagent, a two-question migration), pointed at a copy of `vault.example`. Second import: nothing new. Costs 0.61 and 0.46 USD add up to the session's 1.07 USD. The follow-up migration question has no skill, as Claude Code records it. Its recursive search counts every local-only file under the vault root as read, the conservative rule of D036.
+- **Not built:** a transcript reader for OpenCode (D041).
+
 ## D050 · Independent check of the D047 fixes
 
 After the release, a fresh review tried to break the fixes of D047 (commit 75f3323). Each finding was then reproduced from scratch by a second agent, against 75f3323 and the commit before it. All 13 were confirmed. One is high: a draft built from a mission page could reach `ready`. All are fixed with regression tests (`tests/test_content.py`, `tests/test_install.py`).

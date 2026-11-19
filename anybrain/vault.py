@@ -71,6 +71,7 @@ DEFAULT_ROUTING = {
     "journal/reports/": "frontier",
 }
 GENERATED_NAMES = {"index.md"}
+GENERATED_FILES = {"journal/dashboard.md"}  # written by `anybrain stats --dashboard` (22.7)
 ROOT_NON_PAGES = {"log.md", "AGENTS.md", "CLAUDE.md"}
 APPEND_ONLY_FILES = ("log.md", "content/ideas.md")
 
@@ -487,7 +488,7 @@ def is_page_path(rel: str) -> bool:
     if not rel.endswith(".md") or in_raw(rel) or is_hidden(rel):
         return False
     name = rel.rsplit("/", 1)[-1]
-    if name in GENERATED_NAMES:
+    if name in GENERATED_NAMES or rel in GENERATED_FILES:
         return False
     if "/" not in rel and name in ROOT_NON_PAGES:
         return False

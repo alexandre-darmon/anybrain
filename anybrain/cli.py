@@ -167,7 +167,7 @@ def _cmd_content(args: argparse.Namespace) -> int:
 def _cmd_stats(args: argparse.Namespace) -> int:
     from . import stats, vault
 
-    return stats.run(vault.resolve_vault(vault_arg(args.vault)), weeks=args.weeks)
+    return stats.run(vault.resolve_vault(vault_arg(args.vault)), weeks=args.weeks, dashboard=args.dashboard)
 
 
 def _not_built(step: str):
@@ -236,9 +236,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("file")
     p.set_defaults(func=_cmd_anonymize)
 
-    p = sub.add_parser("stats", help="Usage counts from log.md per week and per skill")
+    p = sub.add_parser("stats", help="Usage counts, session costs and local-only reads per week; --dashboard")
     p.add_argument("vault", nargs="?")
     p.add_argument("--weeks", type=int, default=4, help="number of weeks to show (default 4)")
+    p.add_argument("--dashboard", action="store_true", help="write journal/dashboard.md for Obsidian instead")
     p.set_defaults(func=_cmd_stats)
 
     p = sub.add_parser("migrate", help="Snapshot a legacy vault and check that the owner's text survived")
