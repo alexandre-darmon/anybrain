@@ -1,6 +1,7 @@
 """Content (P1b, PRD 11.10 to 11.13, 15.4 `--content`, 15.10, 15.11, 19.4b): checks, snapshots, edit ratio."""
 from __future__ import annotations
 
+import json
 import shutil
 
 import pytest
@@ -588,3 +589,68 @@ def test_any_markdown_escape_does_not_hide_a_client_name(fixture_vault, body):
     rel = "content/drafts/2026-12-13-esc.md"
     (fixture_vault / rel).write_text(ready_draft(body))
     assert any("names a client" in f for f in findings(fixture_vault, rel)), body
+
+
+# ---------------------------------------------------------------- check of the D051 fixes (D052)
+
+@pytest.mark.parametrize("where, text", [
+    ("src", "./company/Q3 numbers.csv wiki/notes/source-note.md"),
+    ("src", "/company/Q3 numbers.csv wiki/notes/source-note.md"),
+    ("src", "Company/Q3 numbers.csv wiki/notes/source-note.md"),
+    ("src", "Q3 numbers.csv wiki/notes/source-note.md"),
+    ("notes", "./company/Q3 numbers.csv, wiki/notes/source-note.md"),
+    ("sources", "[[Acme Plan]] wiki/notes/source-note.md"),
+    ("sources", "[Q3](<../../company/Q3 numbers.csv>) wiki/notes/source-note.md"),
+])
+def test_a_confidential_source_is_caught_whatever_its_written_form(fixture_vault, where, text):
+    (fixture_vault / "company" / "Q3 numbers.csv").write_text("quarter,revenue\n")
+    (fixture_vault / "company" / "Acme Plan.md").write_text(page("Acme Plan", "note"))
+    rel = "content/drafts/2026-12-14-forms.md"
+    if where == "src":
+        draft = ready_draft(f"A claim.\n<!-- src: {text} -->\n")
+    elif where == "notes":
+        draft = ready_draft(f"A claim.\n\n## Notes for the owner\n\n- Sources used: {text}\n")
+    else:
+        draft = ready_draft("A claim.").replace("sources: [wiki/notes/source-note.md]",
+                                                f'sources: ["wiki/notes/source-note.md", {json.dumps(text)}]')
+    (fixture_vault / rel).write_text(draft)
+    found = findings(fixture_vault, rel)
+    assert any(f.startswith("error") and "confidential" in f for f in found), (text, found)
+
+
+def test_a_confidential_path_that_does_not_resolve_is_an_error_at_every_status(fixture_vault):
+    rel = "content/drafts/2026-12-15-q9.md"
+    (fixture_vault / rel).write_text(ready_draft("A claim.", sources=("figures from company/q9-plan.md",))
+                                     .replace("status: ready", "status: drafting"))
+    assert any(f.startswith("error") and "confidential" in f for f in findings(fixture_vault, rel))
+
+
+def test_a_link_to_a_url_with_parentheses_is_an_external_source(fixture_vault):
+    rel = "content/drafts/2026-12-16-wiki.md"
+    (fixture_vault / rel).write_text(ready_draft(
+        "A claim.\n<!-- src: [Category design](https://en.wikipedia.org/wiki/Category_(marketing)) -->\n",
+        sources=("wiki/notes/source-note.md", "[Category](https://en.wikipedia.org/wiki/Category_(marketing))")))
+    assert findings(fixture_vault, rel) == []
+
+
+def test_a_placeholder_with_a_hint_in_parentheses_counts(fixture_vault):
+    rel = "content/drafts/2026-12-17-hint.md"
+    (fixture_vault / rel).write_text(ready_draft("Churn fell to [YOUR NUMBER](hint: churn after the rename) in a quarter."))
+    assert any("placeholder" in f for f in findings(fixture_vault, rel))
+
+
+@pytest.mark.parametrize("body", ["We worked with AT&amp;T last year.", "We worked with O&#39;Brien Partners.",
+                                  "We worked with O&rsquo;Brien Partners."])
+def test_html_entities_do_not_hide_a_client_name(fixture_vault, body):
+    (fixture_vault / ".harness" / "clients.txt").write_text("AT&T\nO'Brien Partners\n")
+    rel = "content/drafts/2026-12-18-entity.md"
+    (fixture_vault / rel).write_text(ready_draft(body))
+    assert any("names a client" in f for f in findings(fixture_vault, rel)), body
+
+
+def test_an_unquoted_wikilink_in_sources_is_read_as_one(fixture_vault):
+    (fixture_vault / "company" / "Acme Plan.md").write_text(page("Acme Plan", "note"))
+    rel = "content/drafts/2026-12-19-yaml.md"
+    (fixture_vault / rel).write_text(ready_draft("A claim.").replace(
+        "sources: [wiki/notes/source-note.md]", "sources: [wiki/notes/source-note.md, [[Acme Plan]]]"))
+    assert any(f.startswith("error") and "confidential" in f for f in findings(fixture_vault, rel))

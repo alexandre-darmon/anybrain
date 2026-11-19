@@ -477,4 +477,7 @@ def test_the_voice_note_says_to_change_an_existing_line(tmp_path, home, capsys):
     models.write_text(models.read_text().replace('"me/voice.md"       = "frontier"', '"me/voice.md" = "local"'))
     capsys.readouterr()
     cli.main(["doctor", str(brain)])
-    assert 'change the line `"me/voice.md" = "local"`' in capsys.readouterr().out
+    assert 'set the existing `"me/voice.md"` line under [routing] to "frontier"' in capsys.readouterr().out
+    models.write_text(models.read_text().replace('"me/voice.md" = "local"', '"me/voice.md" = "locale"'))  # ignored
+    cli.main(["doctor", str(brain)])
+    assert "set the existing" in capsys.readouterr().out

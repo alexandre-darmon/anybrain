@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import difflib
+import html
 import os
 import posixpath
 import re
@@ -37,7 +38,7 @@ DRAFT_STATUS = ("idea", "drafting", "ready", "published", "dropped")
 # closed; not the text of a Markdown link to a page or a URL, such as [your story](https://...) (D050)
 PLACEHOLDER_RE = re.compile(
     r"\[\s*YOUR\s+(?:STOR(?:Y|IES)|NUMBERS?)\b"
-    r"(?![^\[\]]*\]\(\s*<?(?:[a-z][a-z0-9+.-]*:|#|\.{0,2}/|[^)\s>]+\.(?:md|html?|pdf)\b))", re.I)
+    r"(?![^\[\]]*\]\(\s*<?(?:[a-z][a-z0-9+.-]*://|mailto:|#|\.{0,2}/|[^)\s>]+\.(?:md|html?|pdf)\b))", re.I)
 SRC_COMMENT_RE = re.compile(r"<!--\s*(?:src|sources?)\s*:\s*(.*?)\s*-->", re.I | re.S)
 BULLET_RE = re.compile(r"^(?:[-*+]|\d+[.)])\s+")
 HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
@@ -612,7 +613,7 @@ MD_ESCAPE_RE = re.compile(r"\\([!-/:-@\[-`{-~])")  # CommonMark: any ASCII punct
 def client_texts(text: str) -> list[str]:
     """The text as a client-name search must see it: composed accents, plain spaces and apostrophes, no
     emphasis stars; and the same text without accents. Both keep every line break, so line numbers hold."""
-    text = MD_ESCAPE_RE.sub(r"\1", text)  # E\*Trade renders as E*Trade
+    text = html.unescape(MD_ESCAPE_RE.sub(r"\1", text))  # E\*Trade and AT&amp;T render as E*Trade and AT&T
     base = unicodedata.normalize("NFC", pii.fold_spaces(text)).translate(QUOTE_FOLD).replace("*", "")
     plain = unicodedata.normalize("NFKD", base).encode("ascii", "ignore").decode("ascii")
     return [base] if plain == base else [base, plain]
@@ -758,7 +759,7 @@ def content_text(page: v.Page) -> str:
     return HTML_COMMENT_RE.sub("", body)
 
 
-LINK_ITEM_RE = re.compile(r"\[\[[^\]]+\]\]|\[[^\]]*\]\([^)]+\)")
+LINK_ITEM_RE = re.compile(r"\[\[[^\]]+\]\]|\[[^\]]*\]\((?:[^()]|\([^()]*\))+\)")  # Category_(marketing)
 
 
 URL_RE = re.compile(r"<?\b[a-z][a-z0-9+.-]*://[^\s>,;]*>?", re.I)
@@ -767,8 +768,10 @@ SOURCES_LABEL_RE = re.compile(r"^(\s*)[-*+]?\s*\**\s*sources?(?:\s+used)?\s*\**\
 
 
 def looks_like_path(token: str) -> bool:
-    """A word that reads as a vault path: it ends in `.md`, or starts with a top folder of the vault."""
-    return token.lower().endswith(".md") or ("/" in token and token.split("/", 1)[0] in VAULT_TOPS)
+    """A word that reads as a vault path: it ends in `.md`, or starts with a top folder of the vault, written
+    with or without `./` or `/`, in any case."""
+    plain = _plain_path(token)
+    return plain.lower().endswith(".md") or ("/" in plain and plain.split("/", 1)[0].lower() in VAULT_TOPS)
 
 
 def source_words(text: str) -> list[str]:
@@ -808,7 +811,11 @@ def content_sources(page: v.Page) -> list[str]:
     """The sources a draft or published piece declares, as written: each item of `sources`, each item of a
     `<!-- src: ... -->` comment, and the links and path-like words of the notes' "Sources used" line. Each must
     resolve. URLs are left out."""
-    items = [str(x) for x in v.as_list(page.meta.get("sources"))]
+    items = []
+    for x in v.as_list(page.meta.get("sources")):
+        # `[[Acme Plan]]` left unquoted in YAML is read as a nested list: it is a wikilink
+        items += [f"[[{y}]]" if not isinstance(y, list) else f"[[{' '.join(map(str, y))}]]" for y in x] \
+            if isinstance(x, list) else [str(x)]
     for match in SRC_COMMENT_RE.finditer(page.body):
         items += _src_items(match.group(1))
     for text in _notes_lines(page):
@@ -817,9 +824,9 @@ def content_sources(page: v.Page) -> list[str]:
     found: list[str] = []
     for item in items:
         item = item.strip().strip("`'\"").rstrip(",;.").strip()
-        if not item or URL_RE.fullmatch(item) or item in found:
+        if not item or URL_RE.fullmatch(item) or item in found or not re.search(r"\w", item):
             continue
-        if re.fullmatch(r"\[[^\]]*\]\(\s*<?[a-z][a-z0-9+.-]*://[^)]*\)", item, re.I):
+        if re.fullmatch(r"\[[^\]]*\]\(\s*<?[a-z][a-z0-9+.-]*://(?:[^()]|\([^()]*\))*\)", item, re.I):
             continue  # an external source, not a vault page
         found.append(item)
     return found
@@ -836,6 +843,47 @@ def content_mentions(page: v.Page) -> list[str]:
         found += [w.strip() for w in re.findall(r"`([^`]+)`", rest)]
         found += [w for w in source_words(rest) if re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)+", w)]
     return [w for w in dict.fromkeys(found) if w and not looks_like_path(w)]
+
+
+EXTENSION_RE = re.compile(r"\.[A-Za-z0-9]{1,5}$")
+KEBAB_NAME_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)+")
+CONFIDENTIAL_WRITTEN_RE = re.compile(r"(?:^|[\s(<\[`'\"/:])(?:company|finance)/", re.I)
+
+
+def _plain_path(word: str) -> str:
+    return posixpath.normpath(word.strip().strip("`'\"<>").removeprefix("./").lstrip("/")) if word.strip() else ""
+
+
+def confidential_names(ctx: Context) -> list[str]:
+    """File names (with their extension) of everything confidential: the files of company/ and finance/,
+    confidential pages and mission pages. Lowercase, longest first."""
+    cached = getattr(ctx, "_confidential_names", None)
+    if cached is not None:
+        return cached
+    names: set[str] = set()
+    for folder in v.CONFIDENTIAL_FOLDERS:
+        base = ctx.vault / folder
+        for path in base.rglob("*") if base.is_dir() else []:
+            if path.is_file() and not path.name.startswith("."):
+                names.add(path.name.lower())
+    for page in ctx.pages:
+        if page.sensitivity == "confidential" or page.meta.get("kind") == "mission":
+            names.add(page.rel.rsplit("/", 1)[-1].lower())
+    ctx._confidential_names = sorted(names, key=len, reverse=True)
+    return ctx._confidential_names
+
+
+def confidential_text(ctx: Context, text: str) -> str:
+    """What makes a source as written confidential, whether or not it resolves: a path written in company/ or
+    finance/ in any form (`./`, `/`, absolute, capitals), or the file name of a confidential file (D052)."""
+    match = CONFIDENTIAL_WRITTEN_RE.search(text)
+    if match:
+        return f"a path in {match.group(0).strip(' (<[`\'\":/').lower()}"
+    lower = text.lower()
+    for name in confidential_names(ctx):
+        if re.search(r"(?<![\w.-])" + re.escape(name) + r"(?![\w-])", lower):
+            return f"the confidential file {name}"
+    return ""
 
 
 def resolve_source(ctx: Context, item: str, from_rel: str = "") -> tuple[str | None, str]:
@@ -909,43 +957,49 @@ def content_findings(ctx: Context, page: v.Page, patterns=None, clients=None) ->
                 add("error", f"source {named} is a confidential or mission page (19.4b)")
 
     strict = "error" if is_draft and status in ("ready", "published") else "warning"
-
-    def confidential_written(text: str) -> bool:
-        """A path written in a confidential folder, whether or not it resolves."""
-        written = text.strip().strip("`'\"<>").removeprefix("./").lstrip("/")
-        return posixpath.normpath(written).split("/", 1)[0].lower() in v.CONFIDENTIAL_FOLDERS
-
     for source in sources:
         rel_source, why = resolve_source(ctx, source, rel)
         found = [(source, rel_source)] if rel_source else []
         unresolved: list[str] = []
-        if not found and not LINK_ITEM_RE.fullmatch(source):
-            # an item with a note or a second path in it: each word that resolves is a source (D050). A word that
-            # reads as a path and does not resolve still fails closed (D051)
-            for word in source_words(source):
+        named = confidential_text(ctx, source)
+        several = len(source_words(LINK_ITEM_RE.sub(" ", source))) + len(LINK_ITEM_RE.findall(source)) > 1
+        if not found and several:
+            # an item with a note or a second path in it (D050): its links and its path-like words are each a
+            # source; one that does not resolve fails closed (D051, D052)
+            for link in LINK_ITEM_RE.findall(source):
+                target, _ = resolve_source(ctx, link, rel)
+                if target:
+                    found.append((link, target))
+                else:
+                    unresolved.append(link)
+            for word in source_words(LINK_ITEM_RE.sub(" ", source)):
+                plain = _plain_path(word)
+                if not ("/" in plain or EXTENSION_RE.search(plain) or KEBAB_NAME_RE.fullmatch(plain)):
+                    continue  # a word of a note, such as "Decisions" or "via"
                 target, _ = resolve_source(ctx, word, rel)
                 if target:
                     if (word, target) not in found:
                         found.append((word, target))
-                elif looks_like_path(word) or "/" in word and word.split("/", 1)[0] in VAULT_TOPS:
+                elif "/" in plain or EXTENSION_RE.search(plain):
                     unresolved.append(word)
-        if not found and confidential_written(source):
-            add("error", f"source {source} is confidential (19.4b)")
-        elif not found:
+        for name, target in found:
+            check_source(name if target == name else f"{name} ({target})", target)
+        if named and not any(target.split("/", 1)[0].lower() in v.CONFIDENTIAL_FOLDERS for _, target in found):
+            add("error", f"source {source} is confidential: it names {named} (19.4b)")
+        elif not found and not unresolved:
             # fail closed: a source nobody can check must not reach `ready`. A published piece is history: a
             # source moved later is a warning, since nobody may edit the piece (D047)
             add(strict, f"source {source} {why}")
-        for word in unresolved if found else []:
-            if confidential_written(word):
-                add("error", f"source {word} in {source!r} is confidential (19.4b)")
-            else:
-                add(strict, f"source {word} in {source!r} not found in the vault")
-        for name, target in found:
-            check_source(name if target == name else f"{name} ({target})", target)
+        for word in unresolved if not named else []:
+            add(strict, f"source {word} in {source!r} not found in the vault")
     for word in content_mentions(page):
         target, _ = resolve_source(ctx, word, rel)
         if target:
             check_source(f"{word} ({target})", target)
+    for text in _notes_lines(page):  # the whole line too, as text: a path with a space in it (D052)
+        named = confidential_text(ctx, text)
+        if named and not any(named in f.message for f in findings):
+            add("error", f"the notes' sources name {named} (19.4b)")
     node = ctx.graph.nodes.get(rel)
     for _, target in node.targets if node else []:
         if target.split("/", 1)[0] in v.CONFIDENTIAL_FOLDERS or (

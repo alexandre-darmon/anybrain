@@ -252,7 +252,7 @@ def _cell(text) -> str:
     return str(text).replace("|", "\\|").replace("\n", " ")
 
 
-def _eval_runs(vault: Path) -> list[tuple[str, dict]]:
+def _eval_runs(vault: Path, every: bool = False) -> list[tuple[str, dict]]:
     import json
 
     from . import trace
@@ -271,7 +271,8 @@ def _eval_runs(vault: Path) -> list[tuple[str, dict]]:
         return (str(item[1].get("date") or (match.group(1) if match else "")),
                 int(match.group(2)) if match and match.group(2) else 1, item[0])
 
-    return sorted(runs, key=order)[-EVAL_RUNS_SHOWN:]
+    runs = sorted(runs, key=order)
+    return runs if every else runs[-EVAL_RUNS_SHOWN:]
 
 
 def dashboard_text(vault: Path, weeks: int, today: _dt.date) -> str:
@@ -290,8 +291,9 @@ def dashboard_text(vault: Path, weeks: int, today: _dt.date) -> str:
     out += ["## Local-only files read on the frontier profile", "", "Target: 0 (section 6).", ""]
     rows = [(r.get("started", "")[:10], "session", _skill_name(r.get("skill")), r["local_only_read_on_frontier"])
             for r in _local_reads(raw)]
-    for name, data in evals:
-        if data.get("local_only_reads") and str(data.get("date") or "") >= (today - _dt.timedelta(weeks=weeks)).isoformat():
+    since = week_start(today) - _dt.timedelta(weeks=weeks - 1)
+    for name, data in _eval_runs(vault, every=True):  # every run of the window, not only the 5 in the table (D052)
+        if data.get("local_only_reads") and since.isoformat() <= str(data.get("date") or "") <= today.isoformat():
             rows.append((str(data.get("date")), f"eval {data.get('harness', '?')}", "golden set", data["local_only_reads"]))
     listed = sum(len(r.get("local_only_read_on_frontier") or []) for r in raw)
     aggregated = sum(row.get("local_only_reads") or 0 for _, rs, _ in table for row in rs) - listed

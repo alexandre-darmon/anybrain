@@ -184,3 +184,13 @@ def test_records_still_on_disk_are_listed_in_a_week_already_summed(vault, capsys
     assert "local-only files read on the frontier profile: 2 (target 0)" in out
     assert "median files read per ask: 4 over 4 run(s)" in out
     assert ["2026-W46", "ask", "3", "0.60", "3"] in [line.split() for line in out.splitlines()]
+
+
+def test_an_eval_run_that_read_a_local_only_file_is_listed_even_past_the_last_five(vault):
+    for n in range(1, 7):
+        run_file(vault, f"run-claude-frontier-2026-11-1{n}.json", f"2026-11-1{n}", 1.0, True)
+    path = vault / ".harness/baseline/run-claude-frontier-2026-11-11.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps({**data, "local_only_reads": ["company/admin.md"]}), encoding="utf-8")
+    text = stats.dashboard_text(vault, 4, v.today())
+    assert "| 2026-11-11 | eval claude | golden set | company/admin.md |" in text

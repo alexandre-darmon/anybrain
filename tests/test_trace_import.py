@@ -468,3 +468,119 @@ def test_cli_trace_import_and_bad_date(vault, home, capsys):
     assert len(records(vault)) == 1
     assert cli.main(["trace", str(vault), "import", "--since", "yesterday"]) == 2
     assert re.search(r"--since needs a date", capsys.readouterr().err)
+
+
+# ---------------------------------------------------------------- check of the D051 fixes (D052)
+
+@pytest.mark.parametrize("command", ["cd people; grep -rl acme .", "cd people; rg -l acme"])
+def test_a_failed_cd_does_not_hide_a_recursive_search(vault, command):
+    run = t.ClaudeAdapter().parse(json.dumps({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": "a", "name": "Bash", "input": {"command": command}}]}}), vault)
+    assert "." in run.files_searched
+    record = t.build_record(run, vault, "frontier", "eval", "2026-11-19T00:00:00Z")
+    assert "company/q3.md" in record["local_only_read_on_frontier"]
+
+
+@pytest.mark.parametrize("command", ["cd company/archive 2>/dev/null || cd company; cat q3.md",
+                                     "cd company 2>/dev/null || cd wiki; cat q3.md",
+                                     "test -d archive && cd archive; cat company/q3.md"])
+def test_every_folder_a_cd_could_leave_the_shell_in_is_read_from(vault, command):
+    read, _, _ = t.files_from_shell(command, vault)
+    assert "company/q3.md" in read
+
+
+def stream(vault, calls):
+    lines = []
+    for i, (command, error) in enumerate(calls):
+        lines.append({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": f"t{i}", "name": "Bash", "input": {"command": command}}]}})
+        lines.append({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": f"t{i}", "content": "Exit code 1" if error else "ok", "is_error": error}]}})
+    return t.ClaudeAdapter().parse("\n".join(json.dumps(x) for x in lines), vault)
+
+
+@pytest.mark.parametrize("first", ["cd notes; ls", "cd companies 2>/dev/null; ls", "test -d archive && cd archive; ls"])
+def test_an_eval_stream_does_not_carry_a_folder_a_failed_cd_never_reached(vault, first):
+    run = stream(vault, [(first, False), ("cat company/q3.md", False)])
+    assert run.files_read == ["company/q3.md"]
+
+
+def test_a_carried_folder_in_an_eval_stream_is_a_guess_the_start_folder_still_counts(vault):
+    (vault / "wiki" / "company").mkdir()
+    run = stream(vault, [("cd wiki", False), ("cat company/q3.md", False)])
+    assert "company/q3.md" in run.files_read
+
+
+def test_a_word_too_long_for_a_file_name_is_not_a_crash(vault):
+    long = "Pricing is a positioning decision " * 12
+    commands = [f"python3 - <<'EOF'\nt = t.replace('''{long}''', 'x')\nEOF", f'git commit -am "{long}"', "x" * 4000]
+    for command in commands:
+        read, _, _ = t.files_from_shell(command, vault)
+        assert read == []
+
+
+def test_a_stored_shell_command_holds_no_here_document_body(vault, home):
+    s = Transcript(vault).prompt()
+    s.tool("Bash", {"command": "cat > wiki/notes/new.md <<'EOF'\nSECRET-ANSWER-WORDS line one\nline two\nEOF"})
+    s.tool("Bash", {"command": "echo " + "y" * 900})
+    s.answer().cost(0.1).write(home)
+    t.import_sessions(vault)
+    [record] = records(vault)
+    targets = [c["target"] for c in record["tool_calls"]]
+    assert targets[0] == "cat > wiki/notes/new.md <<'EOF'\n[2 line(s)]\nEOF"
+    assert len(targets[1]) < 600 and targets[1].endswith("more characters]")
+    assert record["files_written"] == ["wiki/notes/new.md"]
+    assert "SECRET-ANSWER-WORDS" not in (vault / t.TRACES_DIR / "2026-11.jsonl").read_text(encoding="utf-8")
+
+
+def test_reads_by_a_workflow_agent_count_for_the_question_that_launched_it(vault, home):
+    s = Transcript(vault).prompt()
+    s.tool("Workflow", {"script": "SECRET-PROMPT-WORDS"})
+    s.answer().cost(0.3)
+    path = s.write(home)
+    agent = Transcript(vault, session=s.session)
+    agent.prompt_id = s.prompt_id
+    agent.tool("Read", {"file_path": str(vault / "company/q3.md")})
+    events = [dict(e, isSidechain=True, promptId=s.prompt_id) for e in agent.events]
+    folder = path.with_suffix("") / "subagents" / "workflows" / "wf_1"
+    folder.mkdir(parents=True)
+    (folder / "agent-w1.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events), encoding="utf-8")
+    (folder / "agent-w1.meta.json").write_text(json.dumps({"agentType": "workflow"}), encoding="utf-8")
+    t.import_sessions(vault)
+    [record] = records(vault)
+    assert record["local_only_read_on_frontier"] == ["company/q3.md"]
+
+
+def test_a_branch_made_while_the_shell_sat_outside_the_vault_still_counts(vault, home, tmp_path):
+    other = tmp_path / "downloads"
+    other.mkdir()
+    s = Transcript(vault).prompt()
+    s.tool("Bash", {"command": f"cd {other} && ls"})
+    s.chdir(other).answer().cost(0.1)
+    s.write(home)
+    branch = Transcript(other, session="bbbbbbbb-0000-0000-0000-000000000000")
+    branch.events = [dict(e, sessionId=branch.session, forkedFrom={"sessionId": s.session, "messageUuid": e.get("uuid")})
+                     for e in s.events if e["type"] != "cost-state"]
+    branch.n = s.n
+    branch.prompt("on the branch", prompt_id="branch-q")
+    branch.tool("Read", {"file_path": str(vault / "company/q3.md")})
+    branch.answer().cost(0.2).write(home, folder=t.project_dir_name(str(vault)))
+    t.import_sessions(vault)
+    assert records(vault)[-1]["local_only_read_on_frontier"] == ["company/q3.md"]
+
+
+def test_a_branch_holding_only_copies_is_a_known_format(vault, home):
+    s = ask_session(vault).cost(0.3)
+    s.write(home)
+    branch = Transcript(vault, session="bbbbbbbb-0000-0000-0000-000000000000")
+    branch.events = [dict(e, sessionId=branch.session, forkedFrom={"sessionId": s.session, "messageUuid": e.get("uuid")})
+                     for e in s.events if e["type"] != "cost-state"]
+    branch.write(home)
+    assert t.import_sessions(vault) == 0
+    assert len(records(vault)) == 1
+
+
+def test_a_session_opened_elsewhere_in_the_vault_folder_is_reported(vault, home, tmp_path, capsys):
+    ask_session(tmp_path / "elsewhere").cost(0.1).write(home, folder=t.project_dir_name(str(vault)))
+    t.import_sessions(vault)
+    assert "1 transcript(s) in the vault's own transcript folder record a session opened outside" in capsys.readouterr().out

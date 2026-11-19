@@ -537,9 +537,10 @@ def voice_route_note(vault: Path) -> str | None:
         return None
     if not local:
         return None
-    routing = v.load_routing(vault)
-    explicit = any(key == "me/voice.md" for key, _ in routing.rules)
-    how = ('change the line `"me/voice.md" = "local"` under [routing] to "frontier"' if explicit
+    # a line for me/voice.md, kept or ignored for an unknown profile: change it, since a second one breaks the TOML
+    table = (load_models(vault).get("routing") or {})
+    explicit = any(str(key).strip().removeprefix("./") == "me/voice.md" for key in table)
+    how = ('set the existing `"me/voice.md"` line under [routing] to "frontier"' if explicit
            else 'add the line `"me/voice.md" = "frontier"` under [routing]')
     return ('.harness/models.toml keeps me/voice.md local, so frontier sessions cannot read your voice profile, '
             f'while AGENTS.md and the skills say every model can. To let them, {how}, then run anybrain update')

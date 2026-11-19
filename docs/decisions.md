@@ -694,3 +694,40 @@ A fresh review of commits a2b9546 to 63b02e9 (session import, dashboard, D050) f
   - The skill now asks for three commands, one at a time and in order.
   - The import itself stored the finished session's question and held back the running session's own.
   - A second live run with the corrected skill (0.53 USD) ran `anybrain trace . import`, `anybrain stats . --dashboard` and `anybrain stats .` in that order. It stored the planted question, held back its own running session, and wrote a dashboard with the draft's cost. The report's run-trace section listed 0 local-only reads, the cost per skill and the missing `ask` runs.
+
+## D052 · Check of the D051 fixes
+
+A third review checked commit 9787d74 from three angles: the import, the content and stats code, and each D051 fix rerun against its original reproduction plus variants. It found 22 defects; a second agent reproduced each one, and all 22 were confirmed. Merged, they are 14 distinct defects. Some predate D051 (long words, workflow agents, here-document bodies, links with parentheses). All are fixed with regression tests.
+
+- **Sources are now also read as text (high).** Fixing source forms one at a time left a new form open each round: `./company/...`, `/company/...`, `Company/...`, `Q3 numbers.csv` without its folder, a wikilink or a relative link inside a longer item. Resolution stays as it was. In addition, every declared source and every line of the notes' "Sources used" is scanned as text:
+  - a path written in `company/` or `finance/` in any form (after a space, a bracket, a quote, `./`, `/` or another folder), in any case, is an error, whether or not it resolves;
+  - so is the file name, with its extension, of any file in `company/` or `finance/`, or of any confidential or mission page.
+
+  This fails closed: a draft whose source line says "not the company/ data" is blocked too.
+  - The links inside a longer item are resolved one by one.
+  - Only words shaped like a path or a page name are tried, and one that does not resolve fails closed.
+  - A path in a confidential folder is an error at every status.
+  - `[[Acme Plan]]` left unquoted in YAML is a nested list, and is read as the wikilink it is.
+- **The shell's folder, again (high).**
+  - A recursive search after a failed `cd` was dropped: the start-folder pass now keeps searches too.
+  - `cd a || cd b` runs one or the other. Every path in a command is now read from each folder its `cd`s could reach, each one working or not (at most 32 folders): the start, `a`, `b` and `a/b`.
+  - In an eval stream, a folder carries to the next command only when it exists. Since that is still a guess, each command is also read from the start folder.
+- **Long words crashed the import and evals (high).** A shell word longer than a file name may be, such as a sentence in a here-document or a commit message, made pathlib raise `File name too long`. The import stopped, and kept stopping on that transcript. File checks now use `os.path.isfile` and `os.path.isdir`, which answer no.
+- **Workflow agents (high).**
+  - Claude Code 2.1.328 writes them under `subagents/workflows/<run>/`, with no link to a tool call. Their reads were never traced.
+  - Subagent transcripts are now read at any depth. A workflow agent counts for the question whose `promptId` it carries.
+- **Branched sessions.**
+  - A branch made while the shell sat outside the vault took its origin from its own first event, and was dropped. The copies it holds record where the original session was opened, so they now set the origin. They are still skipped for questions and costs.
+  - A branch holding only copies is a known format, not an unknown one.
+  - A transcript in the vault's own folder whose session was opened elsewhere is reported, not skipped silently.
+- **Here-document bodies in records.** A stored shell command held the whole text it wrote: a page, a report. A stored command now has each here-document body replaced by its line count, and is cut at 500 characters. Reads and writes are still found in the full command.
+- **Dashboard.** An eval run that read a local-only file was listed only if it was among the last 5 runs. Every run in the window is now checked; the cut applies to the runs table only.
+- **Content checks, smaller.**
+  - Client names written with HTML entities (`AT&amp;T`, `O&#39;Brien`) are decoded before the search.
+  - A Markdown link to a URL with parentheses (Wikipedia's `Category_(marketing)`) is one external source.
+  - A placeholder with a hint in parentheses (`[YOUR NUMBER](hint: ...)`) counts: only a scheme with `//`, `mailto:`, an anchor, a path or a file name makes a real link.
+- **`me/voice.md` note.** Any `me/voice.md` line under [routing], even one ignored for an unknown profile, is now treated as existing, and the note says to set it.
+- **Stress run.** This build session's own transcript (182 MB with 605 subagent files, Claude Code 2.1.327 and 2.1.328), pointed at a copy of `vault.example`:
+  - it imported in 18 seconds, with no error: 34 questions;
+  - 4 waited for their cost, and the running one was held back;
+  - the longest stored command is 523 characters, with every here-document body replaced by its line count.

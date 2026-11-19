@@ -43,7 +43,34 @@ class ToolCall:
     cwd: str = ""  # the shell's folder when the call was made, when the harness records it (transcripts)
 
     def as_json(self) -> dict:
-        return {"tool": self.tool, "target": self.target, "result": self.result}
+        target = shown_command(self.target) if self.tool in SHELL_TOOLS else self.target
+        return {"tool": self.tool, "target": target, "result": self.result}
+
+
+SHELL_TOOLS = ("Bash", "bash", "shell")
+SHOWN_LIMIT = 500  # characters of a stored shell command; reads and writes are found in the full command
+
+
+def shown_command(command: str) -> str:
+    """A shell command as a trace stores it: the body of every here-document replaced by its line count, and
+    the rest cut at 500 characters. A body is the text a command writes or runs: file content, a report, code
+    (22.5: a trace never holds file content; D052)."""
+    lines, kept, i = str(command or "").split("\n"), [], 0
+    while i < len(lines):
+        line = lines[i]
+        kept.append(line)
+        delimiters = [m.group(2) for m in HEREDOC_RE.finditer(line)]
+        i += 1
+        for delimiter in delimiters:
+            body_start = i
+            while i < len(lines) and lines[i].strip() != delimiter:
+                i += 1
+            kept.append(f"[{i - body_start} line(s)]")
+            if i < len(lines):
+                kept.append(lines[i])
+            i += 1
+    text = "\n".join(kept)
+    return text if len(text) <= SHOWN_LIMIT else text[:SHOWN_LIMIT] + f" [{len(text) - SHOWN_LIMIT} more characters]"
 
 
 @dataclass(frozen=True)
@@ -58,7 +85,7 @@ class Search:
 
     def files(self, root: Path) -> list[str]:
         base = root if self.folder in ("", ".") else root / self.folder
-        if not base.is_dir():
+        if not os.path.isdir(base):
             return []
         found = []
         for path in sorted(base.rglob("*")):
@@ -288,15 +315,17 @@ def _walk(command: str, root: Path, start: str | None = None, end: dict | None =
 
 
 def _is_file(rel: str, root: Path, origin: Path | None) -> bool:
+    """os.path.isfile, not Path.is_file: a shell word longer than a file name may be (a sentence in a heredoc)
+    is simply not a file, where pathlib raises (D052)."""
     if not rel:
         return False
     if os.path.isabs(rel):
         return os.path.isfile(rel)
-    return (root / rel).is_file() or bool(origin and (origin / rel).is_file())
+    return os.path.isfile(os.path.join(root, rel)) or bool(origin and os.path.isfile(os.path.join(origin, rel)))
 
 
 def _is_dir(rel: str, root: Path) -> bool:
-    return (root / rel).is_dir() if rel and not os.path.isabs(rel) else rel == ""
+    return os.path.isdir(os.path.join(root, rel)) if rel and not os.path.isabs(rel) else rel == ""
 
 
 SEARCH_COMMANDS = {"grep", "egrep", "fgrep", "rg", "ag", "ack"}
@@ -383,16 +412,44 @@ def shell_escapes(command: str, root: Path, origin: Path | None) -> list[str]:
 
 def files_from_shell(command: str, root: Path, origin: Path | None = None, start: str | None = None,
                      end: dict | None = None) -> tuple[list[str], list[str], list[Search]]:
-    """See `_files_from_shell`. A path is read from the folder the walk reached, and also from the folder the
-    command started in: a `cd` that failed leaves the shell where it was, and a missed read is worse than an
-    extra one (D051)."""
+    """See `_files_from_shell`. A `cd` may fail, and `cd a || cd b` runs one or the other, so the folder a
+    later word is read from is not certain: every path and every recursive search is also taken from each
+    folder the command's `cd`s could leave the shell in, each one working or not. A read too many is better
+    than one missed (D051, D052)."""
     read, written, searches = _files_from_shell(command, root, origin, start, end)
     begin = start or str(root)
-    if any(Path(words[0]).name in ("cd", "pushd", "popd") for words, *_ in _segments(command) if words):
-        more, _, _ = _files_from_shell(_strip_cd(command), root, origin, begin, None)
-        for item in more:
-            _add(read, item)
+    folders = _possible_folders(command, begin)
+    if len(folders) > 1:
+        bare = _strip_cd(command)
+        for folder in folders:
+            more, _, more_searches = _files_from_shell(bare, root, origin, folder, None)
+            for item in more:
+                _add(read, item)
+            for search in more_searches:
+                if search not in searches:
+                    searches.append(search)
     return read, written, searches
+
+
+FOLDERS_LIMIT = 32
+
+
+def _possible_folders(command: str, begin: str) -> list[str]:
+    """The folder the command starts in, and every folder its `cd`s could reach from it, each `cd` working or
+    failing: `cd a || cd b` gives the start, a, b and a/b."""
+    folders = [begin]
+    for words, *_ in _segments(command):
+        if not words or Path(words[0]).name not in ("cd", "pushd"):
+            continue
+        args = [w for w in words[1:] if w == "-" or not w.startswith("-")]
+        dest = os.path.expandvars(os.path.expanduser(args[0])) if args else os.path.expanduser("~")
+        if dest == "-" or "$" in dest:
+            continue
+        for folder in list(folders):
+            reached = os.path.normpath(os.path.join(folder, dest))
+            if reached not in folders and len(folders) < FOLDERS_LIMIT:
+                folders.append(reached)
+    return folders
 
 
 def _strip_cd(command: str) -> str:
@@ -552,8 +609,13 @@ class ClaudeAdapter(Adapter):
                 here = call.cwd or shell
                 end: dict = {}
                 read, written, searches = files_from_shell(call.target, root, origin, here, end)
+                if not call.cwd and here != start:  # a carried folder is a guess: read from the start too (D052)
+                    more, _, more_searches = files_from_shell(call.target, root, origin, start)
+                    read = read + [item for item in more if item not in read]
+                    searches = searches + [x for x in more_searches if x not in searches]
                 after = end.get("cwd")
-                inside = after is not None and any(_inside(after, base) is not None for base in _bases(root, origin))
+                inside = after is not None and os.path.isdir(after) and \
+                    any(_inside(after, base) is not None for base in _bases(root, origin))
                 if call.result == "ok":
                     shell = after if inside else start
                 for item in read:
@@ -660,7 +722,7 @@ def _is_local_only(root: Path, rel: str) -> bool:
         return False
     if v.is_local_only_path(root, rel):
         return True
-    return v.is_page_path(rel) and (root / rel).is_file() and v.load_page(root, root / rel).local_only
+    return v.is_page_path(rel) and os.path.isfile(os.path.join(root, rel)) and v.load_page(root, root / rel).local_only
 
 
 def local_only_reads(root: Path, files: list[str], origin: Path | None = None,
@@ -1007,10 +1069,12 @@ def read_session(path: Path) -> Session:
     origin = ""
     for index, event in enumerate(events):
         kind = event.get("type")
+        # the folder the session was opened in: a branched session's copies hold the original's (D052)
+        origin = origin or (str(event.get("cwd") or "") if kind in ("user", "assistant", "attachment") else "")
         if event.get("forkedFrom"):
+            known += kind in ("user", "assistant")  # a known format, though only copies so far
             continue  # copied from the session it was branched from, which holds the original (D051)
         session_id = str(event.get("sessionId") or session_id)
-        origin = origin or (str(event.get("cwd") or "") if kind in ("user", "assistant", "attachment") else "")
         if kind == "cost-state":
             cost = event.get("totalCostUSD")
             if isinstance(cost, (int, float)):
@@ -1032,7 +1096,9 @@ def read_session(path: Path) -> Session:
                 if isinstance(item, dict) and item.get("type") == "tool_use" and item.get("name") in ("Agent", "Task"):
                     tool_turn[str(item.get("id"))] = (len(turns) - 1, index)
     folder = path.with_suffix("") / "subagents"
-    for sub in sorted(folder.glob("agent-*.jsonl")) if folder.is_dir() else []:
+    by_prompt = {turn.key: i for i, turn in enumerate(turns)}
+    # agents started by a tool call, and agents of a workflow (`subagents/workflows/<run>/`), at any depth (D052)
+    for sub in sorted(folder.rglob("agent-*.jsonl")) if folder.is_dir() else []:
         sub_events = [e for e in _events(sub) if e.get("type") in ("user", "assistant") and not e.get("forkedFrom")]
         if not sub_events or not turns:
             continue
@@ -1044,6 +1110,9 @@ def read_session(path: Path) -> Session:
             except ValueError:
                 meta = {}
         owner = tool_turn.get(str(meta.get("toolUseId") or ""))
+        prompt_id = next((str(e.get("promptId")) for e in sub_events if e.get("promptId")), "")
+        if owner is None and prompt_id in by_prompt:  # a workflow agent carries the prompt that launched it
+            owner = (by_prompt[prompt_id], turns[by_prompt[prompt_id]].first)
         if owner is None:  # no link to the call that started it: the question that was running when it began
             begun = _stamp(sub_events[0].get("timestamp"))
             candidates = [i for i, t in enumerate(turns) if begun and t.started and t.started <= begun]
@@ -1340,12 +1409,15 @@ def import_sessions(vault: Path, since: _dt.date | None = None) -> int:
     sessions_seen: set[str] = set()
     stored: list[dict] = []
     unknown: list[str] = []
+    exact = {project_dir_name(form) for form in _vault_forms(vault)}
+    elsewhere = 0
     for path in session_files(vault):
         session = read_session(path)
         if not session.recognised:
             unknown.append(path.name)
             continue
         if not _in_vault(session.origin, vault):
+            elsewhere += path.parent.name in exact  # in the vault's own folder, yet opened outside it
             continue
         try:
             still = (now - path.stat().st_mtime) / 3600 >= STALE_HOURS
@@ -1402,6 +1474,9 @@ def import_sessions(vault: Path, since: _dt.date | None = None) -> int:
         print(f"{running} question(s) still running in an open session: stored once the session moves on")
     if old:
         print(f"{old} question(s) older than {SESSION_RETENTION_DAYS} days skipped (retention, section 22.5)")
+    if elsewhere:
+        print(f"{elsewhere} transcript(s) in the vault's own transcript folder record a session opened outside the "
+              "vault: skipped")
     if unknown:
         print(f"{len(unknown)} transcript(s) in a format this reader does not know: {', '.join(unknown[:5])}; "
               "Claude Code may have changed it, check for an anybrain update")
