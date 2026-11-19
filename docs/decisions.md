@@ -693,3 +693,4 @@ A fresh review of commits a2b9546 to 63b02e9 (session import, dashboard, D050) f
   - The skill said `anybrain trace import .`, but the command is `anybrain trace . import`. The agent recovered, but its chained command had already written the dashboard before the import, and it had run `stats` earlier for the content lines, so its run-trace section was empty.
   - The skill now asks for three commands, one at a time and in order.
   - The import itself stored the finished session's question and held back the running session's own.
+  - A second live run with the corrected skill (0.53 USD) ran `anybrain trace . import`, `anybrain stats . --dashboard` and `anybrain stats .` in that order. It stored the planted question, held back its own running session, and wrote a dashboard with the draft's cost. The report's run-trace section listed 0 local-only reads, the cost per skill and the missing `ask` runs.
