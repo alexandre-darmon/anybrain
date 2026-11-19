@@ -626,7 +626,7 @@ Format: `D<number> · <title>`, with the build step and the PRD sections involve
   - graph figures, usage from `log.md`, pending rule proposals.
   Tables and text bars only. It starts with the generated header of 14.3, which the PRD names, and refuses a hand-written page or a link. It is not a vault page, so `lint` and the indexes leave it alone.
 - **`templates/obsidian/dashboard-vault.md`** holds the Dataview queries of 22.7, with full frontmatter, so it passes `lint` once the owner copies it into `journal/`.
-- **The `lint` skill** runs `anybrain trace import .` and `anybrain stats . --dashboard` each week, and copies the session lines of `anybrain stats .` into its report. A local-only read also goes under "needs the owner", to be explained in `journal/` (22.6 exit criterion).
+- **The `lint` skill** runs `anybrain trace . import`, `anybrain stats . --dashboard` and `anybrain stats .` each week, one at a time and in that order, and copies the session lines of the last one into its report. A local-only read also goes under "needs the owner", to be explained in `journal/` (22.6 exit criterion).
 - **Real run.** Four questions from three real transcripts (a draft, a lint with a subagent, a two-question migration), pointed at a copy of `vault.example`. Second import: nothing new. Costs 0.61 and 0.46 USD add up to the session's 1.07 USD. The follow-up migration question has no skill, as Claude Code records it. Its recursive search counts every local-only file under the vault root as read, the conservative rule of D036.
 - **Not built:** a transcript reader for OpenCode (D041).
 

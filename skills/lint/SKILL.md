@@ -33,8 +33,13 @@ Fix the mechanical, report the judgmental, delete nothing.
 5. **Content ideas.** Up to 3 ideas from what moved this week: a concept that gained a source, a strong take the owner wrote, a project that shipped. For each, one angle and its source paths, after checking in `content/index.md` that no published piece already makes the point. Append them to `content/ideas.md`, one line each: `YYYY-MM-DD · <angle> · <source paths>`. Frontier models read that file: take ideas only from pages that are not local-only, even on the local profile, and never name a client. `anybrain lint --content` checks it.
 6. **Raw files waiting.** List the files in `raw/` with no compiled page, or newer than their page, as candidates for `ingest`.
 7. **Rebuild.** Run `anybrain index .`.
-8. **Run traces.** Run `anybrain trace import .`: it stores what each finished session did (files read, cost, local-only files read on the frontier profile) and deletes traces older than 30 days, keeping weekly totals. Then run `anybrain stats . --dashboard` to refresh `journal/dashboard.md`. Do not open the traces or the dashboard yourself: both are local-only.
-9. **Report.** Add six sections to the report file of step 1: fixed, needs the owner (contradictions, merges, stale projects, findings you could not fix), proposed rules, content ideas, raw files waiting, run traces. Run `anybrain stats .`:
+8. **Run traces.** Run these three commands one at a time, in this order, each on its own:
+   1. `anybrain trace . import` stores what each finished session did (files read, cost, local-only files read on the frontier profile) and deletes traces older than 30 days, keeping weekly totals.
+   2. `anybrain stats . --dashboard` refreshes `journal/dashboard.md` from those traces.
+   3. `anybrain stats .` prints the figures for the report. Use this output, not one from before the import.
+
+   Do not open the traces or the dashboard yourself: both are local-only.
+9. **Report.** Add six sections to the report file of step 1: fixed, needs the owner (contradictions, merges, stale projects, findings you could not fix), proposed rules, content ideas, raw files waiting, run traces. From the output of `anybrain stats .` in step 8:
    - copy its content lines (edit ratio per piece, the 8th-piece target, whether the ratio is going down) under content ideas; when it says the ratio did not go down, the report says so (16.5);
    - copy its session lines under run traces: local-only files read on the frontier profile first (target 0), then cost per skill and per week, and the median files read per `ask`. Each local-only read also goes under needs the owner, with its date and skill, to be explained in `journal/`.
 
