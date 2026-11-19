@@ -878,7 +878,8 @@ def confidential_text(ctx: Context, text: str) -> str:
     finance/ in any form (`./`, `/`, absolute, capitals), or the file name of a confidential file (D052)."""
     match = CONFIDENTIAL_WRITTEN_RE.search(text)
     if match:
-        return f"a path in {match.group(0).strip(' (<[`\'\":/').lower()}"
+        folder = match.group(0).strip(" (<[`'\":/").lower()
+        return f"a path in {folder}"
     lower = text.lower()
     for name in confidential_names(ctx):
         if re.search(r"(?<![\w.-])" + re.escape(name) + r"(?![\w-])", lower):
