@@ -808,3 +808,47 @@ The rest were forms D053 did not cover.
   - 827 tests pass under Python 3.13 and 3.11.
   - `lint` and `index --check` on `vault.example` are clean.
   - Importing this session's 182 MB transcript takes 13 seconds.
+
+## D055 · QMD at the owner's request, behind the routing
+
+- **Owner request, 2026-11-19:** "Ensuite implemente QMD stp", before an eval gate trips (17.3, Q44). QMD stays opt-in per vault (`[search] engine = "qmd"` in `.harness/models.toml`). An owner can run `anybrain eval` with search on and off and compare: principle 4 asks for that measure.
+- **Checked against QMD itself**, not assumed: the README and CLI source of github.com/tobi/qmd, and QMD 2.9.0 installed here with `npm install -g @tobilu/qmd`, on Node 22.
+  - A named index (`qmd --index <name>`) keeps its own config (`<name>.yml` in QMD's config folder) and its own database, and shares the models.
+  - Folders are excluded only through `ignore:` in that YAML.
+  - Search output carries a snippet of each file found. The MCP server's `get` returns whole files.
+  - QMD adopts a `.qmd/` folder found where it runs.
+  - Without network access to its models, `qmd embed`, `qmd query` and `qmd pull` wait with no end.
+- **The hole in 17.2 as written (Q45).** One index of the whole vault would put confidential snippets in front of a frontier session, past the harness deny rules, which only cover file tools. So:
+  - **Two indexes per vault, outside the vault**, in QMD's own folders: derived data that stays out of iCloud. `anybrain-<id>-frontier` excludes, from the routing:
+    - every local folder and file;
+    - the always-local folders;
+    - each confidential or mission page.
+
+    A vault local by default opens only its frontier folders. `anybrain-<id>-local` holds everything.
+  - **`anybrain search`** picks the index of the session's profile. It hides any result the profile may not read, which covers a page that became confidential since the last refresh. It re-indexes first when a config changed. It runs QMD from a neutral folder.
+  - **No QMD MCP server**: its `get` would bypass all of this.
+  - **Direct `qmd` use is visible.** Traces count `qmd` run on an index other than the frontier one as a search of the whole vault, so a frontier eval that bypasses the command fails. The skills and `AGENTS.md` say never to run `qmd` directly.
+  - `doctor` fails on a `.qmd/` folder in the vault, and reports whether QMD is installed, whether the configs follow the routing, and whether the models are downloaded.
+- **Never hang.**
+  - `anybrain search --refresh` re-indexes both indexes, so keyword search is up to date in seconds.
+  - It downloads the models (about 2 GB, once) only when the model host answers within 10 seconds, then embeds.
+  - A search uses meaning (`query`, `vsearch`) only when the models it needs are on disk; otherwise it says so and uses keywords.
+  - Measured here, where the network refuses huggingface.co: a refresh takes 1 second and says meaning search waits.
+- **Wiring.**
+  - `init` and `update` write the two configs when search is on.
+  - `AGENTS.md` gains its step 5 only then; the commented QMD block of the template is now rendered.
+  - The `ask` skill adds the top 3 search results to its index seeds (17.4), and uses `--exact --raw` for the wording of a source.
+  - The `lint` skill refreshes weekly. It reports link suggestions from `anybrain search --similar` (13.7), and links nothing without the owner's approval.
+  - Inside an eval case, `anybrain search` uses the indexes of the vault the case was copied from, and `--refresh` is refused.
+- **Tests.** A stand-in for QMD (`tests/fake_qmd.py`) covers:
+  - the routing of both indexes, and a stale index whose hidden results stay hidden;
+  - the fallback to keywords, a refresh offline and a refresh online;
+  - eval cases, link suggestions, `AGENTS.md`, `doctor` and traces.
+
+  One test runs the real QMD when it is installed: on the frontier profile `admin` finds nothing in `company/`, and on the local profile it finds `company/admin.md`.
+- **Two defects found by the last check of D054**, which a usage limit cut short before its verifiers ran, were reproduced here and fixed:
+  - a non-ASCII digit after `find -maxdepth` crashed trace parsing;
+  - a long variable assignment in front of a command (`MSG='...' git commit`) was stored as written.
+
+  The other 14 claims of that check were not verified and wait for a later round.
+- **Not tested here:** meaning search with the real models, which this network cannot download. It runs on the owner's Mac on the first `anybrain search . --refresh`.

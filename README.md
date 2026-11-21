@@ -108,7 +108,7 @@ Every skill repeats the same eight rules at its top: read `AGENTS.md` and the in
 
 ## Why not just RAG?
 
-At personal scale, a compiled wiki with indexes and reasoned links gives the agent a few dense pages instead of thirty fragments, and you can open `index.md` and see what it saw. Search is added only when a measured gate of the golden-set run fails: recall at least 0.90 on navigation questions, at least 0.80 on multi-hop questions, a root plus largest domain index under 5,000 tokens, needle questions under 20% of the set, and a median of at most 8 files read per answer. Then [QMD](https://github.com/tobi/qmd), a local hybrid search engine over Markdown, joins as an extra entry point; the indexes and links stay.
+At personal scale, a compiled wiki with indexes and reasoned links gives the agent a few dense pages instead of thirty fragments, and you can open `index.md` and see what it saw. Search is added when a measured gate of the golden-set run fails: recall at least 0.90 on navigation questions, at least 0.80 on multi-hop questions, a root plus largest domain index under 5,000 tokens, needle questions under 20% of the set, and a median of at most 8 files read per answer. The owner may also turn it on earlier. Then [QMD](https://github.com/tobi/qmd), a local hybrid search engine over Markdown, joins as an extra entry point, and the indexes and links stay. `anybrain search` keeps two QMD indexes built from the routing table, so a frontier session never sees a snippet of a confidential file.
 
 ## How this differs
 

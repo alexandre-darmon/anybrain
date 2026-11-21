@@ -12,6 +12,7 @@ import difflib
 import hashlib
 import json
 import os
+import shutil
 import stat
 import sys
 import tomllib
@@ -95,14 +96,62 @@ def repo_skills() -> list[Path]:
     return sorted(p for p in root.iterdir() if (p / "SKILL.md").is_file())
 
 
-def render_agents(params: dict) -> str:
+SEARCH_ON = ('5. If the indexes and neighbours do not surface a relevant page, run `anybrain search . "<question>"` and '
+             "open the results that bear on it, within the 8 files. For exact wording in `raw/`, run "
+             '`anybrain search . --exact --raw "<words>"`. It searches only what your profile may read and hides the '
+             "rest; never run `qmd` yourself.")
+SEARCH_OFF = ('<!-- Search (PRD 17.2) is off. With `[search] engine = "qmd"` in .harness/models.toml, '
+              "`anybrain update` adds a step 5 here. -->")
+
+
+def render_agents(params: dict, search: bool = False) -> str:
     text = v.read_text(v.framework_root() / "templates" / "AGENTS.vault.md")
     return (text.replace("{{OWNER_NAME}}", params.get("owner") or DEFAULT_OWNER)
                 .replace("{{OWNER_ROLE}}", params.get("role") or DEFAULT_ROLE)
-                .replace("{{LANGUAGE}}", params.get("lang") or DEFAULT_LANG))
+                .replace("{{LANGUAGE}}", params.get("lang") or DEFAULT_LANG)
+                .replace("{{SEARCH_STEP}}", SEARCH_ON if search else SEARCH_OFF))
 
 
 # ---------------------------------------------------------------------------- harness configs from routing
+
+def search_on(vault: Path) -> bool:
+    from . import search
+
+    return search.enabled(vault)
+
+
+def write_search_configs(vault: Path, out: Callable[[str], None]) -> None:
+    """With search on, the two QMD index configs follow the routing (D055); QMD itself may come later."""
+    from . import search
+
+    if search.enabled(vault):
+        search.write_configs(vault, out)
+
+
+def search_checks(vault: Path) -> list[tuple[str, str]]:
+    """doctor's lines on search (D055)."""
+    from . import search
+
+    found = []
+    if (vault / ".qmd").exists():
+        found.append(("fail", "the vault holds a .qmd/ folder: QMD adopts it for any command run in the vault, and "
+                              "it would show every folder to every model. Delete it; anybrain keeps its own indexes"))
+    if not search.enabled(vault):
+        return found
+    if not shutil.which(search.QMD):
+        return found + [("warn", f"search is on but QMD is not installed: {search.INSTALL}")]
+    stale = [p for p, path in search.config_paths(vault).items()
+             if not path.is_file() or path.read_text(encoding="utf-8") != search.render_config(vault, p)]
+    if stale:
+        found.append(("warn", f"QMD index configs out of date ({', '.join(stale)}): run anybrain search . --refresh"))
+    else:
+        found.append(("ok", "QMD index configs follow the routing"))
+    missing = set(search.MODELS) - search.models_present()
+    found.append(("warn", f"QMD models not downloaded ({', '.join(sorted(missing))}): keyword search only until "
+                          "anybrain search . --refresh downloads them") if missing
+                 else ("ok", "QMD models downloaded: meaning search available"))
+    return found
+
 
 def routing_warnings(routing: v.Routing) -> list[str]:
     return [f"{MODELS}: routing entry {key!r} ignored: {reason}" for key, reason in routing.ignored]
@@ -155,11 +204,11 @@ def opencode_config(routing: v.Routing) -> str:
     return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
 
 
-def framework_files(params: dict, routing: v.Routing | None = None) -> list[Rendered]:
-    """Every file `update` manages, as rendered from the repo and the vault's routing."""
+def framework_files(params: dict, routing: v.Routing | None = None, search: bool = False) -> list[Rendered]:
+    """Every file `update` manages, as rendered from the repo, the vault's routing and its search setting."""
     routing = routing or v.DEFAULT_ROUTING_OBJ
     root = v.framework_root() / "templates"
-    files = [Rendered("AGENTS.md", render_agents(params))]
+    files = [Rendered("AGENTS.md", render_agents(params, search))]
     for page in sorted((root / "pages").glob("*.md")):
         files.append(Rendered(f".harness/templates/{page.name}", v.read_text(page)))
     files.append(Rendered(".claude/settings.json", claude_settings(routing)))
@@ -393,7 +442,7 @@ def init(target: str, owner: str | None = None, role: str | None = None, lang: s
     if not models.exists():
         v.write_text(models, v.read_text(v.framework_root() / "templates" / "models.example.toml"))
         say(f"wrote {MODELS}")
-    for item in framework_files(params, v.load_routing(vault)):
+    for item in framework_files(params, v.load_routing(vault), search_on(vault)):
         path = vault / item.rel
         if path.exists():
             if v.read_text(path) == item.content and item.rel not in render["files"]:
@@ -447,6 +496,7 @@ def init(target: str, owner: str | None = None, role: str | None = None, lang: s
 
     merge_obsidian(vault, say)
     link_skills(vault, say)
+    write_search_configs(vault, say)
     save_render(vault, render, say)
 
     from . import index
@@ -489,7 +539,7 @@ def update(target: str | None, yes: bool = False, out: Callable[[str], None] = p
     routing = v.load_routing(vault)
     for message in routing_warnings(routing):
         out(f"note: {message}")
-    for item in framework_files(params, routing):
+    for item in framework_files(params, routing, search_on(vault)):
         path = vault / item.rel
         new_hash = sha(item.content)
         if not path.exists():
@@ -522,6 +572,7 @@ def update(target: str | None, yes: bool = False, out: Callable[[str], None] = p
     link_claude_md(vault, out)
     link_skills(vault, out, ask=None if yes else ask)
     merge_obsidian(vault, out)
+    write_search_configs(vault, out)
     save_render(vault, render, out)
     if note := voice_route_note(vault):
         out(f"note: {note}")
@@ -620,7 +671,7 @@ def doctor(target: str | None, out: Callable[[str], None] = print, timeout: floa
         for message in routing_warnings(routing):
             report("warn", message)
         params = render["params"] or {"owner": DEFAULT_OWNER, "role": DEFAULT_ROLE, "lang": DEFAULT_LANG}
-        for item in framework_files(params, routing):
+        for item in framework_files(params, routing, search_on(vault)):
             if item.rel not in HARNESS_CONFIGS:
                 continue
             path = vault / item.rel
@@ -659,6 +710,8 @@ def doctor(target: str | None, out: Callable[[str], None] = print, timeout: floa
 
     if note := voice_route_note(vault):
         report("warn", note)
+    for level, message in search_checks(vault):
+        report(level, message)
     report("note", "iCloud Advanced Data Protection should be ON (cannot be checked from here).")
     out(f"doctor: {failures} problem(s)")
     return 1 if failures else 0

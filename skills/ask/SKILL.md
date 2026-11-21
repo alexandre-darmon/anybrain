@@ -21,11 +21,11 @@ Navigate the indexes and the links, read a few pages, answer with citations.
 ## Method
 
 1. **Restate** the question in one line and name the domains it touches.
-2. **Seeds.** In the domain index or indexes, pick at most 3 pages whose description matches the question.
+2. **Seeds.** In the domain index or indexes, pick at most 3 pages whose description matches the question. If `AGENTS.md` has a step 5 on search, also run `anybrain search . "<question>"` and add its top 3 results that bear on the question; drop duplicates. For the exact wording of a source ("what did the highlights say about..."), run `anybrain search . --exact --raw "<words>"`.
 3. **Expand.** For each seed, run `anybrain neighbors . <page>`. Using titles, descriptions and the sentence that carries each link, pick the neighbours that bear on the question, incoming links included.
 4. **Read** the seeds and the chosen neighbours. Hard cap: **8 files**.
 5. **Answer** in the language of the question, briefly, with `(path)` after each claim. Put the owner's own position first when one exists (`My position`, `My take`, `Decisions`). Say explicitly where two pages disagree.
-6. If the indexes surface nothing relevant, say so and propose a broader domain. Never guess a page's content from its title. If `AGENTS.md` enables the search tool of the QMD block, use it before giving up.
+6. If the indexes and the search surface nothing relevant, say so and propose a broader domain. Never guess a page's content from its title. Never run `qmd` yourself: `anybrain search` searches only what your profile may read.
 7. If the answer is a reusable synthesis, offer one line: "File this as `wiki/notes/<slug>.md`?" File it only on a yes, with `sources` set to the pages you read.
 8. End every answer with the line `files opened: N`.
 

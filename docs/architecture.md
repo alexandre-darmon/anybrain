@@ -65,6 +65,7 @@ Pages follow typed contracts (11): a book has `## My take` (the owner's), key id
 | `migrate.py` | Legacy snapshot, inventory, review dates, check that owner text survived | 21 |
 | `evals.py`, `trace.py` | Golden-set runner, graders, judge, gates, baselines; run traces per harness; session import | 17.3, 22 |
 | `content.py` | Draft snapshots, edit ratio and changed passages, content checks on one file | 11.10, 11.11, 15.10, 15.11 |
+| `search.py` | QMD index configs from the routing, `anybrain search` by profile, link suggestions | 17.2, 17.4, 13.7 |
 
 **Indexes and the graph** (13, 14). `anybrain index` writes one `index.md` per domain, one line per page built from its `description`, and a root index with one line per domain. It also writes `.harness/graph.json`, where each link keeps the sentence that carries it, so the agent can judge a relation without opening the page. `anybrain neighbors <page>` prints the links in and out of a page with those sentences.
 
@@ -124,3 +125,7 @@ When the owner publishes, the `publish` skill keeps the final text verbatim. `an
 ## Testing
 
 Unit tests cover every module, with one passing and one failing fixture per lint check (23). CI runs the tests on Python 3.11 and 3.12, lints `vault.example/`, checks that its generated indexes and `graph.json` are byte-identical to the committed ones, and fails on an em dash or on personal data patterns. Skills are checked by real runs, recorded with date, harness and cost in `decisions.md`.
+
+## Search
+
+Search is off until the owner turns it on in `.harness/models.toml` (17.2, D055). A QMD result carries a snippet of the file it found, so anybrain keeps two QMD indexes per vault, outside the vault, both built from the routing table. The frontier index holds only what frontier models may read; the local index holds everything. `anybrain search` picks the index of the session's profile and hides anything that profile may not read. A search uses meaning when QMD's models are on disk, and keywords otherwise. The weekly `lint` skill refreshes both indexes and lists similar pages that are not linked, for the owner to approve.
