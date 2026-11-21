@@ -140,10 +140,14 @@ def copy_vault(vault: Path, parent: Path) -> Path:
     return target
 
 
-def run_command(command: list[str], cwd: Path, profile: str, timeout: float) -> tuple[str, str, int]:
-    """Run a harness in `cwd`. `anybrain` commands it runs see `cwd` as the only vault they may use."""
+def run_command(command: list[str], cwd: Path, profile: str, timeout: float,
+                origin: Path | None = None) -> tuple[str, str, int]:
+    """Run a harness in `cwd`. `anybrain` commands it runs see `cwd` as the only vault they may use; `origin`, the
+    owner's vault the case was copied from, only names the search indexes they read (D055)."""
     env = dict(os.environ, ANYBRAIN_PROFILE=profile, ANYBRAIN_VAULT=str(cwd))
     env[v.EVAL_COPY_ENV] = str(cwd)
+    if origin is not None:
+        env["ANYBRAIN_EVAL_ORIGIN"] = str(origin)
     try:
         done = subprocess.run(command, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout)
     except FileNotFoundError as exc:
@@ -373,7 +377,7 @@ def run_case(case: Case, vault: Path, models: dict, harness: str, profile: str, 
                 break  # keep what the earlier attempts did: their reads, writes and cost
             copy_error = ""
             command = harness_command(models, harness, case.question, profile, left)
-            out, err, code = run_command(command, root, profile, float(settings.get("timeout_s", 600)))
+            out, err, code = run_command(command, root, profile, float(settings.get("timeout_s", 600)), origin=vault)
             run = adapter.parse(out, root, origin=vault)
             records.append(tr.build_record(run, root, profile, "eval", started, case_id=case.id, origin=vault))
             if case.expected.get("content_check"):  # graded in the copy, before it is deleted

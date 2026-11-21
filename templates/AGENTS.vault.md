@@ -31,9 +31,7 @@ You maintain a personal knowledge vault in plain Markdown. You write and link pa
 2. Run `anybrain neighbors . <page>` on a seed to see its links in and out, with the sentence that carries each link. Open the neighbours that bear on the question.
 3. Open at most 8 files per answer. End every answer with `files opened: N`.
 4. If the indexes surface nothing relevant, say so. Never guess a page's content from its title.
-<!-- QMD block (PRD section 17.2), enabled only when an eval gate fails:
-5. If indexes and neighbours do not surface a relevant page, run `qmd query "<question>"` before answering. Use `qmd search` for exact wording in `raw/`.
--->
+{{SEARCH_STEP}}
 
 ## Rules
 

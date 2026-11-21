@@ -39,7 +39,9 @@ Fix the mechanical, report the judgmental, delete nothing.
    3. `anybrain stats .` prints the figures for the report. Use this output, not one from before the import.
 
    Do not open the traces or the dashboard yourself: both are local-only.
-9. **Report.** Add six sections to the report file of step 1: fixed, needs the owner (contradictions, merges, stale projects, findings you could not fix), proposed rules, content ideas, raw files waiting, run traces. From the output of `anybrain stats .` in step 8:
+
+   If `AGENTS.md` has a step 5 on search, also run `anybrain search . --refresh` (it re-indexes the vault and its vectors) and then `anybrain search . --similar`, which lists similar pages that are not linked to each other.
+9. **Report.** Add six sections to the report file of step 1: fixed, needs the owner (contradictions, merges, stale projects, findings you could not fix, and the link suggestions of step 8, each with the reason you would link them: "These pages discuss the same idea and are not linked: A, B. Link? (reason: ...)"), proposed rules, content ideas, raw files waiting, run traces. Write a suggested link only after the owner approves it. From the output of `anybrain stats .` in step 8:
    - copy its content lines (edit ratio per piece, the 8th-piece target, whether the ratio is going down) under content ideas; when it says the ratio did not go down, the report says so (16.5);
    - copy its session lines under run traces: local-only files read on the frontier profile first (target 0), then cost per skill and per week, and the median files read per `ask`. Each local-only read also goes under needs the owner, with its date and skill, to be explained in `journal/`.
 

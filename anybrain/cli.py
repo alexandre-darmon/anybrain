@@ -126,6 +126,26 @@ def _cmd_trace(args: argparse.Namespace) -> int:
     return trace.show(root, last=args.last, skill=args.skill)
 
 
+def _cmd_search(args: argparse.Namespace) -> int:
+    from . import search, vault
+
+    words = list(args.args)
+    if args.refresh or args.similar:
+        if len(words) > 1:
+            raise UsageError("usage: anybrain search [vault] --refresh | --similar")
+        root = vault.resolve_vault(vault_arg(words[0] if words else None))
+        return search.refresh(root) if args.refresh else search.similar(root)
+    if len(words) == 1:
+        root, question = vault_arg(None), words[0]
+    elif len(words) == 2:
+        root, question = words
+    else:
+        raise UsageError('usage: anybrain search [vault] "<question>" [--exact] [--raw] [-n N]')
+    if args.n < 1:
+        raise UsageError("-n must be at least 1")
+    return search.search(vault.resolve_vault(root), question, exact=args.exact, raw=args.raw, limit=args.n)
+
+
 def _cmd_eval(args: argparse.Namespace) -> int:
     from . import evals, vault
 
@@ -261,6 +281,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--golden", metavar="FILE", help="golden set to use instead of .harness/golden.yaml")
     p.set_defaults(func=_cmd_eval)
 
+    p = sub.add_parser("search", help="Search the vault with QMD, only where the session's profile may read")
+    p.add_argument("args", nargs="*", metavar='[vault] "<question>"')
+    p.add_argument("--exact", action="store_true", help="keyword search, for exact wording")
+    p.add_argument("--raw", action="store_true", help="only results in raw/")
+    p.add_argument("-n", type=int, default=5, help="number of results (default 5)")
+    p.add_argument("--refresh", action="store_true", help="write the index configs, re-index and embed (weekly)")
+    p.add_argument("--similar", action="store_true", help="similar pages not linked to each other (13.7)")
+    p.set_defaults(func=_cmd_search)
+
     p = sub.add_parser("trace", help="Print run traces, or import finished sessions as run traces")
     p.add_argument("args", nargs="+", metavar="[vault] {show,import}")
     p.add_argument("--last", type=int, default=20, help="number of runs to show (default 20)")
@@ -278,7 +307,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args, extra = parser.parse_known_args(argv)
+    if extra and getattr(args, "command", None) == "search" and not any(x.startswith("-") for x in extra):
+        args.args += extra  # `anybrain search . --exact "words"`: the question after the options
+    elif extra:
+        parser.error(f"unrecognized arguments: {' '.join(extra)}")
     if not getattr(args, "func", None):
         parser.print_help()
         return 2

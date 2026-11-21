@@ -262,7 +262,8 @@ anybrain/
 │   ├── evals.py                 golden set runner, harness adapters, gates (section 22)
 │   ├── content.py               draft snapshots, edit ratio, content checks (sections 15.10, 15.11)
 │   ├── stats.py                 usage metrics from log.md and run traces
-│   └── trace.py                 run traces: normalise harness output, store, report (sections 22.5, 22.6)
+│   ├── trace.py                 run traces: normalise harness output, store, report (sections 22.5, 22.6)
+│   └── search.py                QMD indexes from the routing, `anybrain search` (section 17.2, D055)
 ├── skills/
 │   ├── ingest/SKILL.md
 │   ├── ask/SKILL.md
@@ -331,6 +332,8 @@ anybrain/
 | `anybrain transcribe <vault>` | Transcribe new audio in `raw/voice/` with local whisper.cpp | P3 |
 | `anybrain trace <vault> show [--last N] [--skill NAME]` | Print recent run traces: files read and written, tool calls, tokens, cost, local-only reads | P1 (eval traces), P2 (all runs) |
 | `anybrain trace <vault> import [--since DATE]` | Read finished session transcripts of the configured harnesses and store them as run traces | P2 |
+| `anybrain search <vault> "<question>" [--exact] [--raw] [-n N]` | Search with QMD the index of the session's profile, hiding what that profile may not read (17.2, D055) | P2 |
+| `anybrain search <vault> --refresh` \| `--similar` | Write the QMD index configs from the routing, re-index and embed; list similar pages not linked (13.7) | P2 |
 
 ### 9.4 README requirements
 
@@ -939,14 +942,20 @@ The procedure of section 15.5 (seeds from indexes, one-hop expansion through `ne
 
 QMD (github.com/tobi/qmd, MIT) is a local search engine over Markdown: BM25 keyword search, vector search, query expansion and LLM reranking, all with small local GGUF models (about 2 GB, downloaded on first use). It also exposes an MCP server (`qmd mcp`). It is the **retrieval** step only; the agent still reads and answers.
 
-Installation when a gate trips:
+Installation when a gate trips, or when the owner asks (Q44):
 ```bash
-qmd collection add ~/brain --name brain
-qmd embed
+npm install -g @tobilu/qmd          # Node.js 22 or later
+# in .harness/models.toml: [search] engine = "qmd"
+anybrain update                     # AGENTS.md gains its search step; the index configs are written
+anybrain search ~/brain --refresh   # index, download the models once, embed
 ```
-Then add to `AGENTS.md` (template block already present, commented out): "If indexes and neighbours do not surface a relevant page, run `qmd query` before answering. Use `qmd search` for exact wording in `raw/`." Re-embed weekly in the `lint` skill (`qmd embed`).
+The agent runs `anybrain search . "<question>"` when the indexes and neighbours do not surface a relevant page, and `anybrain search . --exact --raw "<words>"` for exact wording in `raw/`. The `lint` skill refreshes the indexes weekly.
 
-Confidential folders: QMD runs locally, so indexing them is safe. Results from confidential folders are still only read on the local profile (shared rule 3).
+Confidential folders: a QMD result carries a snippet of the file it found, so one index holding the whole vault would show confidential text to a frontier session, past the harness deny rules (Q45). anybrain keeps two QMD indexes per vault, outside the vault:
+- the frontier index holds only what the routing lets frontier models read, without confidential and mission pages;
+- the local index holds everything, for the local profile only.
+
+`anybrain search` picks the index of the session's profile and hides any result that profile may not read. No QMD MCP server is configured: its `get` tool would return any indexed file unmasked (D055).
 
 ### 17.3 Gates (printed by `anybrain eval`)
 
@@ -974,7 +983,7 @@ Any gate failing → install QMD (17.2). Multi-hop failing with QMD installed �
 | --- | --- | --- |
 | Instructions | AGENTS.md | `<vault>/AGENTS.md`, `CLAUDE.md` symlink |
 | Procedures | Agent Skills (`SKILL.md`) | `skills/`, symlinked into each harness's skill dir |
-| Tools | MCP | Harness configuration only (calendar, email, QMD) |
+| Tools | MCP | Harness configuration only (calendar, email). QMD is reached through `anybrain search`, not MCP (D055) |
 | Models | OpenAI-compatible HTTP endpoint | `.harness/models.toml` |
 | Harness | Any AGENTS.md reader | Claude Code (primary), OpenCode (fallback) |
 
@@ -1401,6 +1410,8 @@ P2, P3, P4 are planned only after step 18 and the 4-week measure. One exception:
 | Q41 | 22.5 has one record per run, and the harness measures cost per session. What is a run for an interactive session holding several questions, and what does each cost? | One record per question. The session's cost between two of the harness's checkpoints is exact; when several questions share it, it is split by their tokens and the record says so (`cost_shared`). A question whose cost is not written yet is stored with `cost_pending` and completed by a later import (D049, D051) |
 | Q42 | Which skill does a question belong to when the agent does not invoke one again, for example a follow-up in the same session? | The skill the harness attributes, else none; anybrain never guesses one. `stats` shows those as "(no skill)" (D049) |
 | Q43 | Does a search with the harness's own search tool (not the shell) read the local-only files it goes through? | Open. Traces count only file reads and shell commands, as in step 10; the search tool is to be measured on a live session (D050) |
+| Q44 | 17.3 adds QMD only when an eval gate fails. May it come earlier? | **Decided by the owner (2026-11-19): yes**, "Ensuite implemente QMD stp". Opt-in per vault (`[search] engine = "qmd"`), so `anybrain eval` can compare runs with and without it (D055) |
+| Q45 | 17.2 indexes the whole vault and calls that safe because QMD is local, but results carry snippets of confidential files into frontier sessions. How is the routing kept? | Two indexes built from the routing, a wrapper that picks one by profile and hides what the profile may not read, no QMD MCP server, and direct `qmd` use counted by traces as a search of the whole vault (D055) |
 
 ---
 

@@ -728,3 +728,14 @@ def test_quotes_escapes_and_comments_never_leave_text_in_a_stored_command(comman
     shown = t.shown_command(command)
     assert secret not in shown, shown
     assert "log.md" in shown or "drafts/a.md" in shown or "holdings.csv" in shown or "me/x.md" in shown
+
+
+# ---------------------------------------------------------------- two findings of the last check of D054
+
+def test_a_non_ascii_digit_after_maxdepth_is_not_a_crash(vault):
+    t.files_from_shell("find . -maxdepth \u00b2 -exec cat {} +", vault)
+
+
+def test_a_long_assignment_in_front_of_a_command_is_not_stored():
+    shown = t.shown_command("MSG='SECRET-PROMPT-WORDS and a long message for the commit' git commit -m \"$MSG\"")
+    assert "SECRET-PROMPT-WORDS" not in shown and shown.endswith('git commit -m "$MSG"')

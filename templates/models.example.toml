@@ -39,6 +39,11 @@ judge    = "claude -p {prompt} --tools '' --strict-mcp-config"   # the eval judg
 [harnesses.opencode]
 headless = "opencode run --standalone {prompt}"   # --standalone passes ANYBRAIN_PROFILE to the run (D020)
 
+[search]
+engine = "none"   # "qmd": local search with QMD (PRD 17.2), installed with npm install -g @tobilu/qmd (Node.js 22+).
+                  # Then run anybrain update and anybrain search . --refresh. Two indexes stay outside the vault:
+                  # frontier sessions search only what the routing above lets them read (D055).
+
 [eval]
 judge      = "endpoint:frontier"   # who grades `behaviour`, in a fresh context: endpoint:<profile> or harness:<name>
                                    # a --profile local run needs endpoint:local on localhost

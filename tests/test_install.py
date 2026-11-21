@@ -208,9 +208,9 @@ def test_agents_template_names_no_harness_or_model():
 def test_update_replaces_an_untouched_file_when_the_repo_changes(brain, monkeypatch, capsys):
     original = install.framework_files
 
-    def newer(params, routing=None):
+    def newer(params, routing=None, search=False):
         return [install.Rendered(f.rel, f.content + "\nNew rule.\n") if f.rel == "AGENTS.md" else f
-                for f in original(params, routing)]
+                for f in original(params, routing, search)]
 
     monkeypatch.setattr(install, "framework_files", newer)
     assert install.update(str(brain), yes=True) == 0

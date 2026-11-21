@@ -99,6 +99,9 @@ def _elide_carried(text: str) -> str:
 
     def flush() -> None:
         words = command_words(group)
+        for word in group[:len(group) - len(words)]:  # `MSG='...' git commit`: an assignment carries text too
+            if ASSIGNMENT_RE.match(word) and word.end - word.start > 42:
+                spans.append((word.start, word.end))
         name = Path(words[0]).name if words else ""
         args = words[1:]
         if name in ("echo", "printf") and args:
@@ -666,6 +669,7 @@ def shell_escapes(command: str, root: Path, origin: Path | None) -> list[str]:
 
 
 EXEC_OPTIONS = {"-exec", "-execdir", "-ok", "-okdir"}
+QMD_READERS = {"search", "vsearch", "query", "get", "multi-get", "multi_get", "mcp"}
 FIND_PATTERNS = {"-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename"}
 
 
@@ -689,7 +693,7 @@ def _find_parts(words: list[str]) -> tuple[list[str], tuple[str, ...], tuple[str
             negate, i = False, i + 2
             continue
         if word == "-maxdepth" and i + 1 < len(words):
-            depth = int(words[i + 1]) if words[i + 1].isdigit() else depth
+            depth = int(words[i + 1]) if re.fullmatch(r"[0-9]+", words[i + 1]) else depth  # not "²"
             i += 2
             continue
         if word in EXEC_OPTIONS and i + 1 < len(words):
@@ -785,6 +789,12 @@ def files_from_shell(command: str, root: Path, origin: Path | None = None, start
                 if any(f"${variable}" in w or "${" + variable + "}" in w for w in words[1:]):
                     for item in items:
                         take(item, folder)
+        if name == "qmd":  # QMD run directly, on an index other than the frontier one, shows any file (D055)
+            index = next((words[k + 1] for k in range(len(words) - 1) if words[k] == "--index"), "")
+            rest = [w for k, w in enumerate(words[1:], 1) if not w.startswith("-") and words[k - 1] != "--index"]
+            if rest and rest[0] in QMD_READERS and not index.endswith("-frontier") and Search(".") not in searches:
+                searches.append(Search("."))
+            continue
         if name == "find":  # `find x -exec cat {} +` opens what it finds; `-exec ls` or no -exec only lists
             runs = _find_parts(words)[4]
             if runs is not None and runs not in NO_READ_COMMANDS:
