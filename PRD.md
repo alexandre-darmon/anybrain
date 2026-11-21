@@ -279,7 +279,8 @@ anybrain/
 │   ├── models.example.toml
 │   ├── harness/claude-settings.json      permission deny rules (section 18.4)
 │   ├── harness/opencode.json
-│   └── obsidian/app.json        attachment and new-note folders (section 20)
+│   ├── obsidian/app.json        attachment and new-note folders (section 20)
+│   └── obsidian/dashboard-vault.md   Dataview queries the owner may copy into the vault (22.7)
 ├── evals/
 │   ├── golden.example.yaml
 │   ├── rubric.md                judge rubric
@@ -1275,6 +1276,7 @@ From P2, every session is traced, not only evals, so the owner sees what the age
 - **Source:** `anybrain trace import` reads the transcripts the harnesses already keep after a session ends and stores normalised records (22.5). No daemon, no hook, no collector to run. Harness-native telemetry (OpenTelemetry) MAY be supported later, only towards a collector on the same machine (Q20).
 - **Report:** `anybrain stats` adds cost per skill and per week, median files read per `ask`, and the count of local-only reads on frontier (target 0). The weekly `lint` skill adds these lines to its report.
 - **Exit criterion:** 4 weeks of traces from real use, with no local-only read on the frontier profile, or each one explained in `journal/`.
+- **Built early** at the owner's request (2026-11-19), with 22.7, before step 18 (Q40, D049). One record per question asked in a session; Claude Code only for now (D041).
 
 ### 22.7 Dashboard in Obsidian (P2)
 
@@ -1331,7 +1333,7 @@ Time budget: steps 1 to 7 over one weekend; steps 8 to 13 over one to two weeks 
 | 17 | Content cases in the golden set (tag `content`) | Pass on both harnesses |
 | 18 | **Owner:** voice setup from 10 to 20 past posts; channel guides (LinkedIn, portfolio, application); 4 pieces published through `draft` and `publish` | Content metrics of section 6 tracked |
 
-P2, P3, P4 are planned only after step 18 and the 4-week measure.
+P2, P3, P4 are planned only after step 18 and the 4-week measure. One exception: the observability of 22.6 and 22.7 was built early at the owner's request (Q40, D049).
 
 ---
 
@@ -1395,6 +1397,10 @@ P2, P3, P4 are planned only after step 18 and the 4-week measure.
 | Q37 | 15.10 lets a draft use a mission page the owner names, while `lint --content` makes any mission source an error. How is that learning sourced? | The learning is written in general terms and never cited: not in `sources`, not in a `src` comment, not in the notes, which say a named page was used. The check stays an error (D046) |
 | Q38 | 22.2 says the judge sees the question, the behaviour, the answer and the cited files; a content case is about the draft written. And 17.3's cost gate measures answers. | The judge also sees the draft a content case wrote; content cases do not count in the files-read gate (D045) |
 | Q39 | What does `init` do in a folder that already holds someone's files, such as a legacy vault pasted into the target folder? | It refuses, names the files and says how to separate and migrate them; the vault's own root files and hand-written `index.md` files are kept; `update` does not arm a folder `init` never made (D043, D046) |
+| Q40 | 24 plans P2 only after step 18 and the 4-week measure. May its observability (22.6, 22.7) come earlier? | **Decided by the owner (2026-11-19): yes**, "attaque l'observabilité". Built with Claude Code's transcripts only (D041, D049) |
+| Q41 | 22.5 has one record per run, and the harness measures cost per session. What is a run for an interactive session holding several questions, and what does each cost? | One record per question. The session's cost between two of the harness's checkpoints is exact; when several questions share it, it is split by their tokens and the record says so (`cost_shared`). A question whose cost is not written yet is stored with `cost_pending` and completed by a later import (D049, D051) |
+| Q42 | Which skill does a question belong to when the agent does not invoke one again, for example a follow-up in the same session? | The skill the harness attributes, else none; anybrain never guesses one. `stats` shows those as "(no skill)" (D049) |
+| Q43 | Does a search with the harness's own search tool (not the shell) read the local-only files it goes through? | Open. Traces count only file reads and shell commands, as in step 10; the search tool is to be measured on a live session (D050) |
 
 ---
 
